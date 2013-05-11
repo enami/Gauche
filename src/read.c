@@ -1307,7 +1307,7 @@ static ScmObj read_sharp_word_legacy(ScmPort *port, char ch, ScmReadContext *ctx
     ScmChar c1, c2 = SCM_CHAR_INVALID;
     char *tag = NULL;
 
-    if (ch == 't') return SCM_FALSE;
+    if (ch == 't') return SCM_TRUE;
 
     c1 = Scm_GetcUnsafe(port);
     if (ch == 'f') {
