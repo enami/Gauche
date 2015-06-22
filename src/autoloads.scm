@@ -2,8 +2,6 @@
 ;;; Generates default autoloads
 ;;;
 
-(use srfi-1)
-(use util.list)
 (use util.match)
 (use gauche.cgen)
 
@@ -22,7 +20,7 @@
          (list target path
                (fold (^[entry r]
                        (match entry
-                         [(:macro . syms) (fold (cut acons <> #t <>) r syms)]
+                         [(':macro . syms) (fold (cut acons <> #t <>) r syms)]
                          [sym (acons sym #f r)]))
                      '() entries))))
 
@@ -78,7 +76,7 @@
           div-and-mod div mod div0-and-mod0 div0 mod0
           floor/ floor-quotient floor-remainder
           truncate/ truncate-quotient truncate-remainder
-          square
+          square encode-float
           nearly=?)
 
 (autoload "gauche/redefutil"
@@ -93,7 +91,7 @@
 
 (autoload gauche.portutil
           port->string port->list port->string-list port->sexp-list
-          copy-port port-position-prefix port-tell)
+          copy-port)
 
 (autoload "gauche/logical"
           logtest logbit? copy-bit bit-field copy-bit-field)
@@ -104,13 +102,17 @@
           (:macro check-arg get-optional get-keyword*)
           (:macro ^ ^_ ^a ^b ^c ^d ^e ^f ^g ^h ^i ^j ^k ^l ^m ^n ^o ^p ^q
                   ^r ^s ^t ^u ^v ^w ^x ^y ^z $)
-          (:macro let1 if-let1 rlet1)
+          (:macro let1 if-let1 and-let1 rlet1)
           (:macro let/cc) (:macro begin0) (:macro fluid-let)
           (:macro values-ref values->list)
           (:macro ecase)
           (:macro dotimes dolist while until)
           (:macro guard unwind-protect)
-          (:macro cond-list))
+          (:macro cond-list)
+          (:macro er-macro-transformer))
+
+(autoload gauche.macroutil
+          (:macro with-renaming))
 
 (autoload gauche.regexp
           (:macro rxmatch-let rxmatch-if rxmatch-cond rxmatch-case)
@@ -123,20 +125,20 @@
           any$ every$ delete$ member$ assoc$
           any-pred every-pred
           ;;(:macro curry-lambda) (:macro define-curry)
-          applicable? arity procedure-arity-includes?
-          <arity-at-least> arity-at-least? arity-at-least-value disasm
-          ~ ref*
+          arity procedure-arity-includes?
+          <arity-at-least> arity-at-least? arity-at-least-value
+          source-code source-location disasm
           generator-fold generator-fold-right generator-for-each
-          generator-map
+          generator-map generator-find
           ;; for the backward compatibility
           port-fold port-fold-right port-for-each port-map)
 
 (autoload gauche.time (:macro time))
 
 (autoload gauche.vm.debugger
-          (:macro debug-print)
+          (:macro debug-print debug-funcall) 
           debug-print-width debug-source-info
-          debug-print-pre debug-print-post)
+          debug-print-pre debug-print-post debug-funcall-pre)
 
 (autoload gauche.vm.profiler profiler-show profiler-show-load-stats)
 
@@ -154,6 +156,22 @@
 (autoload gauche.defvalues (:macro define-values set!-values))
 
 (autoload gauche.stringutil string-split)
+
+(autoload gauche.vecutil
+          vector-tabulate vector-map vector-map! vector-for-each
+          vector-map-with-index vector-map-with-index!
+          vector-for-each-with-index reverse-list->vector)
+
+(autoload gauche.computil
+          default-comparator
+          boolean-comparator char-comparator char-ci-comparator
+          string-ci-comparator symbol-comparator
+          exact-integer-comparator integer-comparator rational-comparator
+          real-comparator complex-comparator number-comparator
+          pair-comparator list-comparator vector-comparator
+          bytevector-comparator uvector-comparator
+          make-reverse-comparator make-key-comparator make-tuple-comparator
+          make-car-comparator make-cdr-comparator)
 
 (autoload gauche.fileutil
           glob glob-fold sys-glob glob-component->regexp make-glob-fs-fold
@@ -175,7 +193,8 @@
                           tree-map->alist alist->tree-map)
 
 (autoload gauche.libutil  library-fold library-map library-for-each
-                          library-exists? library-has-module?)
+                          library-exists? library-has-module?
+                          library-name->module-name)
 
 (autoload gauche.sortutil sort sort! merge merge! sorted?
                           stable-sort stable-sort!

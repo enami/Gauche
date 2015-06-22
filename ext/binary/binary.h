@@ -1,7 +1,7 @@
 /*
  * binary.h - Binary I/O routines
  *
- *   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -32,7 +32,7 @@
  */
 
 #include <gauche.h>
-#include <gauche/builtin-syms.h>
+#include <gauche/priv/builtin-syms.h>
 
 extern ScmObj Scm_ReadBinaryU8(ScmPort *iport, ScmSymbol *e);
 extern ScmObj Scm_ReadBinaryU16(ScmPort *iport, ScmSymbol *e);

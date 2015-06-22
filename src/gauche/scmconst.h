@@ -1,7 +1,7 @@
 /*
  * scmconst.h - frequently used static constant values
  *
- *   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -49,7 +49,13 @@ SCM_EXTERN ScmObj Scm__ConstObjs[];   /* initialized in number.c */
 #define SCM_NEGATIVE_INFINITY  (Scm__ConstObjs[10])   /* #i-1/0 */
 #define SCM_NAN                (Scm__ConstObjs[11])   /* #<nan> */
 
-#define SCM_NUM_CONST_OBJS  12
+/* Minimum positive denormalized double as exact number: 1/2^1075 */
+#define SCM_MIN_DENORMALIZED_FLONUM_EXACT (Scm__ConstObjs[12])
+
+/* Maximum positive double as exact number: 2^1024 - 2^971 + 2^970 - 1 */
+#define SCM_MAX_FINITE_FLONUM_EXACT (Scm__ConstObjs[13])
+
+#define SCM_NUM_CONST_OBJS  14
 
 #endif /*GAUCHE_SCMCONST_H*/
 

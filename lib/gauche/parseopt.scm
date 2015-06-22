@@ -1,7 +1,7 @@
 ;;;
 ;;; parseopt.scm - yet another command-line argument parser
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -32,10 +32,6 @@
 ;;;
 
 (define-module gauche.parseopt
-  (use gauche.regexp)
-  (use srfi-1)
-  (use srfi-2)
-  (use srfi-13)
   (export make-option-parser parse-options let-args <parseopt-error>))
 (select-module gauche.parseopt)
 
@@ -63,9 +59,8 @@
 ;; ((<optspec> <help-string>) <handler>)
 (define (compose-entry a-spec)
   (let ([optspec (if (pair? (car a-spec)) (caar a-spec) (car a-spec))]
-        [helpstr (and-let* ([l (length+ (car a-spec))]
-                            [ (>= l 2 ) ])
-                   (cadar a-spec))]
+        [helpstr (and (not (length<=? (car a-spec) 1))
+                      (cadar a-spec))]
         [handler (cadr a-spec)])
     (unless (string? optspec)
       (error "option spec must be a string, but got" optspec))
@@ -121,9 +116,9 @@
                        (~ optspec 'name) arg)])
       (read-from-string arg)))
   (define (process-args)
-    (let loop ((spec (~ optspec 'args))
-               (args args)
-               (optargs '()))
+    (let loop ([spec (~ optspec 'args)]
+               [args args]
+               [optargs '()])
       (cond [(null? spec) (values (reverse! optargs) args)]
             [(null? args) (error <parseopt-error> :option-name (~ optspec'name)
                                  "running out the arguments for option"
@@ -168,8 +163,7 @@
 ;; Build
 (define (build-option-parser spec fallback)
   (let1 speclist (append-map compose-entry spec)
-    (^[args . maybe-fallback]
-      (parse-cmdargs args speclist (get-optional maybe-fallback fallback)))))
+    (^[args :optional (fb fallback)] (parse-cmdargs args speclist fb))))
 
 ;;;
 ;;; The main body of the macros

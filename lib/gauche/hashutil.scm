@@ -1,7 +1,7 @@
 ;;;
 ;;; auxiliary hashtable utilities.  to be autoloaded.
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -36,8 +36,8 @@
   )
 (select-module gauche.hashutil)
 
-(define (hash-table type . kvs)
-  (rlet1 h (make-hash-table type)
+(define (hash-table cmpr . kvs)
+  (rlet1 h (make-hash-table cmpr)
     (for-each (^[kv] (hash-table-put! h (car kv) (cdr kv))) kvs)))
 
 (define (hash-table-map hash proc)

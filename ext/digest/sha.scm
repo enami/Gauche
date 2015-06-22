@@ -2,7 +2,7 @@
 ;;; sha - SHA-1/SHA-224/SHA-256/SHA-384/SHA-512 message-digest
 ;;;
 ;;;   Copyright (c) 2002-2003 Kimura Fuyuki, All rights reserved.
-;;;   Copyright (c) 2008-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2008-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -81,12 +81,12 @@
 ;;;
 
 (define-macro (define-framework n block-size)
-  (let ([meta   (string->symbol #`"<sha,|n|-meta>")]
-        [cls    (string->symbol #`"<sha,|n|>")]
-        [init   (string->symbol #`"%sha,|n|-init")]
-        [update (string->symbol #`"%sha,|n|-update")]
-        [final  (string->symbol #`"%sha,|n|-final")]
-        [digest (string->symbol #`"sha,|n|-digest")])
+  (let ([meta   (string->symbol #"<sha~|n|-meta>")]
+        [cls    (string->symbol #"<sha~|n|>")]
+        [init   (string->symbol #"%sha~|n|-init")]
+        [update (string->symbol #"%sha~|n|-update")]
+        [final  (string->symbol #"%sha~|n|-final")]
+        [digest (string->symbol #"sha~|n|-digest")])
     `(begin
        (define-class ,meta (<message-digest-algorithm-meta>) ())
        (define-class ,cls (<message-digest-algorithm>)
@@ -178,7 +178,7 @@
    [(_ final ctx size)
     `(let* ([digest::(.array (unsigned char) (,size))])
        (,final digest (& (-> ,ctx ctx)))
-       (result (Scm_MakeString (cast (const char*) digest)
+       (return (Scm_MakeString (cast (const char*) digest)
                                ,size ,size
                                (logior SCM_STRING_INCOMPLETE
                                        SCM_STRING_COPYING))))])

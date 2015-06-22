@@ -1,7 +1,7 @@
 /*
  * sptab.h - Sparse hashtable
  *
- *   Copyright (c) 2009-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2009-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -50,6 +50,7 @@ typedef struct SparseTableRec {
     u_long      numEntries;
     u_long      (*hashfn)(ScmObj key);
     int         (*cmpfn)(ScmObj a, ScmObj b);
+    ScmComparator *comparator;  /* only used for generic table */
 } SparseTable;
 
 SCM_CLASS_DECL(Scm_SparseTableClass);
@@ -57,7 +58,8 @@ SCM_CLASS_DECL(Scm_SparseTableClass);
 #define SPARSE_TABLE(obj)       ((SparseTable*)(obj))
 #define SPARSE_TABLE_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_TABLE)
 
-extern ScmObj MakeSparseTable(ScmHashType type, u_long flags);
+extern ScmObj MakeSparseTable(ScmHashType type, ScmComparator *data,
+                              u_long flags);
 extern ScmObj SparseTableRef(SparseTable *st, ScmObj key, ScmObj fallback);
 extern ScmObj SparseTableSet(SparseTable *st, ScmObj key,
                              ScmObj value, int flags);

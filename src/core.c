@@ -1,7 +1,7 @@
 /*
  * core.c - core kernel interface
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -33,9 +33,8 @@
 
 #define LIBGAUCHE_BODY
 #include "gauche.h"
-#include "gauche/arch.h"
 #include "gauche/paths.h"
-#include "gauche/builtin-syms.h"
+#include "gauche/priv/builtin-syms.h"
 
 /* GC_print_static_roots() is declared in private/gc_priv.h.  It is too much
    hassle to include it with other GC internal baggages, so we just declare
@@ -67,7 +66,6 @@ static struct {
 extern void Scm__InitModule(void);
 extern void Scm__InitModulePost(void);
 extern void Scm__InitSymbol(void);
-extern void Scm__InitKeyword(void);
 extern void Scm__InitNumber(void);
 extern void Scm__InitChar(void);
 extern void Scm__InitClass(void);
@@ -87,13 +85,17 @@ extern void Scm__InitCode(void);
 extern void Scm__InitVM(void);
 extern void Scm__InitAutoloads(void);
 extern void Scm__InitCollection(void);
+extern void Scm__InitComparator(void);
 
 extern void Scm_Init_libalpha(void);
 extern void Scm_Init_libbool(void);
 extern void Scm_Init_libchar(void);
+extern void Scm_Init_libcode(void);
+extern void Scm_Init_libcmp(void);
 extern void Scm_Init_libdict(void);
 extern void Scm_Init_libeval(void);
 extern void Scm_Init_libexc(void);
+extern void Scm_Init_libfmt(void);
 extern void Scm_Init_libio(void);
 extern void Scm_Init_liblazy(void);
 extern void Scm_Init_liblist(void);
@@ -103,6 +105,7 @@ extern void Scm_Init_libnum(void);
 extern void Scm_Init_libobj(void);
 extern void Scm_Init_libproc(void);
 extern void Scm_Init_librx(void);
+extern void Scm_Init_libsrfis(void);
 extern void Scm_Init_libstr(void);
 extern void Scm_Init_libsym(void);
 extern void Scm_Init_libsys(void);
@@ -118,11 +121,16 @@ static void init_cond_features(void);
 static int (*ptr_pthread_create)(void) = NULL;
 #endif
 
+/* flag to see if Scheme infrastructure is fully initialized or not */
+static int scheme_initialized = FALSE;
+
 /*
  * Entry point of initlalizing Gauche runtime
  */
 void Scm_Init(const char *signature)
 {
+    if (scheme_initialized) return;
+    
     /* make sure the main program links the same version of libgauche */
     if (strcmp(signature, GAUCHE_SIGNATURE) != 0) {
         Scm_Panic("libgauche ABI version mismatch: libgauche %s, expected %s",
@@ -148,7 +156,6 @@ void Scm_Init(const char *signature)
     Scm__InitVM();
     Scm__InitSymbol();
     Scm__InitModule();
-    Scm__InitKeyword();
     Scm__InitNumber();
     Scm__InitChar();
     Scm__InitClass();
@@ -165,13 +172,17 @@ void Scm_Init(const char *signature)
     Scm__InitRead();
     Scm__InitSignal();
     Scm__InitSystem();
+    Scm__InitComparator();
 
     Scm_Init_libalpha();
     Scm_Init_libbool();
     Scm_Init_libchar();
+    Scm_Init_libcode();
+    Scm_Init_libcmp();
     Scm_Init_libdict();
     Scm_Init_libeval();
     Scm_Init_libexc();
+    Scm_Init_libfmt();
     Scm_Init_libio();
     Scm_Init_liblazy();
     Scm_Init_liblist();
@@ -181,6 +192,7 @@ void Scm_Init(const char *signature)
     Scm_Init_libobj();
     Scm_Init_libproc();
     Scm_Init_librx();
+    Scm_Init_libsrfis();
     Scm_Init_libstr();
     Scm_Init_libsym();
     Scm_Init_libsys();
@@ -202,6 +214,13 @@ void Scm_Init(const char *signature)
     /* a trick to make sure the gc thread object is linked */
     ptr_pthread_create = (int (*)(void))GC_pthread_create;
 #endif
+
+    scheme_initialized = TRUE;
+}
+
+int Scm_InitializedP()
+{
+    return scheme_initialized;
 }
 
 /*=============================================================
@@ -359,10 +378,6 @@ void Scm_Exit(int code)
 
 void Scm_Cleanup(void)
 {
-    ScmVM *vm = Scm_VM();
-    ScmObj hp;
-    struct cleanup_handler_rec *ch;
-
     if (!cleanup.dirty) return;
     cleanup.dirty = FALSE;
 
@@ -371,13 +386,15 @@ void Scm_Cleanup(void)
        (A handler may intentionally raise an error to skip the rest of
        handlers).  We may change to break from SCM_FOR_EACH in case if
        we detect error in Scm_Apply. */
+    ScmVM *vm = Scm_VM();
+    ScmObj hp;
     SCM_FOR_EACH(hp, vm->handlers) {
         vm->handlers = SCM_CDR(hp);
         Scm_Apply(SCM_CDAR(hp), SCM_NIL, NULL);
     }
 
     /* Call the C-registered cleanup handlers. */
-    for (ch = cleanup.handlers; ch; ch = ch->next) {
+    for (struct cleanup_handler_rec *ch = cleanup.handlers; ch; ch = ch->next) {
         ch->handler(ch->data);
     }
 
@@ -448,13 +465,13 @@ Scm_AddFeature(const char *feature, const char *module)
 static void
 init_cond_features()
 {
-    int i;
     /* The initial cond-features list. */
     static struct {
         const char *feature;
         const char *module;
     } init_features[] = {
         { "gauche", NULL },
+        { "gauche-" GAUCHE_VERSION , NULL },
 
         /* Platform */
 #if   defined(GAUCHE_WINDOWS)
@@ -462,6 +479,29 @@ init_cond_features()
         { "gauche-windows", NULL }, /* for backward compatibility */
 #elif defined(__CYGWIN__)  /* cygwin is different enough to deserve this */
         { "gauche.os.cygwin", NULL },
+#endif
+
+        /* R7RS */
+        /* NB: We should probably make checking 'r7rs' trigger loading
+           r7rs module and setting up the environment. */
+        { "r7rs", NULL },
+            
+        /* R7RS Appendix B */
+        { "exact-closed", NULL },
+        // { "exact-complex", NULL }, /* not yet */
+        { "ieee-float", NULL },
+        { "full-unicode", NULL },
+        { "ratios", NULL },
+#if   defined(GAUCHE_WINDOWS)
+        { "windows", NULL },
+#else
+        { "posix", NULL },
+#endif
+        /* TODO: OS Flags, CPU arch flags and C memory model flags */
+#if   defined(WORDS_BIGENDIAN)
+        { "big-endian", NULL },
+#else
+        { "little-endian", NULL }, /* NB: r7rs say nothing on mixed endian */
 #endif
 
         /* Threads */
@@ -482,61 +522,12 @@ init_cond_features()
         { "gauche.net.tls", "rfc.tls" },
         { "gauche.net.tls.openssl", "rfc.tls" },
 #endif
-
-        /* SRFIs */
-        { "srfi-0", NULL },         /* autoloaded */
-        { "srfi-1", "srfi-1" },
-        { "srfi-2", NULL },         /* builtin */
-        { "srfi-4", "gauche.uvector" },
-        { "srfi-5", "srfi-5" },
-        { "srfi-6", NULL },         /* builtin */
-        { "srfi-7", NULL },         /* autoloaded */
-        { "srfi-8", NULL },         /* builtin */
-        { "srfi-9", "gauche.record" },
-        { "srfi-10", NULL },
-        { "srfi-11", "srfi-11" },
-        { "srfi-13", "srfi-13" },
-        { "srfi-14", "srfi-14" },
-        { "srfi-16", NULL },
-        { "srfi-17", NULL },
-        { "srfi-18", "gauche.threads" },
-        { "srfi-19", "srfi-19" },
-        { "srfi-22", NULL },
-        { "srfi-23", NULL },
-        { "srfi-25", "gauche.array" },
-        { "srfi-26", NULL },
-        { "srfi-27", "srfi-27" },
-        { "srfi-28", NULL },
-        { "srfi-29", "srfi-29" },
-        { "srfi-30", NULL },
-        { "srfi-31", NULL },
-        { "srfi-34", NULL },
-        { "srfi-35", NULL },
-        { "srfi-36", NULL },
-        { "srfi-37", "srfi-37" },
-        { "srfi-38", NULL },
-        { "srfi-39", "gauche.parameter" },
-        { "srfi-40", "util.stream" },
-        { "srfi-42", "srfi-42" },
-        { "srfi-43", "srfi-43" },
-        { "srfi-45", NULL },
-        { "srfi-55", NULL },
-        { "srfi-61", NULL },
-        { "srfi-62", NULL },
-        { "srfi-87", NULL },
-        { "srfi-98", "srfi-98" },
-        { "srfi-99", "gauche.record" },
         { NULL, NULL }
     };
 
-    for (i=0; init_features[i].feature; i++) {
+    for (int i=0; init_features[i].feature; i++) {
         Scm_AddFeature(init_features[i].feature, init_features[i].module);
     }
-}
-
-const char *Scm_HostArchitecture(void)
-{
-    return GAUCHE_ARCH;
 }
 
 #ifndef PATH_MAX
@@ -652,20 +643,8 @@ int main(void)
 void Scm_SimpleMain(int argc, const char *argv[],
                     const char *script, u_long flags)
 {
-    ScmModule *user = Scm_UserModule();
-    ScmObj mainproc, args;
-    ScmLoadPacket lpak;
-
     SCM_ASSERT(argc > 0);
-    if (Scm_Load("gauche-init.scm", 0, &lpak)) {
-        Scm_Printf(SCM_CURERR, "%s: Couldn't load gauche-init.scm: %A(%A).\n",
-                   argv[0],
-                   Scm_ConditionMessage(lpak.exception),
-                   Scm_ConditionTypeName(lpak.exception));
-        Scm_Exit(1);
-    }
-
-    args = Scm_InitCommandLine(argc, argv);
+    ScmObj args = Scm_InitCommandLine(argc, argv);
 
     if (script) {
         ScmObj s = SCM_MAKE_STR(script);
@@ -673,7 +652,8 @@ void Scm_SimpleMain(int argc, const char *argv[],
         Scm_LoadFromPort(SCM_PORT(p), SCM_LOAD_PROPAGATE_ERROR, NULL);
     }
 
-    mainproc = Scm_GlobalVariableRef(user, SCM_SYMBOL(SCM_INTERN("main")), 0);
+    ScmModule *user = Scm_UserModule();
+    ScmObj mainproc = Scm_GlobalVariableRef(user, SCM_SYMBOL(SCM_INTERN("main")), 0);
     if (SCM_PROCEDUREP(mainproc)) {
         ScmObj r = Scm_ApplyRec1(mainproc, args);
         if (SCM_INTP(r)) Scm_Exit(SCM_INT_VALUE(r));
@@ -682,4 +662,3 @@ void Scm_SimpleMain(int argc, const char *argv[],
         Scm_Exit(70);
     }
 }
-

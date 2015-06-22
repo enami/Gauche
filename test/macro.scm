@@ -19,6 +19,162 @@
   `(test ,msg ',expect (lambda () (unident (%macroexpand ,form)))))
 
 ;;----------------------------------------------------------------------
+;; 
+
+(test-section "primitive macro transformer")
+
+(define-syntax defmac  ; (defmac name args . body)
+  (primitive-macro-transformer
+   (lambda (form def-env use-env)
+     (let ([name (cadr form)]
+           [args (caddr form)]
+           [body (cdddr form)])
+       `(define-syntax ,name
+          (let ((,name (lambda ,args ,@body)))
+            (primitive-macro-transformer
+             (lambda (f d u) (apply ,name (cdr f))))))))))
+
+(defmac myif (test then else) `(if ,test ,then ,else))
+
+(test-macro "defmac if" (if a b c) (myif a b c))
+
+;; explicit renaming macros
+
+(test-section "ER macro basics")
+
+(define-syntax er-when
+  (er-macro-transformer
+   (^[f r c]
+     (let ([test (cadr f)]
+           [exprs (cddr f)])
+       `(,(r 'if) ,test (,(r 'begin) ,@exprs))))))
+
+(test "when - basic" #t (^[] (let ((x #f)) (er-when #t (set! x #t)) x)))
+(test "when - basic" #f (^[] (let ((x #f)) (er-when #f (set! x #t)) x)))
+
+(test "when - hygene" 3
+      (^[] (let ([if list]
+                 [begin list])
+             (er-when #t 1 2 3))))
+
+(define-syntax er-aif
+  (er-macro-transformer
+   (^[f r c]
+     (let ([test (cadr f)]
+           [then (caddr f)]
+           [else (cadddr f)])
+       `(,(r 'let) ((it ,test))
+           (,(r 'if) it ,then ,else))))))
+
+(test "aif - basic" 4 (^[] (er-aif (+ 1 2) (+ it 1) #f)))
+(test "aif - basic" 5 (^[] (let ((it 999)) (er-aif (+ 1 2) (+ it 2) #f))))
+
+(test "aif - hygene" 6
+      (^[] (let ((it 999)
+                 (let list))
+             (er-aif (+ 1 2) (+ it 3) #f))))
+(test "aif - nesting" #t
+      (^[] (let ([it 999])
+             (er-aif (+ 1 2) (er-aif (odd? it) it #f) #f))))
+
+(test-section "ER macro local scope")
+
+(let ([if list])
+  (let-syntax ([fake-if (er-macro-transformer
+                         (^[f r c] `(,(r 'if) ,@(cdr f))))])
+    (test "fake-if" '(1 2 3) (^[] (fake-if 1 2 3)))
+    (let ([if +])
+      (test "fake-if" '(4 5 6) (^[] (fake-if 4 5 6))))))
+
+(test-section "ER compare literals")
+
+;; from Clinger "Hygienic Macros Through Explicit Renaming"
+(define-syntax er-cond
+  (er-macro-transformer
+   (^[f r c]
+     (let1 clauses (cdr f)
+       (if (null? clauses)
+         `(,(r 'quote) ,(r 'unspecified))
+         (let* ([first (car clauses)]
+                [rest  (cdr clauses)]
+                [test  (car first)])
+           (cond [(and (or (symbol? test)
+                           (identifier? test))
+                       (c test (r 'else)))
+                  `(,(r 'begin) ,@(cdr first))]
+                 [else `(,(r 'if) ,test
+                         (,(r 'begin) ,@(cdr first))
+                         (er-cond ,@rest))])))))))
+
+(define (er-cond-tester1 x)
+  (er-cond [(odd? x) 'odd] [else 'even]))
+
+(test "er-cond 1" '(even odd)
+      (^[] (list (er-cond-tester1 0) (er-cond-tester1 1))))
+
+(let ([else #f])
+  (define (er-cond-tester2 x)
+    (er-cond [(odd? x) 'odd] [else 'even]))
+  (test "er-cond 2" '(unspecified odd)
+        (^[] (list (er-cond-tester2 0) (er-cond-tester2 1)))))
+
+(define-module er-test-mod
+  (export er-cond2)
+  (define-syntax er-cond2
+    (er-macro-transformer
+     (^[f r c]
+       (let1 clauses (cdr f)
+         (if (null? clauses)
+           `(,(r 'quote) ,(r 'unspecified))
+           (let* ([first (car clauses)]
+                  [rest  (cdr clauses)]
+                  [test  (car first)])
+             (cond [(and (or (symbol? test)
+                             (identifier? test))
+                         (c test (r 'else)))
+                    `(,(r 'begin) ,@(cdr first))]
+                   [else `(,(r 'if) ,test
+                           (,(r 'begin) ,@(cdr first))
+                           (er-cond2 ,@rest))]))))))))
+
+(define-module er-test-mod2
+  (use gauche.test)
+  (import er-test-mod)
+  (define (er-cond-tester1 x)
+    (er-cond2 [(odd? x) 'odd] [else 'even]))
+  (test "er-cond (cross-module)" '(even odd)
+        (^[] (list (er-cond-tester1 0) (er-cond-tester1 1)))))
+
+;; Introducing local bindings
+(let ((x 3))
+  (let-syntax ([foo (er-macro-transformer
+                     (^[f r c]
+                       (let1 body (cdr f)
+                         `(,(r 'let) ([,(r 'x) (,(r '+) ,(r 'x) 2)])
+                           (,(r '+) ,(r 'x) ,@body)))))])
+    (let ((x -1))
+      (test* "er-macro introducing local bindings" 4
+             (foo x)))))
+
+;; with-renaming
+;; Note: currently with-renaming dependns on util.match, too.
+(let ((unquote list)
+      (x 1)
+      (y 2))
+  (let-syntax ([foo (er-macro-transformer
+                     (^[f r c]
+                       (let ([a (cadr f)]
+                             [b (caddr f)])
+                         (with-renaming r
+                           (list x ,a y ,b '#(x ,a y ,b))))))])
+    (let ((list vector)
+          (x 10)
+          (y 20))
+      (test* "er-macro and with-renaming"
+             '(1 3 2 4 #(x 3 y 4))
+             (foo 3 4)))))
+
+;;----------------------------------------------------------------------
 ;; basic tests
 
 (test-section "basic expansion")
@@ -59,6 +215,34 @@
 (test-macro "repeat" (a d g (c 8 b) (f 8 e) (i 8 h))
             (repeat 1 (a b c) (d e f) (g h i)))
 
+(define-syntax repeat2 (syntax-rules () ;r7rs
+                         ((_ 0 (?a ?b ... ?c))    (?a (?b ...) ?c))
+                         ((_ 1 (?a ?b ... ?c ?d)) (?a (?b ...) ?c ?d))
+                         ((_ 2 (?a ?b ... . ?c))  (?a (?b ...) ?c))
+                         ((_ 3 (?a ?b ... ?c ?d . ?e))  (?a (?b ...) ?c ?d ?e))
+                         ((_ ?x ?y) ho)))
+
+(test-macro "repeat2" (a (b c d e f) g)
+            (repeat2 0 (a b c d e f g)))
+(test-macro "repeat2" (a () b)
+            (repeat2 0 (a b)))
+(test-macro "repeat2" ho
+            (repeat2 0 (a)))
+(test-macro "repeat2" (a (b c d e) f g)
+            (repeat2 1 (a b c d e f g)))
+(test-macro "repeat2" (a () b c)
+            (repeat2 1 (a b c)))
+(test-macro "repeat2" ho
+            (repeat2 1 (a b)))
+(test-macro "repeat2" (a (b c d e f g) ())
+            (repeat2 2 (a b c d e f g)))
+(test-macro "repeat2" (a (b c d e) f g ())
+            (repeat2 3 (a b c d e f g)))
+(test-macro "repeat2" (a (b c d) e)
+            (repeat2 2 (a b c d . e)))
+(test-macro "repeat2" (a (b) c d e)
+            (repeat2 3 (a b c d . e)))
+
 (define-syntax nest1 (syntax-rules ()
                        ((_ (?a ...) ...)        ((?a ... z) ...))))
 
@@ -78,6 +262,27 @@
 (test-macro "nest3" ((((b c d e) (g h i)) (() (l m n) (p)) () ((r)))
                      ((a f) (j k o) () (q)))
             (nest3 ((a b c d e) (f g h i)) ((j) (k l m n) (o p)) () ((q r))))
+
+(define-syntax nest4 (syntax-rules () ; r7rs
+                       ((_ ((?a ?b ... ?c) ... ?d))
+                        ((?a ...) ((?b ...) ...) (?c ...) ?d))))
+
+(test-macro "nest4"((a d f)  
+                    ((b) () (g h i))
+                    (c e j)
+                    (k l m))
+            (nest4 ((a b c) (d e) (f g h i j) (k l m)))) 
+
+(define-syntax nest5 (syntax-rules () ; r7rs
+                       ((_ (?a (?b ... ?c ?d) ... . ?e))
+                        (?a ((?b ...) ...) (?c ...) (?d ...) ?e))))
+(test-macro "nest5" (z
+                     ((a) (d e) ())
+                     (b f h)
+                     (c g i)
+                     j)
+            (nest5 (z (a b c) (d e f g) (h i) . j)))
+
 
 (define-syntax mixlevel1 (syntax-rules ()
                            ((_ (?a ?b ...)) ((?a ?b) ...))))
@@ -101,25 +306,36 @@
             (mixlevel3 1 (2 3 4 5 6) (7 8 9 10)))
 
 ;; test that wrong usage of ellipsis is correctly identified
-(test "bad epplisis 1" (test-error)
+(test "bad ellipsis 1" (test-error)
       (lambda () 
         (eval '(define-syntax badellipsis
                  (syntax-rules () (t) (3 ...)))
               (interaction-environment))))
-(test "bad epplisis 2" (test-error)
+(test "bad ellipsis 2" (test-error)
       (lambda ()
         (eval '(define-syntax badellipsis
                  (syntax-rules () (t a) (a ...)))
               (interaction-environment))))
-(test "bad epplisis 3" (test-error)
+(test "bad ellipsis 3" (test-error)
       (lambda ()
         (eval '(define-syntax badellipsis
                  (syntax-rules () (t a b ...) (a ...)))
               (interaction-environment))))
-(test "bad epplisis 4" (test-error)
+(test "bad ellipsis 4" (test-error)
       (lambda ()
         (eval '(define-syntax badellipsis
                  (syntax-rules () (t a ...) ((a ...) ...)))
+              (interaction-environment))))
+
+(test "bad ellipsis 5" (test-error)
+      (lambda ()
+        (eval '(define-syntax badellipsis
+                 (syntax-rules () ((a ... b ...)) ((a ...) (b ...))))
+              (interaction-environment))))
+(test "bad ellipsis 6" (test-error)
+      (lambda ()
+        (eval '(define-syntax badellipsis
+                 (syntax-rules () ((... a b)) (... a b )))
               (interaction-environment))))
 
 (define-syntax hygiene (syntax-rules ()
@@ -141,6 +357,25 @@
 (test-macro "vect2" #(a c e b d f) (vect2 #(#(a b) #(c d) #(e f))))
 (test-macro "vect2"  (a c e b d f) (vect2 #((a b) (c d) (e f))))
 (test-macro "vect2"  (#(a c e) #(b d f)) (vect2 (#(a b) #(c d) #(e f))))
+
+(define-syntax vect3 (syntax-rules ()
+                       ((_ 0 #(?a ... ?b)) ((?a ...) ?b))
+                       ((_ 0 ?x) ho)
+                       ((_ 1 #(?a ?b ... ?c ?d ?e)) (?a (?b ...) ?c ?d ?e))
+                       ((_ 1 ?x) ho)))
+
+(test-macro "vect3" ((a b c d e) f)
+            (vect3 0 #(a b c d e f)))
+(test-macro "vect3" (() a)
+            (vect3 0 #(a)))
+(test-macro "vect3" ho
+            (vect3 0 #()))
+(test-macro "vect3" (a (b c) d e f)
+            (vect3 1 #(a b c d e f)))
+(test-macro "vect3" (a () b c d)
+            (vect3 1 #(a b c d)))
+(test-macro "vect3" ho
+            (vect3 1 #(a b c)))
 
 (define-syntax dot1 (syntax-rules ()
                       ((_ (?a . ?b)) (?a ?b))
@@ -183,6 +418,21 @@
 
 (test "qq1" '()  (lambda () (qq1 '())))
 (test "qq2" '#() (lambda () (qq2 '())))
+
+;; R7RS style alternative ellipsis
+(test-section "alternative ellipsis")
+
+(define-syntax alt-elli1
+  (syntax-rules ooo ()
+    [(_ ... ooo) '((... ...) ooo)]))
+
+(test "alt-elli1" '((a a) (b b) (c c)) (lambda () (alt-elli1 a b c)))
+
+(define-syntax alt-elli2
+  (syntax-rules ::: ()
+    [(_ ... :::) '((... ...) :::)]))
+
+(test "alt-elli2" '((a a) (b b) (c c)) (lambda () (alt-elli2 a b c)))
 
 ;;----------------------------------------------------------------------
 ;; cond, taken from R5RS section 7.3
@@ -456,6 +706,26 @@
       (lambda ()
         (let-syntax ([if fi]) (if #f 'ok 'ng))))
 
+;; Macro-generating-macro scoping
+;; Currently it's not working.
+(define-syntax mgm-bar
+  (syntax-rules ()
+    ((_ . xs) '(bad . xs))))
+
+(define-syntax mgm-foo
+  (syntax-rules ()
+    ((_ xs)
+     (letrec-syntax ((mgm-bar
+                      (syntax-rules ()
+                        ((_ (%x . %xs) %ys)
+                         (mgm-bar %xs (%x . %ys)))
+                        ((_ () %ys)
+                         '%ys))))
+       (mgm-bar xs ())))))
+
+'(test "macro-generating-macro scope" '(x y)
+      (lambda () (mgm-foo (x y))))
+
 ;;----------------------------------------------------------------------
 ;; macro and internal define
 
@@ -680,9 +950,9 @@
   (syntax-rules ()
     ((_ x y)
      (let-syntax
-	 ((helper
-	   (syntax-rules ()
-	     ((_ u) (+ x u)))))
+         ((helper
+           (syntax-rules ()
+             ((_ u) (+ x u)))))
        (helper y)))))
 
 (test "lexical scope" 5
@@ -692,9 +962,9 @@
   (syntax-rules ()
     ((_ var body)
      (let-syntax
-	 ((helper
-	   (syntax-rules ()
-	     ((_) (lambda (var) body)))))
+         ((helper
+           (syntax-rules ()
+             ((_) (lambda (var) body)))))
        (helper)))))
 
 (test "lexical scope" 5
@@ -704,13 +974,51 @@
   (syntax-rules ()
     ((_ var body)
      (let-syntax
-	 ((helper
-	   (syntax-rules ()
-	     ((_ vvar bbody) (lambda (vvar) bbody)))))
+         ((helper
+           (syntax-rules ()
+             ((_ vvar bbody) (lambda (vvar) bbody)))))
        (helper var body)))))
 
 (test "passing by parameters" 5
       (lambda () ((mdm-bar-m3 z (+ z 1)) 4)))
+
+;; Macro defining toplevel macros.
+(define-syntax defMyQuote
+  (syntax-rules ()
+    ((_ name)
+     (begin
+       (define-syntax TEMP
+         (syntax-rules ()
+           ((_ arg)
+            `arg)))
+       (define-syntax name
+         (syntax-rules ()
+           ((_ arg)
+            (TEMP arg))))))))
+
+(defMyQuote MyQuote)
+
+(test "macro defining a toplevel macro" '(1 2 3)
+      (lambda () (MyQuote (1 2 3))))
+
+;; Macro inserting toplevel identifier
+(define-module defFoo-test
+  (export defFoo)
+  (define-syntax defFoo
+    (syntax-rules ()
+      [(_ accessor)
+       (begin
+         (define foo-toplevel 42)
+         (define (accessor) foo-toplevel))])))
+
+(import defFoo-test)
+(defFoo get-foo)
+
+(test "macro injecting toplevel definition" '(#f #f 42)
+      (lambda ()
+        (list (global-variable-ref (current-module) 'foo-toplevel #f)
+              (global-variable-ref (find-module 'defFoo-test) 'foo-toplevel #f)
+              (get-foo))))
 
 ;;----------------------------------------------------------------------
 ;; identifier comparison

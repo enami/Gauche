@@ -1,7 +1,7 @@
 ;;;
 ;;; procedure.scm - auxiliary procedure utilities.  to be autoloaded.
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -32,17 +32,17 @@
 ;;;
 
 (define-module gauche.procedure
-  (use srfi-1)
   (export compose .$ complement pa$ map$ for-each$ apply$
           count$ fold$ fold-right$ reduce$ reduce-right$
           filter$ partition$ remove$ find$ find-tail$
           any$ every$ delete$ member$ assoc$
           any-pred every-pred
-          applicable? arity procedure-arity-includes?
+          arity procedure-arity-includes?
           <arity-at-least> arity-at-least? arity-at-least-value
           case-lambda ~ ref* disasm
           generator-fold generator-fold-right
           generator-for-each generator-map
+          generator-find
           ;; for the backward compatibility
           port-fold port-fold-right port-for-each port-map
           ))
@@ -132,21 +132,6 @@
      (define name (curry-lambda formals . body))]))
 |#
 
-;; Applicability -------------------------------------------
-
-;; NB: This takes a list of classes.  But what if we support eqv-specilizer?
-;; One idea is to let the caller wrap a concrete instance.  We'll see...
-(define (applicable? proc . arg-types)
-  (define method-applicable?
-    (with-module gauche.object method-applicable-for-classes?))
-  (let1 c (class-of proc)
-    (cond [(eq? c <procedure>)
-           (procedure-arity-includes? proc (length arg-types))]
-          [(eq? c <generic>)
-           (any (^m (apply method-applicable? m arg-types)) (~ proc'methods))]
-          [(eq? c <method>)  (apply method-applicable? m arg-types)]
-          [else (apply applicable? object-apply c arg-types)])))
-
 ;; Procedure arity -----------------------------------------
 
 (define-class <arity-at-least> ()
@@ -163,9 +148,14 @@
 
 (define (arity proc)
   (cond [(or (is-a? proc <procedure>) (is-a? proc <method>))
-         (if (ref proc 'optional)
-           (make <arity-at-least> :value (ref proc 'required))
-           (ref proc 'required))]
+         (if-let1 clambda (case-lambda-info proc)
+           (map (^[info] (if (cadr info)
+                           (make <arity-at-least> :value (car info))
+                           (car info)))
+                clambda)
+           (if (ref proc 'optional)
+             (make <arity-at-least> :value (ref proc 'required))
+             (ref proc 'required)))]
         [(is-a? proc <generic>) (map arity (ref proc 'methods))]
         [else (errorf "cannot get arity of ~s" proc)]))
 
@@ -179,40 +169,39 @@
       (any check a)
       (check a))))
 
-;; ~, ref*  ----------------------------------------------------
-;;  (~ a b c d) => (ref (ref (ref a b) c) d)
-;;  TODO: This is here because case-lambda used to be here as well.
-;;  This should really belong to src/objlib.scm.  However, we can't
-;;  do that in 0.9.2, since src/objlib.scm needs to be complied with
-;;  0.9.1.  Move this after 0.9.2 release.
-(define ~
-  (getter-with-setter
-   (case-lambda
-     [(obj selector) (ref obj selector)]
-     [(obj selector . more) (apply ~ (ref obj selector) more)])
-   (case-lambda
-     [(obj selector val) ((setter ref) obj selector val)]
-     [(obj selector selector2 . rest)
-      (apply (setter ~) (ref obj selector) selector2 rest)])))
+;; source-code -------------------------------------------------
+;; Take the source code from a closure.
 
-(define ref* ~)                         ;for the backward compatibility
+(define (source-code proc)
+  (and-let* ([ (closure? proc) ]
+             [def (assq-ref (~ (closure-code proc)'info) 'definition)]
+             [src (assq-ref def 'source-info)])
+    (let loop ([src src])
+      (if-let1 orig ((with-module gauche.internal pair-attribute-get)
+                     src 'original #f)
+        (loop orig)
+        src))))
+
+(define (source-location proc)
+  (and-let* ([src (source-code proc)]
+             [ (pair? src) ])
+    ((with-module gauche.internal pair-attribute-get) src 'source-info #f)))
 
 ;; disassembler ------------------------------------------------
 ;; I'm not sure whether this should be here or not, but fot the time being...
 
 (define (disasm proc)
   (define dump (with-module gauche.internal vm-dump-code))
-  (define (dump-case-lambda min-reqargs proc-array)
+  (define (dump-case-lambda infos)
     (print "CASE-LAMBDA")
-    (let1 len (vector-length proc-array)
-      (do ([i 0 (+ i 1)])
-          ((= i len) #t)
-        (when (closure? (vector-ref proc-array i))
-          (if (= i (- len 1))
-            (print ";;; numargs >= " (+ i min-reqargs))
-            (print ";;; numargs = " (+ i min-reqargs)))
-          (dump (closure-code (vector-ref proc-array i)))))))
-
+    (dolist [info infos]
+      (apply [^(reqargs optarg proc)
+               (when (closure? proc)
+                 (if optarg
+                   (print ";;; numargs > " reqargs)
+                   (print ";;; numargs = " reqargs))
+                 (dump (closure-code proc)))]
+             info)))
   (cond
    [(closure? proc) (print "CLOSURE " proc) (dump (closure-code proc))]
    [(is-a? proc <method>)
@@ -225,17 +214,7 @@
       (print ">> method " m)
     (cond [(method-code m) => dump]
           [else (print "(defined in C)")]))]
-   [(and (subr? proc)
-         (let1 info (procedure-info proc)
-           ;; NB: Detect case-lamdba.  The format of procedure-info of
-           ;; case-lambda is tentative, and may be changed in future.
-           ;; See the comment of make-case-lambda-dispatcher in intlib.stub.
-           (and (pair? info)
-                (pair? (cdr info))
-                (integer? (cadr info))
-                (pair? (cddr info))
-                (vector? (caddr info))
-                (apply dump-case-lambda (cdr info)))))]
+   [(case-lambda-info proc) => dump-case-lambda]
    [else (print "Disassemble not applicable for " proc)])
   (values))
 
@@ -308,6 +287,12 @@
           (if (eof-object? items)
             (reverse r)
             (loop (cons (apply fn items) r))))))))
+
+(define (generator-find pred gen)
+  (let loop ([item (gen)])
+    (cond [(eof-object? item) #f]
+          [(pred item) item]
+          [else (loop (gen))])))
 
 ;; For the backward compatibility
 (define port-fold generator-fold)

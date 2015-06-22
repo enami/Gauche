@@ -1,14 +1,16 @@
-@node Library modules - Gauche extensions, Library modules - SRFIs, Library modules - Overview, Top
+@node Library modules - Gauche extensions, Library modules - R7RS integration, Library modules - Overview, Top
 @chapter Library modules - Gauche extensions
 @c NODE ライブラリモジュール - Gauche拡張モジュール
 
 @c ----------------------------------------------------------------------
 @menu
 * Arrays::                      gauche.array
+* Importing gauche built-ins::  gauche.base
 * Character code conversion::   gauche.charconv
 * Generating C code::           gauche.cgen
 * Collection framework::        gauche.collection
 * Configuration parameters::    gauche.config
+* Generating build files::      gauche.configure
 * Dictionary framework::        gauche.dictionary
 * Low-level file operations::   gauche.fcntl
 * Generators::                  gauche.generator
@@ -39,7 +41,7 @@
 * Virtual ports::               gauche.vport
 @end menu
 
-@node Arrays, Character code conversion, Library modules - Gauche extensions, Library modules - Gauche extensions
+@node Arrays, Importing gauche built-ins, Library modules - Gauche extensions, Library modules - Gauche extensions
 @section @code{gauche.array} - Arrays
 @c NODE 配列, @code{gauche.array} - 配列
 
@@ -184,7 +186,7 @@ but they are space efficient.
 @end deftp
 
 
-@deftp {Reader syntax} @code{#,(<array> @var{shape} @var{obj} @dots{})}
+@deftp {Reader Syntax} @code{#,(<array> @var{shape} @var{obj} @dots{})}
 @c EN
 An array is written out in this format.  (Substitute @code{<array>} for
 @code{<u8array>} if the array is @code{<u8array>}, etc.)
@@ -839,6 +841,22 @@ a square matrix, and @var{pow} must be a nonnegative exact integer.
 
 @defun array-div-left a b
 @defunx array-div-right a b
+@c EN
+Inverse of @code{array-mul}; @code{array-div-left}
+rrturns a matrix @code{M} such that @code{(array-mul B M)}
+equals to @code{A}, and @code{array-div-right} returns
+a matrix @code{M} such that @code{(array-mul M B)} equals to @code{A}.
+@var{A} and @var{B} must be a 2-dimensional square matrix.
+If @code{B} isn't regular, an error is thrown.
+@c JP
+@code{array-mul}の逆を行います。
+@code{array-div-left}は@code{(array-mul B M)}が@code{A}と
+等しくなるような行列@code{M}を、
+@code{array-div-right}は@code{(array-mul M B)}が@code{A}と
+等しくなるような行列@code{M}を返します。
+@var{A}と@var{B}は2次元の正方行列でなければなりません。
+@var{B}が正則行列でない場合はエラーが通知されます。
+@c COMMON
 @end defun
 
 @defun array-add-elements array array-or-scalar @dots{}
@@ -854,7 +872,99 @@ a square matrix, and @var{pow} must be a nonnegative exact integer.
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Character code conversion, Generating C code, Arrays, Library modules - Gauche extensions
+@node Importing gauche built-ins, Character code conversion, Arrays, Library modules - Gauche extensions
+@section @code{gauche.base} - Importing gauche built-ins
+@c NODE Gauche組み込み関数のインポート, @code{gauche.base} - Gauche組み込み関数のインポート
+
+@deftp {Module} gauche.base
+@mdindex gauche.base
+@c EN
+This module exports Gauche built-in procedures and syntaxes, so that
+they can be imported to other modules that don't inherit @code{gauche} module.
+
+All the bindings available in the @code{gauche} module are exported,
+except @code{import}, which is renamed to @code{gauche:import} to
+avoid conflict with R7RS @code{import}.
+@c JP
+このモジュールはGaucheの組み込み手続きと構文をexportし、
+@code{gauche}モジュールを継承しない他のモジュールからもimportして
+Gaucheの組み込み機能を使えるようにします。
+
+@code{gauche}モジュールで見えるすべての束縛のうち、@code{import}を除いたものは
+そのままexportされます。@code{import}はR7RSの@code{import}との
+衝突を避けるため@code{gauche:import}としてexportされます。
+@c COMMON
+@end deftp
+
+@c EN
+Typical Gauche code doesn't need this module, for built-ins are available
+by default through inheritance.
+A newly created module @emph{inherits} the @code{gauche} module by default.
+(@xref{Module inheritance}, for the details.)
+@c JP
+通常のGaucheコードはこのモジュールを必要としません。組み込み関数はモジュール継承によって、
+何もしなくても使えるようになっています。
+新たに作られるモジュールは、何も指定しなければ@code{gauche}モジュールを
+継承するからです (詳しくは@ref{Module inheritance}参照)。
+@c COMMON
+
+@c EN
+Sometimes you need a module that doesn't inherit the @code{gauche} module,
+yet you want to use Gauche built-in features.  Particulary, R7RS libraries
+and programs require any bindings to be explicitly imported,
+so R7RS's @code{import} and @code{define-library} sets up the module not
+to inherit the @code{gauche} module.   In R7RS code, you need
+@code{(import (gauche base))} to use Gauche's built-in features.
+@c JP
+しばしば、@code{gauche}モジュールを継承しないけれどGaucheの組み込み関数を使いたい
+という場合があります。特にR7RSライブラリとプログラムは、そこで使う束縛をすべて
+陽にimportする必要があります。従ってGaucheでも、R7RSの@code{import}と
+@code{define-library}は@code{gauche}モジュールを継承しないモジュールを設定します。
+R7RSコードでGaucheの組み込み機能を使うには、
+@code{(import (gauche base))}とする必要があります。
+@c COMMON
+
+@c EN
+Another use case is to eliminate some built-in bindings, yet
+keep the rest of bindings accessible, in your module.
+For example, the following setup creates @code{almost-gauche} module
+that has almost all default bindings except @code{string-scan}
+and @code{string-split}:
+@c JP
+別の用途としては、自分のモジュールで、Gaucheの組み込み機能のうちいくつかを隠したい、
+といったばあ愛があります。例えば次のコードは、Gaucheの組み込み機能のうち
+@code{string-scan}と@code{string-split}だけが見えない
+@code{almost-gauche}というモジュールを作ります。
+@c COMMON
+
+@example
+(define-module almost-gauche
+  (use scheme.r5rs)
+  (use gauche.base :except (string-scan string-split)
+                   :rename ((gauche:import import)))
+  (extend)
+  )
+(select-module almost-gauche)
+
+;; your code here
+@end example
+
+@c EN
+Note the empty @code{extend}; it empties the module's inheritance.
+(The @code{:rename} option of @code{gauche.base} is just to get
+the original name of @code{import} back in @code{almost-gauche} module;
+if you don't use @code{import} directly, you won't need it.)
+@c JP
+空の@code{extend}フォームに注目してください。このフォームで、
+モジュールの継承リストを空にします。
+(@code{gauche.base}の@code{:rename}オプションは、@code{almost-gauche}内で
+元の@code{import}の名前を使えるようにするためのものです。@code{import}を直接
+使わないのならこの@code{:rename}オプションは不要です。)
+@c COMMON
+
+
+@c ----------------------------------------------------------------------
+@node Character code conversion, Generating C code, Importing gauche built-ins, Library modules - Gauche extensions
 @section @code{gauche.charconv} - Character Code Conversion
 @c NODE 文字コード変換, @code{gauche.charconv} - 文字コード変換
 
@@ -893,9 +1003,9 @@ UTF-8 (Unicode 3.2))間の変換を自前で持つようになりました。
 @end deftp
 
 @menu
-* Supported character encoding schemes::
-* Autodetecting the encoding scheme::
-* Conversion ports::
+* Supported character encoding schemes::  
+* Autodetecting the encoding scheme::  
+* Conversion ports::            
 @end menu
 
 @node Supported character encoding schemes, Autodetecting the encoding scheme, Character code conversion, Character code conversion
@@ -1575,9 +1685,9 @@ During the processing, a "current unit" is kept in a parameter
 @code{cgen-current-unit}, and most cgen APIs implicitly work to it.
 
 The following slot are for public use.  They are used to tailor
-the output.  Usually you set those slots at initializatoin time.
+the output.  Usually you set those slots at initialization time.
 The effect is undefined if you change them in the middle of
-the code geneartion process.
+the code generation process.
 
 @defivar {<cgen-unit>} name
 A string to name this unit.  This is used for the default name
@@ -1597,7 +1707,7 @@ is used as the file name, with extension @code{.c} or @code{.h}
 is attached, respectively.
 
 To get the file names to be generated, use @code{cgen-unit-c-file}
-and @code{cugen-unit-h-file} generic functions, instead of reading
+and @code{cgen-unit-h-file} generic functions, instead of reading
 these slots.
 @end defivar
 
@@ -1727,8 +1837,9 @@ if you don't use other parts of the @code{cgen} modules.
 
 @defun cgen-safe-name string
 @defunx cgen-safe-name-friendly string
+@defunx cgen-safe-string string
 @defunx cgen-safe-comment string
-Escapes characters invalid in C identifiers or C comments.
+Escapes characters invalid in C identifiers, C string literals or C comments.
 
 With @code{cgen-safe-name}, characters other than ASCII alphabets
 and digits are converted to a form @code{_XX}, where @code{XX} is
@@ -1750,13 +1861,33 @@ both @code{read-line} and @code{read_line} map to @code{read_line}.
 Use this only when you think some human needs to read the generated
 C code (which is not recommended, by the way.)
 
-Much simpler is @code{c-safe-comment}, which just converts
+If you want to write out a Scheme string as a C string literal,
+you can use @code{cgen-safe-string}.  It escapes control
+characters and non-ascii characters.  If the Scheme string contains
+a character beyond ASCII, it is encoded in Gauche's native encoding.
+(NB: It also escapes @code{?}, to avoid accidenal formation of
+C trigraphs).
+
+Much simpler is @code{cgen-safe-comment}, which just converts
 @code{/*} and @code{*/} into @code{/ *} and @code{* /} (a space
 between those two characters), so that it won't terminate the
 comment inadvertently.  (Technically, escaping only @code{*/} suffice,
 but some simple-minded C parser might be confused by @code{/*} in the
 comments).   The conversion isn't injective as well.
+
+@example
+(cgen-safe-name "char-alphabetic?")
+  @result{} "char_2dalphabetic_3f"
+(cgen-safe-name-friendly "char-alphabetic?")
+  @result{} "char_alphabeticP"
+(cgen-safe-string "char-alphabetic?")
+  @result{} "\"char-alphabetic\\077\""
+
+(cgen-safe-comment "*/*"
+  @result{} "* / *"
+@end example
 @end defun
+
 
 If you want to conditionalize a fragment by C preprocessor
 @code{#ifdef}s, use the following macro:
@@ -1852,7 +1983,7 @@ If you don't specialize any one of these method, it doesn't
 generate code in that part.
 @end deffn
 
-Once you define your subclass and create an instace,
+Once you define your subclass and create an instance,
 you can submit it to the current cgen unit by this procedure:
 
 @defun cgen-add! cgen-node
@@ -2106,8 +2237,117 @@ typechecks the @var{c-expr} according to the @var{cgen-type}.
 @node C in S expression,  , Conversions between Scheme and C, Generating C code
 @subsection CiSE - C in S expression
 
+Some low-level routines in Gauche are implemented in C, but they're
+written in S-expression.  We call it ``C in S expression'', or @emph{CiSE}.
+
+The advantage of using S-expression is its readability, obviously.
+Another advantage is that it allows us to write macros as
+S-expr to S-expr translation, just like the legacy Scheme macros.
+That's a powerful feature---effectively you can extend C language
+to suit your needs.
+
+The @code{gauche.cgen.cise} module provides a set of tools to convert
+CiSE code into C code to be passed to the C compiler.  It also has
+some support to overcome C quirks, such as preparing forward
+declarations.
+
+Currently, we don't do rigorous check for CiSE; you can pass a
+CiSE that yields invalid C code, which will cause the C compiler
+to emit errors.  The translater inserts line directives by default so the
+C compiler error message points to the location of original (CiSE) source
+instead of generated code; however, sometimes you need to look at
+the generated code to figure out what went wrong.  We hope this
+will be improved in future.
+
+In Gauche source code, CiSE is extensively used in precompiled Scheme
+files and recognized by the precompiler (@code{precomp}).  However,
+@code{gauche.cgen.cise} is an independent module only relies
+on @code{gauche.cgen} basic features, so you can plug it
+to your own C code generating programs.
+
+@menu
+* CiSE overview::               
+* CiSE syntax::                 
+* CiSE procedures::             
+@end menu
+
+@node CiSE overview, CiSE syntax, C in S expression, C in S expression
+@subsubsection CiSE overview
+
+Before diving into the details, it's easier to grasp
+some basic concepts.
+
+A @emph{CiSE fragment} is an S-expression that follows
+CiSE syntax (@xref{CiSE syntax}).  A CiSE fragment can be
+translated to C code by @code{cise-render} to a C code fragment.
+Note that some translation may not be local, meaning it may
+want to emit forward declarations before other C code fragments.
+So, the full translation requires buffering---you process all
+the CiSE fragments and saves output, emit forward declarations,
+then emit the saved C code fragments.  We have a wrapper procedure,
+@code{cise-translate}, to take care of it, but for your purpose
+you may want to roll your own wrapper.
+
+A @emph{CiSE macro} is a Scheme code that translates a CiSE
+fragment to another CiSE fragment.  There are number of
+predefined CiSE macros.  You can add your own CiSE macros by
+utilities such as
+@code{define-cise-stmt} and @code{define-cise-expr}.
+
+A @emph{CiSE ambient} is a bundle of information that affects
+fragment translation.  It contains CiSE macro definitions,
+and also it keeps track of forward declarations.
+
+@node CiSE syntax, CiSE procedures, CiSE overview, C in S expression
+@subsubsection CiSE syntax
 
 
+@node CiSE procedures,  , CiSE syntax, C in S expression
+@subsubsection CiSE procedures
+
+
+@deftp {Parameter} cise-ambient
+@end deftp
+
+@defun cise-default-ambient
+@end defun
+
+@defun cise-ambient-copy ambient
+@end defun
+
+@defun cise-ambient-decl-strings ambient
+@end defun
+
+@deftp {Parameter} cise-emit-source-line
+@end deftp
+
+@defun cise-render cise-fragment :optional port context
+@end defun
+
+@defun cise-render-to-string cise-fragment :optional context
+@end defun
+
+@defun cise-render-rec cise-fragment stmt/expr env
+@end defun
+
+@defun cise-translate inp outp :key environment
+@end defun
+
+
+@defun cise-register-macro! name expander :optional ambient
+@end defun
+
+@defun cise-lookup-macro name :optional ambient
+@end defun
+
+@defmac define-cise-stmt name [env] clause @dots{} [:where definition @dots{}]
+@defmacx define-cise-expr name [env] clause @dots{} [:where definition @dots{}]
+@defmacx define-cise-toplevel name [env] clause @dots{} [:where definition @dots{}]
+@end defmac
+
+@defmac define-cise-macro (name form env) body @dots{}
+@defmacx define-cise-macro name name2
+@end defmac
 
 @c ----------------------------------------------------------------------
 @node Collection framework, Configuration parameters, Generating C code, Library modules - Gauche extensions
@@ -2118,7 +2358,7 @@ typechecks the @var{c-expr} according to the @var{cgen-type}.
 @mdindex gauche.collection
 @c EN
 This module provides a set of generic functions (GFs) that iterate over
-various collections.   The Scheme standard [R5RS] has some iterative
+various collections.   The Scheme standard [R7RS] has some iterative
 primitives such as @code{map} and @code{for-each},
 and SRFI-1 (@xref{List library} adds a rich set of such functions,
 but they work only on lists.
@@ -2258,11 +2498,11 @@ takes a collection class argument and returns the collection of the class.
 @end deftp
 
 @menu
-* Mapping over collection::
-* Selection and searching in collection::
-* Miscellaneous operations on collection::
-* Fundamental iterator creators::
-* Implementing collections::
+* Mapping over collection::     
+* Selection and searching in collection::  
+* Miscellaneous operations on collection::  
+* Fundamental iterator creators::  
+* Implementing collections::    
 @end menu
 
 @node Mapping over collection, Selection and searching in collection, Collection framework, Collection framework
@@ -2624,7 +2864,7 @@ The idea of passing the return type is taken from CommonLisp's @code{map}
 function, but taking a class metaobject, @code{map-to} is much flexible
 to extend using method dispatch.
 This protocol (``-to'' variant takes a class metaobject
-for the result collection) is used thoughout the collection framework.
+for the result collection) is used throughout the collection framework.
 @c JP
 そこで、結果の型を明示的に指定する@code{map-to}という別のメソッドを定義しました。
 結果の型を渡すのは、CommonLispの@code{map}関数にならっていますが、
@@ -2670,7 +2910,7 @@ Returns a minimum or maximum element in the collection @var{coll}.
 
 A one-argument procedure @var{key}, whose default is @code{identity},
 is applied for each element to obtain a comparison value.
-Then a compaison value is compared by a two-argument procedure
+Then a comparison value is compared by a two-argument procedure
 @var{compare}, whose default is @code{<}.
 If the collection has zero or one element, the @var{compare} procedure
 is never called.
@@ -2972,7 +3212,7 @@ to return elements in order, from 0-th element to the last element.
 If a keyword argument @var{start} is given, however, the iteration
 begins from @var{start}-th element and ends at the last element.
 If the collection is not a sequence, the iteration order is
-arbtrary, and @var{start} argument has no effect.
+arbitrary, and @var{start} argument has no effect.
 @c JP
 コレクションがシーケンスでもある場合、インクリメント手続きはシーケンスの順番に要素を取り出します。
 キーワード引数@var{start}が与えられていればイテレーションの範囲は
@@ -3245,7 +3485,7 @@ Gaucheのオブジェクトシステムとうまく調和しません。
 The current implementation is close to the iterator object approach,
 but using closures instead of iterator objects so that avoiding
 dispatching in the inner loop.  Also it allows the iterator
-implementator to take care of the resource problem.
+implementor to take care of the resource problem.
 @c JP
 現在の実装はイテレータオブジェクトアプローチに近いですが、イテレータオブジェクトを
 作る代わりにクロージャを使うことで内部のループでのメソッドディスパッチを
@@ -3324,7 +3564,7 @@ performance.
 @c COMMON
 
 @c ----------------------------------------------------------------------
-@node Configuration parameters, Dictionary framework, Collection framework, Library modules - Gauche extensions
+@node Configuration parameters, Generating build files, Collection framework, Library modules - Gauche extensions
 @section @code{gauche.config} - Configuration parameters
 @c NODE コンフィグレーション情報, @code{gauche.config} - コンフィグレーション情報
 
@@ -3362,7 +3602,252 @@ without any argument from the shell, to find out the valid options.
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Dictionary framework, Low-level file operations, Configuration parameters, Library modules - Gauche extensions
+@node Generating build files, Dictionary framework, Configuration parameters, Library modules - Gauche extensions
+@section @code{gauche.configure} - Generating build files
+@c NODE ビルド用ファイルの生成, @code{gauche.configure} - ビルド用ファイルの生成
+
+@deftp {Module} gauche.configure
+@mdindex gauche.configure
+This is a utility library to write @file{configure} script, an alternative
+of autoconf-generated @file{configure} shell script.
+It is used to check the system properties and generates build files
+(usually @file{Makefile}) from templates.
+
+The primary purpose is to replace @file{configure} scripts
+in Gauche extension pakcages.
+
+The advantage of using autoconf is that it generates
+a script that runs on most vanilla unix, for it only uses minimal 
+shell features and basic unix commands.   
+However, when you configure Gauche extension,
+you sure have Gauche already, so you don't need to limit
+yourself with minimal environment.
+
+Writing a @file{configure} script in Gauche means developers
+don't need an extra step to generate @file{configure} before
+distribution.  They can directly check in @file{configure} in
+the source repo, and anybody who pulls the source tree can
+run @file{configure} at once without having autoconf.
+
+Currently, @code{gauche.configure} only covers small subset of
+autoconf, though, so if you need to write complex tests
+you may have to switch back to autoconf.  We'll add tests
+as needed.
+@end deftp
+
+The core feature of @code{gauche.configure} is the ability to generate files
+(e.g. @file{Makefile}) from templates (e.g. @file{Makefile.in}) with replacing
+parameters.  We follow autoconf convension, so the replacement parameters
+in a template is written like @code{@@VAR@@}.  You should be able
+to reuse @file{Makefile.in} used for autoconf without changing them.
+
+The API corresponds to autoconf's @code{AC_*} macros, while we use
+@code{cf-} suffix instead.
+
+@menu
+* Structure of configure script::  
+* Configure API::               
+@end menu
+
+@node Structure of configure script, Configure API, Generating build files, Generating build files
+@subsection Structure of configure script and build files
+@c NODE configureスクリプトの構成とビルドファイル
+
+A @file{configure} script is a script that tests
+running system's properties to determine values of
+parameters, then read one or more template build files,
+and write out one output build file for each, replacing
+parameters for the assigned values.
+
+By convention, a template file has a suffix @code{.in}, and
+the corresponding output file is named without the suffix.
+For example, @code{Makefile.in} is a template that generates
+@code{Makefile}.
+
+Templates may contain parameters, noted @code{@@PARAMETER_NAME@@}.
+This is a fragment of a typical Makefile template:
+
+@example
+GAUCHE_PACKAGE = "@@GAUCHE_PACKAGE@@"
+SOEXT          = @@SOEXT@@
+LOCAL_PATHS    = "@@LOCAL_PATHS@@"
+
+foo.$(SOEXT): $(foo_SRCS)
+        $(GAUCHE_PACKAGE) compile \
+          --local=$(LOCAL_PATHS) --verbose foo $(foo_SRCS)
+@end example
+
+When processed by @code{configure}, @code{@@GAUCHE_PACKAGE@@},
+@code{@@SOEXT@@} and @code{@@LOCAL_PATHS@@} are replaced
+with appropriate values.   If you know autoconf, you are already
+familiar with this.
+
+The Gauche configure script is structurally similar to autoconf's
+@code{configure.in}, but you can use full power of Scheme.  Here's
+an abridged version of sample configure script:
+
+@example
+#!/usr/bin/env gosh
+(use gauche.configure)
+
+;; Argument declarations
+(cf-arg-with 'local
+             (cf-help-string
+              "--with-local=PATH:PATH..."
+              "For each PATH, add PATH/include to the include search
+  paths and PATH/lib to the library search paths.  Useful if you have some
+  libraries installed in non-standard places. ")
+             (^[with-local]
+               (unless (member with-local '("yes" "no" ""))
+                 (cf-subst 'LOCAL_PATHS with-local)))
+             (^[] (cf-subst 'LOCAL_PATHS "")))
+
+;; Initialization
+(cf-init "mylib" "1.0" "nobody@@example.org")
+
+;; Tests & other parameter settings
+(cf-path-prog 'GOSH "gosh")
+(cf-subst 'SOEXT (gauche-config "--so-suffix"))
+(cf-subst 'OBJEXT (gauche-config "--object-suffix"))
+
+;; Output
+(cf-make-gpd)
+(cf-echo (cf$ 'PACKAGE_VERSION) > "VERSION")
+(cf-output "Makefile")
+@end example
+
+Instead of writing the calls to @code{cf-*} APIs in the toplevel
+as shown above, you can organize operations in procedures if you like.
+No matter how you organize them,
+you have to execute the following four steps in the script:
+
+@enumerate
+@item
+Extra argument declarations (optional): Declare @code{--with-PACKAGE}
+and/or @code{--enable-FEATURE} options you want to handle.
+@item
+Initialization.  Call to @code{cf-init} sets up global context and
+parses command-line arguments passed to @code{configure}.
+@item
+Tests and other parameter settings (optional): Check system
+characteristics and sets up substitution parameters and/or
+C preprocessor definitions.
+@item
+Output generation
+@end enumerate
+
+Most @code{cf-*} API corresponds to autoconf's @code{AC_*} or
+@code{AS_*} macros.   We need argument declarations
+before @code{cf-init} so that it can generate help message
+including custom arguments.
+
+@node Configure API,  , Structure of configure script, Generating build files
+@subsection Configure API
+
+@c EN
+@subsubheading Initialization
+@c JP
+@subsubheading 初期化
+@c COMMON
+
+@defun cf-init package-name package-version maintainer-email
+@end defun
+
+@c EN
+@subsubheading Command-line arguments
+@c JP
+@subsubheading コマンドライン引数
+@c COMMON
+
+@defun cf-arg-with package help-string :optional proc-if-given proc-if-not-given
+@end defun
+
+@defun cf-arg-enable feature help-string :optional proc-if-given proc-if-not-given
+@end defun
+
+@defun cf-help-string item description
+@end defun
+
+@defun cf-package-ref name
+@end defun
+
+@defun cf-feature-ref name
+@end defun
+
+
+@c EN
+@subsubheading Messages
+@c JP
+@subsubheading メッセージ
+@c COMMON
+
+@defun cf-msg-checking fmt arg @dots{}
+@end defun
+
+@defun cf-msg-result fmt arg @dots{}
+@end defun
+
+@defun cf-msg-warn fmt arg @dots{}
+@end defun
+
+@defun cf-msg-error fmt arg @dots{}
+@end defun
+
+@defun cf-echo arg @dots{} [> file][>> file]
+@end defun
+
+@c EN
+@subsubheading Parameters and definitions
+@c JP
+@subsubheading パラメータと定義
+@c COMMON
+
+@defun cf-define symbol :optional value
+@end defun
+
+@defun cf-subst symbol value
+@end defun
+
+@defun cf-have-subst? symbol
+@end defun
+
+@defun cf-ref symbol :optional default
+@end defun
+
+@defun cf$ symbol
+@end defun
+
+@c EN
+@subsubheading Predefined tests
+@c JP
+@subsubheading 定義済みテスト
+@c COMMON
+
+
+@defun cf-check-prog sym prog-or-progs :key value default paths filter
+@end defun
+
+@defun cf-path-prog sym prog-or-progs :key value default paths filter
+@end defun
+
+@c EN
+@subsubheading Output
+@c JP
+@subsubheading 出力
+@c COMMON
+
+@defun cf-output file @dots{}
+@end defun
+
+@defun cf-show-variables :key formatter
+@end defun
+
+@defun cf-make-gpd
+@end defun
+
+
+@c ----------------------------------------------------------------------
+@node Dictionary framework, Low-level file operations, Generating build files, Library modules - Gauche extensions
 @section @code{gauche.dictionary} - Dictionary framework
 @c NODE ディクショナリフレームワーク, @code{gauche.dictionary} - ディクショナリフレームワーク
 
@@ -3382,23 +3867,28 @@ built on top of other dictionary classes.
 @end deftp
 
 @menu
-* Generic functions for dictionaries::
-* Generic dictionaries::
+* Generic functions for dictionaries::  
+* Generic dictionaries::        
 @end menu
 
 @node Generic functions for dictionaries, Generic dictionaries, Dictionary framework, Dictionary framework
 @subsection Generic functions for dictionaries
 @c NODE ディクショナリのためのジェネリック関数
 
+@c EN
 These generic functions are useful to implement algorithms
-common to any dictionary-like objects.
+common to any dictionary-like objects, a data structure
+that maps discrete, finite set of keys to values.  
+(Theoretically we can think of continuous and/or infinite set of
+keys, but implementation-wise it is cleaner to limit the dictionary
+
 Among built-in classes, @code{<hash-table>} and @code{<tree-map>}
 implement the dictionary interface.  All the @code{<dbm>} classes
 provided by @code{dbm} module also implement it.
 
 To make your own class implement the dictionary interface, you have
 to provide at least @code{dict-get}, @code{dict-put!},
-@code{dict-delete!} and @code{dict-fold}.
+@code{dict-delete!}, @code{dict-fold} and @code{dict-comparator}.
 (You can omit @code{dict-delete!} if the datatype doesn't allow
 deleting entries.)
 Other generic functions
@@ -3408,34 +3898,96 @@ implement other methods as well, potentially to gain better performance.
 (Note: Dictionaries are also collections, so you can use collection
 methods as well; for example, to get the number of entries, just use
 @code{size-of}).
+@c JP
+これらのジェネリック関数は、ディクショナリ(離散的で有限なキーの集合から値の集合への
+写像を表現するデータ構造)に対して共通するアルゴリズムを書くのに便利です。
+(理論的には連続した、また無限なキーの集合を考えることもできますが、
+実装上は有限集合に限る方がずっと簡潔になります。)
+
+組み込みクラスでは、@code{<hash-table>}と@code{<tree-map>}が
+ディクショナリのインタフェースを実装しています。@code{dbm}モジュール群の
+提供する@code{<dbm>}クラスもそうです。
+
+自分の定義したクラスにディクショナリのインタフェースを実装するには、
+最低限、@code{dict-get}、@code{dict-put!}、
+@code{dict-delete!}、@code{dict-fold}、@code{dict-comparator}の
+メソッドを実装してください
+(データ型がエントリの削除を許さない場合は、@code{dict-delete!}の実装を
+省略することができます。)
+他のジェネリック関数には、これらの基本的なメソッドを使ったデフォルト実装が
+提供されます。ただ、他のジェネリック関数についても
+自分のクラスに最適化した実装を書くと性能上有利になるでしょう。
+
+註：ディクショナリはコレクションを継承しているので、コレクションを
+扱うジェネリック関数はディクショナリに対しても使えます。
+例えばエントリの数を得るには@code{size-of}ジェネリック関数が使えます。
+@c COMMON
 
 @deffn {Generic function} dict-get (dict @code{<dictionary>}) key :optional default
+@c EN
 Returns the value corresponding to the @var{key}.
 If the dictionary doesn't have an entry with @var{key},
 returns @var{default} when it is provided, or raises an error
 if not.
+@c JP
+@var{key}に関連付けられた値を返します。もし@var{key}を持つエントリが
+ディクショナリに無い場合、@var{default}が与えられていればそれを返し、
+そうでなければエラーが通知されます。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} dict-put! (dict @code{<dictionary>}) key value
+@c EN
 Puts the mapping from @var{key} to @var{value} into the dictionary.
+@c JP
+@var{key}から@var{value}への関連づけをディクショナリに追加します。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} {(setter dict-get)} (dict @code{<dictionary>}) key value
+@c EN
 This works the same as @code{dict-put!}.
+@c JP
+@code{dict-put!}と同じ動作です。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} dict-exists? (dict @code{<dictionary>}) key
+@c EN
 Returns @code{#t} if the dictionary has an entry with @var{key},
 @code{#f} if not.
+@c JP
+ディクショナリが@var{key}をキーに持つエントリを保持していれば@code{#t}を、
+そうでなければ@code{#f}を返します。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} dict-delete! (dict @code{<dictionary>}) key
+@c EN
 Removes an entry with @var{key} form the dictionary.
 If the dictionary doesn't have such an entry, this function is noop.
+@c JP
+ディクショナリから@var{key}をキーに持つエントリを除去します。
+@var{key}を持つエントリが無ければ何もしません。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} dict-clear! (dict @code{<dictionary>})
-Empties the dictionary.
+@c EN
+Empties the dictionary.  Usually this is much faster than looping
+over keys to delete them one by one.
+@c JP
+ディクショナリを空にします。通常、全キーをループしてひとつづつ消していくよりも
+ずっと高速です。
+@c COMMON
+@end deffn
+
+@deffn {Generic function} dict-comparator (dict @code{<dictionary>})
+@c EN
+Should return a comparator used to compare keys.
+@c JP
+キーを比較するのに使われるcomparatorを返します。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} dict-fold (dict @code{<dictionary>}) proc seed
@@ -3529,6 +4081,15 @@ in the increasing order of keys.
 @c COMMON
 @end deffn
 
+@deffn {Generic function} dict->alist (dict @code{<dictionary>})
+@c EN
+Returns a list of pairs of key and value in the dictionary.
+The order of pairs is undefined.
+@c JP
+ディクショナリ中の各キーと値の対のリストを返します。対の順番は未定義です。
+@c COMMON
+@end deffn
+
 @deffn {Generic function} dict-push! (dict @code{<dictionary>}) key value
 @c EN
 A shorthand way to say @code{(dict-put! dict key (cons value (dict-get dict key '())))}.  A concrete implementation may be more efficient
@@ -3593,6 +4154,7 @@ You don't need to provide every dictionary interface.
   :put!       tree-map-put!
   :delete!    tree-map-delete!
   :clear!     tree-map-clear!
+  :comparator tree-map-comparator
   :exists?    tree-map-exists?
   :fold       tree-map-fold
   :fold-right tree-map-fold-right
@@ -3613,7 +4175,7 @@ You don't need to provide every dictionary interface.
 @c NODE 汎用ディクショナリ
 
 @deftp {Class} <bimap>
-@clindex binmap
+@clindex bimap
 Provides a bidirectional map (@emph{bimap}), a relation between two
 set of values, of which you can lookup both ways.
 
@@ -3635,7 +4197,7 @@ precedence; that is, the key given to @code{dict-get} etc. is
 regarded as the key to the left map.
 @end deftp
 
-@defun make-bimap left-map right-map
+@defun make-bimap left-map right-map :key on-conflict
 Creates a new bimap consists of two dictionaries, @var{left-map}
 and @var{right-map}.   It is the caller's responsibility to
 choose appropriate type of dictionaries; for example, if you want
@@ -3646,6 +4208,30 @@ to create it like this:
 (make-bimap (make-hash-table 'string=?)  ; string -> number
             (make-hash-table 'eqv?))     ; number -> string
 @end example
+
+The keyword argument @var{on-conflict} specifies what will happen
+when the added entry would conflict the existing entries.
+The following values are allowed:
+
+@table @code
+@item :supersede
+This is the default behavior.  Duplicate relations are silently
+removed in order to maintain one-to-one mapping.  For example,
+suppose a bimap between strings and numbers has had
+@code{("foo", 1)} and @code{("bar", 2)}.  When you try to
+put @code{("bar", 2)} with this option, the first two entries
+are removed.  Returns @code{#t}.
+
+@item :error
+Raises an error when duplicate relations are found.
+
+@item #f
+When duplicate relations are found, does nothing and returns @code{#f}.
+@end table
+
+Note: At this moment, an attempt to add a relation exactly same as the
+existing one is regareded as a conflict.  This limitation may be
+lifted in future.
 @end defun
 
 @defun bimap-left bimap
@@ -3669,30 +4255,16 @@ Returns @code{#f} if the left or right map of @var{bimap} has an entry of
 the key, @code{#t} otherwise.
 @end defun
 
-@defun bimap-put! bimap x y &key (on-conflict :supersede)
+@defun bimap-put! bimap x y &key on-conflict
 Put a relation (@var{x}, @var{y}) into the bimap.
 After this, @code{(bimap-left-get @var{x})} will return @var{y},
 and @code{(bimap-left-get @var{y})} will return @var{x}.
 
-If there's already a relation (@var{x}, _) and/or (_, @var{y}),
-the behavior depends on the value of the keyword argument @var{on-conflit}.
-
-@table @code
-@item :supersede
-This is the default behavior.  Duplicate relations are silently
-removed in order to maintain one-to-one mapping.  For example,
-suppose a bimap between strings and numbers has had
-@code{("foo", 1)} and @code{("bar", 2)}.  When you try to
-put @code{("bar", 2)} with this option, the first two entries
-are removed.  Returns @code{#t}.
-
-@item :error
-Raises an error when duplicate relations are found.
-
-@item #f
-When duplicate relations are found, does nothing and returns @code{#f}.
-@end table
-
+If the bimap already have relations with @var{x} and/or @var{y},
+the conflict is handled according to the value of @var{on-conflict};
+see @code{make-bimap} for the possible values and their meanings.
+The @var{on-conflict} keyword argument can override the
+bimap's default setting specified at its creation time.
 @end defun
 
 @defun bimap-left-delete! bimap key
@@ -4112,8 +4684,8 @@ There are several built-in procedures for that; see
 @c COMMON
 
 @menu
-* Generator constructors::
-* Generator operations::
+* Generator constructors::      
+* Generator operations::        
 @end menu
 
 @node Generator constructors, Generator operations, Generators, Generators
@@ -4363,9 +4935,9 @@ MSBからビットを取り出します。
 @c COMMON
 
 @example
-(generator->list (bits->generator #b10110)
+(generator->list (bits->generator #b10110))
  @result{} (#f #t #t #f #t)
-(generator->list (reverse-bits->generator #b10110)
+(generator->list (reverse-bits->generator #b10110))
  @result{} (#t #f #t #t #f)
 @end example
 
@@ -4537,11 +5109,11 @@ generate, and use @var{g} to update the seed value.
 
 @c EN
 @xref{Folding generated values}, for @code{generator-fold},
-@code{generator-fold-right}, @code{generator-for-each} and
-@code{generator-map}.
+@code{generator-fold-right}, @code{generator-for-each},
+@code{generator-map}, and @code{generator-find}.
 @c JP
 @code{generator-fold}、@code{generator-fold-right}、 @code{generator-for-each}、
-@code{generator-map}については、
+@code{generator-map}、@code{generator-find}については、
 @ref{Folding generated values}を参照してください。
 @c COMMON
 
@@ -4864,6 +5436,38 @@ and yields only values that are greater than their previous value.
  (gstate-filter (^[v s] (values (< s v) v)) 0
                 (list->generator '(1 2 3 2 1 0 1 2 3 2 1 0 1 2 3))))
  @result{} (1 2 3 1 2 3 1 2 3)
+@end example
+@end defun
+
+@defun gbuffer-filter proc seed gen :optional tail-gen
+This procedure allows n-to-m mapping between elements in input and output---
+that is, you can take a look at serveral input elements to generate
+one or more output elements.
+
+The procedure @var{proc} receives the next input element and accumulated
+seed value.  It returns two values: A list of output values, and the next
+seed value.  If you need to look at more input to generate
+output, you can return an empty list as the first value.
+
+If the input reaches the end, @var{tail-gen} is called with the
+current seed value; it should return a list of last output values.
+If omitted, the output ends when the output of the last call to @var{proc}
+is exhausted (the last seed value is discarded).
+
+Suppose you have a text file.  Each line contains a command,
+but if the line ends with backslash, next line is treated as a
+continuation of the current line.  The following code creates
+a generator that returns @emph{logical} lines, that is,
+the lines after such line continuations are taken care of.
+
+@example
+(gbuffer-filter (^[v s]
+                  (if-let1 m (#/\\$/ v)
+                    (values '() (cons (m 'before) s))
+                    (values `(,(string-concatenate-reverse (cons v s))) '())))
+                '()
+                (file->line-generator "input-file.txt")
+                (^[s] `(,(string-concatenate-reverse s))))
 @end example
 @end defun
 
@@ -5317,6 +5921,117 @@ to parse the info file.
 @c COMMON
 @end defun
 
+@defun ed filename-or-procedure :key editor load-after
+@c EN
+Invoke an external editor to open the named file, or the file containing
+the definition of the given procedure (if it can be known).  
+For the latter, it uses @code{source-location} procedure to find out
+the source code location (@xref{Debugging aid}).
+@c JP
+外部エディタを起動し、与えられた名前のファイル、もしくは与えられた手続きの定義がある
+ファイルを開きます。後者については、与えられた手続きを
+@code{source-location}に渡して定義箇所を調べます(@ref{Debugging aid}参照)。
+定義箇所がわからなければファイルは開かれません。
+@c COMMON
+
+@c EN
+The name of the editor to invoke is determined as follows:
+@c JP
+起動するエディタの名前は次の順序で決定されます。
+@c COMMON
+
+@enumerate
+@item
+@c EN
+The @var{editor} keyword argument.
+@c JP
+キーワード引数@var{editor}。
+@c COMMON
+@item
+@c EN
+The value of the variable @code{*editor*} in the @code{user} module,
+if defined.  This is handy that you can set this in your @code{.gaucherc}.
+@c JP
+@code{user}モジュール中の変数@code{*editor*}の値。
+これは、@code{.gaucherc}内で設定しておくのが便利です。
+@c COMMON
+@item
+@c EN
+The value of the environment variable @code{GAUCHE_EDITOR}.
+@c JP
+環境変数@code{GAUCHE_EDITOR}の値
+@c COMMON
+@item
+@c EN
+The value of the environment variable @code{EDITOR}.
+@c JP
+環境変数@code{EDITOR}の値
+@c COMMON
+@end enumerate
+
+@c EN
+If none of the above is defined or @code{#f}, the procedure prompts the user
+to type in the name of the editor.
+@c JP
+上記のどの値も定義されていないか@code{#f}なら、
+手続き@code{ed}はユーザにエディタ名を入力するように促します。
+@c COMMON
+
+@c EN
+Once the editor name is obtained, it is invoked as a subprocess,
+with the following format:
+@c JP
+エディタの名前がわかったら、それが子プロセスとして次の形式で実行されます。
+@c COMMON
+
+@example
+EDITOR +lineno filename
+@end example
+
+@c EN
+The @var{lineno} is an integer line number, 1 being the first line.
+The editor is expected to locate the cursor on the specified line.
+@c JP
+@var{lineno}は整数の行番号で、1が先頭行です。エディタは指定された行の頭に
+カーソルを移動することが期待されます。
+@c COMMON
+
+@c EN
+Once the editor process exits, the procedure checks if the name
+file is updated.  If so, it may load the file, according to the
+value of the @var{load-after} keyword argument.  It may take one
+of the following values:
+@c JP
+エディタプロセスが終了したら、@code{ed}はファイルが更新されたかどうかを調べ、
+更新された場合は@var{load-after}引数の値によってそのファイルをロードするかどうかを
+決定します。@var{load-after}引数の値は以下のいずれかです。
+@c COMMON
+
+@table @code
+@item #t
+@c EN
+Load the file automatically if it's updated.
+@c JP
+ファイルが更新されていれば自動的にロード
+@c COMMON
+@item #f
+@c EN
+Do not load the file.
+@c JP
+ファイルをロードしない
+@c COMMON
+@item ask
+@c EN
+The symbol @code{ask} cause the procedure to prompt the user
+whether it should load the file.  This is the default.
+@c JP
+シンボル@code{ask}の場合は、ロードすべきかどうかユーザに尋ねる。
+これがデフォルトの動作です。
+@c COMMON
+@end table
+@end defun
+
+
 @c ----------------------------------------------------------------------
 @node Lazy sequence utilities, Listener, Interactive session, Library modules - Gauche extensions
 @section @code{gauche.lazy} - Lazy sequence utilities
@@ -5324,7 +6039,7 @@ to parse the info file.
 
 @deftp {Module} gauche.lazy
 @mdindex gauche.lazy
-This module provides utiltiy procedures that yields lazy sequences.
+This module provides utility procedures that yields lazy sequences.
 For the details of lazy sequences, see @ref{Lazy sequences}.
 @end deftp
 
@@ -5409,7 +6124,20 @@ The @var{seqs} argument is a sequence of sequences.  Returns
 a lazy sequence that is a concatenation of all the sequences in @var{seqs}.
 
 This differs from @code{(apply lappend seqs)}, for @code{lconcatenate}
-can handle infinite lazy @var{seqs}.
+can handle infinite number of lazy @var{seqs}.
+@end defun
+
+@defun linterweave seq @dots{}
+Returns a lazy seq of the first items from @var{seq} @dots{}, then
+their second items, and so on.   If the length of shortest sequence
+of @var{seqs} is N, the length of the resulting sequence is
+@code{(* N number-of-sequences)}.  If all of @var{seq}s are infinite,
+the resulting sequence is also infinite.
+
+@example
+(linterweave (lrange 0) '(a b c d e) (circular-list '*))
+ @result{} (0 a * 1 b * 2 c * 3 d * 4 e *)
+@end example
 @end defun
 
 @defun lfilter proc seq
@@ -5422,7 +6150,7 @@ Lazy version of @code{filter-map}.
 @end defun
 
 @defun lstate-filter proc seed seq
-Lazy version of @code{state-filter}.
+Lazy version of @code{gstate-filter}.
 @end defun
 
 @defun ltake seq n :optional fill? padding
@@ -5451,6 +6179,15 @@ This procedure is convenient to scan character sequences from
 lazy character sequences, but it may be slow if you're looking for
 rarely matching string from very large input.  Unless @var{seq}
 is a string, @code{lrxmatch} buffers certain
+@end defun
+
+@defun lslices seq k :optional fill? padding
+Lazy version of @code{slices} (@xref{List accessors and modifiers}).
+
+@example
+(lslices '(a b c d e f) 2)
+  @result{} ((a b) (c d) (e f))
+@end example
 @end defun
 
 @c ----------------------------------------------------------------------
@@ -5524,7 +6261,7 @@ Those slot values can be set at construction time
 by using the keyword of the same name as the slot,
 or can be set by @code{slot-set!} afterwards.  However,
 most of them should be set before calling
-@code{listener-read-hander}.
+@code{listener-read-handler}.
 @c JP
 Replセッションの状態を維持するオブジェクトです。
 オブジェクトのふるまいをカスタマイズするためにいくつもの外部スロットがあります。
@@ -6643,12 +7380,19 @@ IPv6が使えるかどうかを調べるには、
 
 @end deftp
 
+@c EN
+Note: If you want to write a portable program using network,
+take a look at @code{srfi-106} (@xref{Basic socket interface}).
+@c JP
+ネットワークを使うポータブルなコードを書きたい場合は、
+@code{srfi-106}を見てください (@ref{Basic socket interface}参照)。
+@c COMMON
 
 @menu
-* Socket address::
-* High-level network functions::
-* Low-level socket interface::
-* Netdb interface::
+* Socket address::              
+* High-level network functions::  
+* Low-level socket interface::  
+* Netdb interface::             
 @end menu
 
 @node Socket address, High-level network functions, Networking, Networking
@@ -7098,7 +7842,7 @@ specified by @var{address-spec}.
 The socket is bound to a unix domain socket with a name @var{path}.
 The keyword argument @var{backlog} is passed to @code{socket-listen}
 to specify the maximum number of connection request the server can keep
-befor accepting them.  The default is 5.  If your server is very busy
+before accepting them.  The default is 5.  If your server is very busy
 and you see "connection refused" often, you might want to increase it.
 @c JP
 パス名@var{path}を持つUnixドメインソケットが作成されます。
@@ -7125,6 +7869,14 @@ immediately after other process releases the port.
 ソケットに@code{SO_REUSEADDR}オプションがセットされます。
 その場合、他のプロセスが解放したばかりの(TCP)ポートでも
 エラーとならずに使うことができます。
+@c COMMON
+
+@c EN
+Alternatively, you can pass a list of positive exact integers to @var{port}.
+In that case, Gauche tries to bind each port in the list until it succeeds.
+@c JP
+あるいは、正の正確な整数のリストを@var{port}に渡すことも出来ます。
+その場合、Gaucheは与えられたポート番号で順にbindを試し、成功したらそのソケットを返します。
 @c COMMON
 
 @c EN
@@ -7187,6 +7939,10 @@ Returns a list of opened, bound and listened sockets.
 
 This procedure is particularly useful when the host
 has multiple protocol stacks, such as IPv4 and IPv6.
+In that case, this procedure may return a list of IPv4 socket(s) and
+IPv6 socket(s).
+(On some OSes, single socket can listen both IPv4 and IPv6.  On
+such platform, a list of single socket will be returned.)
 
 The meaning of keyword arguments are the same as of @code{make-server-socket}.
 @c JP
@@ -7196,9 +7952,24 @@ The meaning of keyword arguments are the same as of @code{make-server-socket}.
 サービス名も指定できます。
 
 この手続きは、ホストが複数のプロトコルスタック(IPv4とIPv6など)を
-持つ場合に特に便利です。
+持つ場合に特に便利です。その場合、この手続きはIPv4用のソケットと
+IPv6用のソケットのリストを返すかもしれません。
+(OSによっては、一つのソケットでIPv4もIPv6も両方listenできるものが
+あります。そういったOSでは単一のソケットのリストが返るでしょう。)
 
 キーワード引数の意味は@code{make-server-socket}のと同じです。
+@c COMMON
+
+@c EN
+You can pass 0 to @var{port}, just like @code{make-server-socket},
+to let the system choose an available port number.  If pass 0 as
+port and this procedure returns multiple sockets, it is guaranteed
+that all the sockets share the same port number.
+@c JP
+@code{make-server-socket}と同様、@var{port}に0を渡すことで、
+システムに空いているポートを自動的にアサインしてもらうことができます。
+@var{port}に0を渡して複数のソケットが返される場合、それらのソケットは
+同じポート番号を持つことが保証されます。
 @c COMMON
 @end defun
 
@@ -7562,6 +8333,8 @@ Transmits the content of @var{msg} through @var{socket}.
 @var{msg} can be either a string or a uniform vector; if you send
 binary packets, uniform vectors are recommended.
 
+Returns the nubmer of octets that are actually sent.
+
 When @code{socket-send} is used, @var{socket} must already be connected.
 On the other hand, @code{socket-sendto} can be used for non-connected
 socket, and the destination address is specified by
@@ -7571,6 +8344,8 @@ a @code{<sockaddr>} instance @var{to-address}.
 @var{msg} の内容を @var{socket} を通じて送出します。
 @var{msg}は文字列もしくはユニフォームベクタでなければなりません。
 バイナリパケットを送る場合はユニフォームベクタの使用を推奨します。
+
+実際に送出されたオクテット数を返します。
 
 @code{socket-send} を使うときには、@var{socket} は既に接続されて
 いなければなりません。他方、@code{socket-sendto} は未接続の
@@ -9263,7 +10038,7 @@ the procedure is used as if it is the body of @code{else} option clause.
 @c EN
 Gauche internally supports partial continuations
 (a.k.a. delimited continuations) natively.
-This module exposes the feature for genreal use.
+This module exposes the feature for general use.
 @c JP
 Gaucheは内部的に、部分継続(限定継続と呼ばれることもあります)を
 ネイティブでサポートしています。このモジュールはその機能を
@@ -9550,7 +10325,7 @@ end of @code{reset}, and bind it to the variable @var{k}.
 @c COMMON
 @item
 @c EN
-The continuation of @code{shift} becoms a null continuation as well,
+The continuation of @code{shift} becomes a null continuation as well,
 so after @code{shift} returns, the control skips the rest of
 operations until the corresponding @code{reset}.
 @c JP
@@ -9731,9 +10506,9 @@ a convenient way to send/receive information to/from subprocesses.
 @end deftp
 
 @menu
-* Running subprocess::
-* Process object::
-* Process ports::
+* Running subprocess::          
+* Process object::              
+* Process ports::               
 @end menu
 
 @node Running subprocess, Process object, High Level Process Interface, High Level Process Interface
@@ -9828,6 +10603,40 @@ a symbol.
 @end example
 
 @c EN
+Note: An alternative way to run external process is @code{sys-system},
+which takes a command line as a single string (@xref{Process management}).
+The string is passed to the shell to be interpreted,
+so you can include redirections, or can pipe several commands.
+It would be handy for quick throwaway scripts.
+
+On the other hand, with @code{sys-system}, 
+if you want to change command parameters
+at runtime, you need to worry about properly escape them
+(actually we have one to do the job in @code{gauche.process}; 
+see @code{shell-escape-string}
+below); you need to be aware that @code{/bin/sh}, used by 
+@code{sys-system} via @code{system(3)} call, may differ among
+platforms and be careful not to rely on specific features on
+certain systems.  As a rule of thumb, keep @code{sys-system} for
+really simple tasks with a constant command line,
+and use @code{run-process} for all other stuff.
+@c JP
+注：外部プロセスを走らせる方法にはもうひとつ、@code{sys-system}があります。
+こちらはコマンド行を単一の文字列で渡し、シェルを呼び出して解釈させます
+(@ref{Process management}参照)。
+したがって、入出力のリダイレクトや、パイプでつないだコマンド等もそのまま渡せます。
+書き捨てのスクリプトを素早く書くときはそちらの方が便利でしょう。
+
+一方、@code{sys-system}を使う場合には、コマンドの引数を実行時に可変にしたい場合に
+きちんとエスケープされているかどうかを確認したり (実は@code{gauche.process}
+モジュール中にそれをする関数があります。下の@code{shell-escape-string}を
+参照してください)、また@code{sys-system}が@code{system(3)}経由で
+呼び出す@code{/bin/sh}のプラットフォーム間の違いを気にしたりする必要があります。
+原則として、@code{sys-system}の使用は固定コマンドを呼び出す簡単な場合に
+止めておき、他の仕事には@code{run-process}を使うのが良いでしょう。
+@c COMMON
+
+@c EN
 Note: Old version of this procedure took arguments differently,
 like @code{(run-process "ls" "-al" :wait #t)}, which was compatible
 to STk.  This is still supported but deprecated.
@@ -9913,7 +10722,7 @@ it never returns.
 Specifies how to redirect child process's I/Os.
 Each @var{iospec}
 can be one of the followings, where @var{fd}, @var{fd0}, and @var{fd1}
-are nonnegative integers referring to the file descriptr
+are nonnegative integers referring to the file descriptor
 @emph{of the child process}.
 @c JP
 子プロセスのI/Oをどのようにリダイレクトするかを指定します。
@@ -10026,7 +10835,7 @@ an integer or a file output port.
 If it is a string, it names a file.  The output of the child to
 the file descriptor @var{fd} is written to the file.
 If the named file already exists, @code{>} first truncates its
-content, whlie @code{>>} appends to the existing content.
+content, while @code{>>} appends to the existing content.
 
 For other arguments, @code{>} and @code{>>} works the same.
 
@@ -10237,7 +11046,7 @@ If @var{directory} is @code{#f}, this argument is ignored.
 An error is signaled if @var{directory} is other type of objects,
 or it is a string but is not a name of a existing directory.
 
-When @var{host} keyword argunmet is also given, this argument
+When @var{host} keyword argument is also given, this argument
 specifies the working directory of the @emph{remote} process.
 
 Note: @code{run-process} checks the validity of @var{directory},
@@ -10318,7 +11127,7 @@ The full syntax of @var{hostspec} is @code{protocol:user@@hostname:port},
 where @var{protocol:}, @var{user@@}, or @var{:port} part can be
 omitted.
 
-The @var{protocol} part specifies the protocol to commnucate
+The @var{protocol} part specifies the protocol to communicate
 with the remote host; currently only @code{ssh} is supported, and
 it is also the default when @var{protocol} is omitted.
 The @var{user} part specifies the login name of the remote host.
@@ -11049,11 +11858,11 @@ in day-to-day programming, but they might be handy to
 create record types on-the-fly at runtime.
 
 @menu
-* Record types introduction::
-* Record types syntactic layer::
-* Record types inspection layer::
-* Record types procedural layer::
-* Pseudo record types::
+* Record types introduction::   
+* Record types syntactic layer::  
+* Record types inspection layer::  
+* Record types procedural layer::  
+* Pseudo record types::         
 @end menu
 
 @node Record types introduction, Record types syntactic layer, Record types, Record types
@@ -11079,7 +11888,7 @@ several related values to carry around, and don't need fancier
 mechanisms such as class redefinitions.
 @item
 As Gauche's extention, you can define pseudo record types,
-which interpretes ordinary aggregate types such as vectors and lists
+which interprets ordinary aggregate types such as vectors and lists
 as records.  (For Common Lisp users; it is like the @code{:type}
 option of @code{defstruct}).
 This helps flexibility of interface.  For example, you can ask
@@ -11166,7 +11975,7 @@ If it is @code{#t}, a default constructor is created with a name
 The default constructor takes as many arguments as
 the number of fields of the record, including inherited ones if any.
 When called, it allocates an instance of the record, and initialize its
-fields with the given arguments in the order (inhertied fields comes
+fields with the given arguments in the order (inherited fields comes
 first), and returns the record.
 
 The last variation of @var{ctor-spec} creates a custom
@@ -11355,7 +12164,7 @@ all inherited fields.
 @defun rtd-field-mutable? rtd field-name
 [SRFI-99]
 Returns @code{#t} iff the field with the name @var{field-name}
-of a record represened by @var{rtd} is mutable.
+of a record represented by @var{rtd} is mutable.
 @end defun
 
 
@@ -11450,7 +12259,8 @@ only modifies the field of the derived record.
 @subsection Pseudo record types
 
 A pseudo record type is a record type that does not create
-an instance.  Instead it treats an object of other collection
+an instance of its own type.
+Instead it treats an object of other collection
 types, such as a vector, as if it had named fields.  It's easier
 to understand by an example:
 
@@ -11459,7 +12269,7 @@ to understand by an example:
   (x) (y) (z))
 
 (make-vpoint 1 2 3)  @result{} #(1 2 3)
-(vpoint-x #(1 2 3))  @result{} 1
+(vpoint-x '#(1 2 3)) @result{} 1
 
 (rlet1 v (make-vpoint 1 2 3)
   (set! (vpoint-y v) -1))
@@ -11474,9 +12284,26 @@ the suitable instance class.
 @defun pseudo-rtd instance-class
 Returns a pseudo rtd suitable to use @var{instance-class} as
 a pseudo record.
+
+Currently, @code{<list>}, @code{<vector>}, and uniform vector
+classes (@code{<u8vector>} etc.) are supported as @var{instance-class}.
 @end defun
 
+The predicates of a pseudo record return @code{#t} if the given
+object can be interpreted as the pseudo record.  In the above
+example of @code{vpoint} record, the predicate @code{vpoint?}
+returns @code{#t} iff the given object is a vector with 3 or more
+elements:
 
+@example
+(vpoint? '#(0 0 0))   @result{} #t
+(vpoint? '#(0 0))     @result{} #f
+(vpoint? '(0 0 0))    @result{} #f
+(vpoint? '#(0 0 0 0)) @result{} #t
+@end example
+
+We allow more elements so that the pseudo record can be used
+to interpret the header part of the longer data.
 
 @c ----------------------------------------------------------------------
 @node Reloading modules, Simple dispatcher, Record types, Library modules - Gauche extensions
@@ -11780,6 +12607,7 @@ echoサーバのシンプルな例を示します。
 @example
 (use gauche.net)
 (use gauche.selector)
+(use gauche.uvector)
 
 (define (echo-server port)
   (let ((selector (make <selector>))
@@ -11795,11 +12623,11 @@ echoサーバのシンプルな例を示します。
                        '(r))))
 
     (define (echo client input output)
-      (let ((str (read-block 4096 input)))
+      (let ((str (read-uvector <u8vector> 4096 input)))
         (if (eof-object? str)
             (begin (selector-delete! selector input #f #f)
                    (socket-close client))
-            (begin (display str output)
+            (begin (write-uvector str output)
                    (flush output)))))
 
     (selector-add! selector
@@ -11852,11 +12680,11 @@ Gauche組み込みクラスのうち、リスト、ベクター、そして文�
 @end deftp
 
 @menu
-* Fundamental sequence accessors::
-* Slicing sequence::
-* Mapping over sequences::
-* Other operations over sequences::
-* Implementing sequence::
+* Fundamental sequence accessors::  
+* Slicing sequence::            
+* Mapping over sequences::      
+* Other operations over sequences::  
+* Implementing sequence::       
 @end menu
 
 @node Fundamental sequence accessors, Slicing sequence, Sequence framework, Sequence framework
@@ -12187,10 +13015,76 @@ use @code{group-collection}
 @c COMMON
 @end deffn
 
+@subsubheading Prefix
+
+@deffn {Generic function} common-prefix (a <sequence>) (b <sequence>) :key key test
+@c EN
+Returns a new sequence of the same type of @var{a} which contains
+the common prefix of sequences @var{a} and @var{b}.  The types of
+@var{a} and @var{b} doesn't need to match.
+The type of @var{a} must have a builder.
+
+For each corresponding element in @var{a} and @var{b}, the @var{key}
+procedure is applied (default @code{identity}), then compared with
+@var{test} procedure (default @code{eqv?}).
+@c JP
+シーケンス@var{a}と@var{b}に共通するプレフィクスを、@var{a}と同じ型の
+新たなシーケンスで返します。@var{a}と@var{b}の型は異なっていても構いません。
+@var{a}の型はビルダーを持っている必要があります。
+
+@var{a}と@var{b}のそれぞれ対応する要素について、まず@var{key}手続きが
+呼ばれ、その結果が@var{test}手続きで比較されます。省略時にはそれぞれ
+@code{identity}および@code{eqv?}が使われます。
+@c COMMON
+
+@example
+(common-prefix '(a b c d e) '(a b c e f))
+  @result{} (a b c)
+
+(common-prefix "abcef" '#(#\a #\b #\c #\d #\e))
+  @result{} "abc"
+@end example
+
+@c EN
+For strings, @code{srfi-13} has a specific function with
+related feature: @code{string-prefix-length}
+(@xref{SRFI-13 String Prefixes & Suffixes}).
+@c JP
+文字列については、@code{srfi-13}に似た機能を持つ手続き
+@code{string-prefix-length}があります。
+(@ref{SRFI-13 String Prefixes & Suffixes}参照)。
+@c COMMON
+@end deffn
+
+@deffn {Generic function} common-prefix-to (class <class>) (a <sequence>) (b <sequence>) :key key test
+@c EN
+Returns a new sequence of the type @var{class} which contains
+the common prefix of sequences @var{a} and @var{b}.  The types of
+@var{a} and @var{b} doesn't need to match, and neither
+needs to have a builder.  The @var{class} must be a sequence class
+with a builder.
+
+The meanings of keyword arguments are the same as @code{common-prefix}.
+@c JP
+シーケンス@var{a}と@var{b}に共通するプレフィクスを、@var{class}の
+インスタンスとして返します。@var{a}と@var{b}の型は異なっていても構わず、
+ビルダーを持っていなくても構いません。@var{class}はビルダーを備えた
+シーケンスのクラスである必要があります。
+
+キーワード引数については@code{common-prefix}と同じです。
+@c COMMON
+
+@example
+(common-prefix-to <list> "abcde" "ABCEF" :test char-ci=?)
+  @result{} '(#\a #\b #\c)
+@end example
+@end deffn
+
 
 @subsubheading Permutation and shuffling
 
 @deffn {Generic function} permute (src <sequence>) (permuter <sequence>) :optional fallback
+@c EN
 Returns a newly created sequence of the same type as @var{src}, in which
 the elements are permuted from @var{src} according to @var{permuter}.
 
@@ -12202,6 +13096,17 @@ can be any kind of sequence, unrelated to the type of @var{src}.
 
 It is allowed that the same index @var{i} can appear more than once
 in @var{permuter}.
+@c JP
+シーケンス@var{src}の要素を@var{permuter}に従って並べ替えた、新たなシーケンスを
+作って返します。返されるシーケンスは@var{src}と同じ型です。
+
+@var{permuter}は正確な整数のシーケンスです。@var{pertmuter}の@var{k}番目の
+要素が@var{i}であれば、結果の@var{k}番目の要素が@code{(ref @var{src} @var{i})}
+になります。従って結果のシーケンスの長さは@var{permuter}と長さと同じになります。
+@var{permuter}の型は@var{src}の型と違っていて構いません。
+
+同じインデックス@var{i}が複数回@var{permuter}に現れても構いません。
+@c COMMON
 
 @example
 (permute '(a b c d) '(3 2 0 1))     @result{} (d c a b)
@@ -12209,11 +13114,19 @@ in @var{permuter}.
 (permute '(a b c d) '(0 0 1 1 2 2)) @result{} (a a b b c c)
 @end example
 
+@c EN
 If an integer in @var{permuter} is out of the valid range as the index
 of @var{src}, then an error is signaled unless @var{fallback} is given.
 If @var{fallback} is given, what value is used depends on the result of
 @code{(ref @var{src} @var{i} @var{fallback})}---which usually returns
 @var{fallback} for the out-of-range index @var{i}.
+@c JP
+@var{permuter}の要素の整数が@var{src}の有効なインデックスの範囲外であった場合、
+デフォルトではエラーが通知されます。しかし@var{fallback}が与えられた場合は、
+@var{src}の要素の読み出しが@code{(ref @var{src} @var{i} @var{fallback})}
+として行われます。これは通常、@var{i}が範囲外であった場合に@var{fallback}を
+返します。
+@c COMMON
 
 @example
 (permute '#(a b c) '(3 2 1 0) 'foo) @result{} #(foo c b a)
@@ -12224,8 +13137,13 @@ If @var{fallback} is given, what value is used depends on the result of
 @end deffn
 
 @deffn {Generic function} permute-to (class <class>) (src <sequence>) (permuter <sequence>) :optional fallback
+@c EN
 Like @code{permute}, but the result will be an instance of the given @var{class}
 instead of the class of @var{src}.
+@c JP
+結果のシーケンスが@var{src}の型でなく@var{class}になること以外は、
+@code{permute}と同じです。
+@c COMMON
 
 @example
 (permute-to <string> '(#\a #\b #\c #\d #\r)
@@ -12235,33 +13153,59 @@ instead of the class of @var{src}.
 @end deffn
 
 @deffn {Generic function} permute! (src <sequence>) (permuter <sequence>) :optional fallback
+@c EN
 Also like @code{permute}, but the result is stored back to @var{src}.
 @var{Src} must be a mutable sequence, and the length of @var{src} and
 @var{permuter} must be the same.
+@c JP
+これも@code{permute}と似ていますが、結果は新たに作られるシーケンスではなく
+@var{src}を破壊的変更して格納されます。@var{src}は変更可能でなければならず、
+また@var{src}と@var{permuter}は同じ長さでなければなりません。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} shuffle (src <sequence>) :optional random-source
+@c EN
 Returns a new sequence of the same type and size as @var{src},
 in which elements are randomly permuted.
+@c JP
+@var{src}と同じ型、長さのシーケンスで、@var{src}の要素の順序がランダムに
+置き換えられたものを返します。
+@c COMMON
 
 @example
 (shuffle '(a b c d e))  @result{} (e b d c a)
 (shuffle "abcde")       @result{} "bacde"
 @end example
 
+@c EN
 This generic function uses @code{srfi-27} (@xref{Sources of random bits}).
 By default it uses @code{default-random-source}, but you can pass
 an alternative random source by the optional argument.
+@c JP
+このジェネリックファンクションは@code{srfi-27} (@ref{Sources of random bits}参照)
+を使っています。デフォルトでは乱数源として@code{default-random-source}が
+使われますが、省略可能引数に乱数源を渡すこともできます。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} shuffle-to (class <class>) (src <sequence>) :optional random-source
+@c EN
 Like @code{shuffle}, except that the result will be an instance of
 @var{class} instead of the class of @var{src}.
+@c JP
+結果を@var{src}の型ではなく@var{class}のインスタンスとして返す@code{shuffle}です。
+@c COMMON
 @end deffn
 
 @deffn {Generic function} shuffle! (src <sequence>) :optional random-source
+@c EN
 Like @code{shuffle}, but the result is stored back to @var{src}.
 @var{Src} must be a mutable sequence.
+@c JP
+結果を@var{src}を破壊的変更して格納する@code{shuffle}です。
+@var{src}は変更可能でなければなりません。
+@c COMMON
 @end deffn
 
 
@@ -12293,7 +13237,7 @@ For the common applications, you might find @code{gauche.logger} module
 easier to use (@xref{User-level logging}).  This module is for those
 who need direct access to the syslog API.
 
-The procedures are only defined if the undelying system supports them.
+The procedures are only defined if the underlying system supports them.
 @c JP
 このモジュールは syslog(3) のシステムロガーのインタフェースを提供します。
 
@@ -12463,8 +13407,8 @@ Windowsネイティブ環境でも使うことができます。
 @end deftp
 
 @menu
-* Posix termios interface::
-* Common high-level terminal control::
+* Posix termios interface::     
+* Common high-level terminal control::  
 @end menu
 
 @node Posix termios interface, Common high-level terminal control, Terminal control, Terminal control
@@ -12966,6 +13910,43 @@ Marks beginning of the group of tests.  This is just for logging.
 @c COMMON
 @end defun
 
+@defun test-log fmtstr args @dots{}
+@c EN
+This is also just for logging.  Creates a formatted string
+with @var{fmrstr} and @var{args} just like @code{format},
+then write it to the current output port, with prefix @code{;; } 
+and newline at the end.
+
+With the typical Makefile settings, where you redirect
+stdout of test scripts to a log file, the message only goes to
+the log file.
+
+Using this, you can dump information that can't be automatically
+tested but may be useful for troubleshooting.    For example, 
+you get a mysterious test failure reports you can't reproduce
+on your machine, and suspect
+some aspects of the running systems may unpredictably
+affect the test result.
+You can put @code{test-log} in the test code to dump such parameters,
+and ask the reporter to run the test again and analyze the log.
+@c JP
+この手続きも単なるログのためのものです。
+@code{format}と同じように@var{fmtstr}と@var{args}からフォーマット済み文字列を
+作り、@code{;; }を前に、改行文字を後につけて現在の出力ポートへと出力します。
+
+典型的なMakefileでのテスト起動では、テストスクリプトの標準出力をログに流すので、
+このメッセージもログにのみ記録されることになります。
+
+この手続きは、自動化テストで検査することは出来ないけれどトラブルシューティングに
+役に立つかもしれない情報をダンプしておくのに使えます。
+例えば、謎のテスト失敗報告が来て、でも手元ではどうしても再現できず、
+実行システムに固有のある側面が影響しているのではないかと推測できたとしましょう。
+その場合、@code{test-log}でそういった情報をダンプするコードをテストスクリプトに
+仕込んでおいて、もう一度報告者のマシンでテストを走らせてもらい、そのログを解析する
+ことができるでしょう。
+@c COMMON
+@end defun
+
 @defun test-end :key exit-on-failure
 @c EN
 Prints out list of failed tests.  If @var{exit-on-failure} is @code{#f} or
@@ -13047,7 +14028,7 @@ check:
 Note that to make @code{test-record-file} work, it must be placed
 before the call to @code{test-start}.
 
-Alternatively, you can use the envionment variable
+Alternatively, you can use the environment variable
 @code{GAUCHE_TEST_RECORD_FILE} to specify the test record file.
 @c JP
 @code{test-record-file}手続きがうまく動作するためには、それが
@@ -13060,7 +14041,7 @@ test record fileを指定することもできます。
 
 @deftp {Environment Variable} GAUCHE_TEST_RECORD_FILE
 @c EN
-If this environment varaible is set when the test script is run,
+If this environment variable is set when the test script is run,
 its value is used as the name of the test record file.
 
 If the test script calls @code{test-record-file}, it takes precedence
@@ -13200,7 +14181,7 @@ procedure is to compare inexact numbers tolerating small error.
 @c COMMON
 
 @c EN
-When @var{thunk} signals an uncaptured error, it is catched and
+When @var{thunk} signals an uncaptured error, it is caught and
 yields a special error object @code{<test-error>}.
 You can check it with another error object created by
 @code{test-error} function to see if it is an expected type
@@ -13252,7 +14233,7 @@ This procedure supports to write such tests conveniently.
 @c COMMON
 
 @c EN
-Returns a special object represents @emph{either one of choices}.
+Returns a special object representing @emph{either one of the choices}.
 The default check procedure, @code{test-check}, recognizes the object
 when it is passed in the @var{expected} argument, and returns true
 if any one of @var{choice} @dots{} passes the check against the result.
@@ -13271,6 +14252,18 @@ For example, the following test passes if @code{proc} returns either
 @example
 (test* "proc returns either 1 or 2" (test-one-of 1 2) (proc))
 @end example
+@end defun
+
+@defun test-none-of choice @dots{}
+@c EN
+Similar to @code{test-one-of}, but creates a special object
+representing @emph{none of the choices}.
+The test succees if the test expression evaluates to a value that
+don't match any of @var{choice}s.
+@c JP
+@emph{@var{choice} @dots{} のいずれでもない} を表現する特別なオブジェクトを返します。
+テストは、テスト結果が@var{choice}のどれにもマッチしなかった時に成功となります。
+@c COMMON
 @end defun
 
 @c EN
@@ -13392,7 +14385,7 @@ this test can catch some careless misses.
 @c COMMON
 
 @c EN
-Sometimes you have a global vaiable that may not be
+Sometimes you have a global variable that may not be
 defined depending on compiler options or platforms, and
 you check its existence at runtime before using it.
 The undefined variable reference check by @code{test-module}
@@ -13548,7 +14541,7 @@ Threads are built on top of Win32 threads.
 @end table
 
 @c EN
-(Note: On pthreads plaforms, it should return @code{pthreads} instead
+(Note: On pthreads platforms, it should return @code{pthreads} instead
 of @code{pthread}; then the returned symbol would correspond to the
 value given to @code{--enable-threads} option at configuration time.
 It's a historical overlook, stuck for the backward compatibility.)
@@ -13571,15 +14564,21 @@ SchemeレベルのスレッドAPIはSRFI-18、``マルチスレッドサポー�
 @c COMMON
 
 @menu
-* Thread programming tips::
-* Thread procedures::
-* Synchronization primitives::
-* Thread exceptions::
+* Thread programming tips::     
+* Thread procedures::           
+* Synchronization primitives::  
+* Thread exceptions::           
 @end menu
 
 @node Thread programming tips, Thread procedures, Threads, Threads
 @subsection Thread programming tips
 @c NODE スレッドプログラミングTips
+
+@c EN
+@subsubheading What's Gauche threads for
+@c JP
+@subsubheading Gaucheのスレッドをどう使うか
+@c COMMON
 
 @c EN
 Although the surface API of threads looks simple and portable,
@@ -13723,6 +14722,69 @@ are not only but one of the ways to realize those features.
 それらの機能を実現するために、ネイティブスレッドが唯一の方法ではないということを
 心に留め置いて下さい。
 @c COMMON
+
+@c EN
+@subsubheading Uncaught errors in a thread body
+@c JP
+@subsubheading スレッドボディ内で捕捉されないエラー
+@c COMMON
+
+When you run a single-thread program that raises an unexpected (unhandled)
+error, Gauche prints an error message and a stack trace by default.
+So sometimes it perplexes programmers when a thread doesn't print
+anything when it dies because of an unhandled error.
+
+What's happneing is this: An unhandled error in a thread body would
+cause the thread to terminate, and the error itself will propagate
+to the thread who's expecting the result of the terminated thread.
+So, you get the error (wrapped by @code{<uncaught-exception>})
+when you call @code{thread-join!} on a thread which is terminated
+because of an unhandled error.  The behavior is defined in SRFI-18.
+
+If you fire a thread for one-shot calculation, expecting to receive
+the result by @code{thread-join!}, then this is reasonable---you can
+handle the error situation in the ``parent'' thread.  However,
+if you run a thread to loop indefinitely to process something and
+not expect to retrieve its result via @code{thread-join!}, this becomes
+a pitfall; the thread may die unexpectedly but you wouldn't know it.
+(If such a thread is garbage-collected, a warning is printed.
+However you wouldn't know when that happens so you can't count on it.)
+
+The rule of thumb is that you always wrap the body of such thread
+with @code{guard}, and handles the error explicitly.  You can call
+@code{report-error} to display the default error message and a stack
+trace.
+
+@example
+(thread-start!
+ (make-thread (^[] (guard (e [else (report-error e) #f])
+                     ... thread body ...))))
+@end example
+
+@xref{Thread exceptions}, for the details of thread exception handling.
+
+Note: As of 0.9.5, Gauche has a known bug that the tail call of
+error handling clauses of @code{guard} doesn't become a proper
+tail call.   So, the following code, which should run safely
+in Scheme, could eat up a stack:
+
+@example
+(thread-start!
+ (make-thread (^[] (let loop ()
+                     (guard (e [else (report-error e) (loop)])
+                       ... thread body ...)))))
+@end example
+
+For the time being, you can lift the call to loop outside of
+@code{guard} as workaround.
+
+@example
+(thread-start!
+ (make-thread (^[] (let loop ()
+                     (guard (e [else (report-error e)])
+                       ... thread body ...)
+                     (loop)))))
+@end example
 
 
 @node Thread procedures, Synchronization primitives, Thread programming tips, Threads
@@ -15478,7 +16540,7 @@ uses SRFI-4 vectors extensively.
 @c COMMON
 @end deftp
 @c EN
-The following ten types of vectors are defined.
+The following eleven types of vectors are defined.
 @table @emph
 @item s8vector
 Elements are exact integers in the range between -2^7 and 2^7-1
@@ -15509,7 +16571,7 @@ C compiler that compiles Gauche.  Usually it is a double precision
 IEEE floating point number.
 @end table
 @c JP
-以下の10タイプのベクタが定義されます。
+以下の11タイプのベクタが定義されます。
 @table @emph
 @item s8vector
 要素が -2^7 から 2^7-1 の間の正確な整数であるベクタ
@@ -15603,10 +16665,10 @@ for any of @code{s8}, @code{u8}, @code{s16}, @code{u16},
 @c COMMON
 
 @menu
-* Uvector basic operations::
-* Uvector conversion operations::
-* Uvector numeric operations::
-* Uvector block I/O::
+* Uvector basic operations::    
+* Uvector conversion operations::  
+* Uvector numeric operations::  
+* Uvector block I/O::           
 @end menu
 
 @node Uvector basic operations, Uvector conversion operations, Uniform vectors, Uniform vectors
@@ -15633,6 +16695,17 @@ A class for @var{TAG}vector.  It inherits @code{<sequence>}.
 @end deftp
 
 @deftp {Reader Syntax} @code{#@var{TAG}(@var{n} @dots{})}
+@lxindex #s8
+@lxindex #u8
+@lxindex #s16
+@lxindex #u16
+@lxindex #s32
+@lxindex #u32
+@lxindex #s64
+@lxindex #u64
+@lxindex #f16
+@lxindex #f32
+@lxindex #f64
 @c EN
 Denotes a literal homogeneous vector.
 @c JP
@@ -15659,11 +16732,21 @@ Denotes a literal homogeneous vector.
 @findex f64vector?
 [SRFI-4]
 @c EN
-Returns @code{#t} if @var{obj} is a @var{TAG}vector, @code{#f} otherwise.
+Returns @code{#t} iff @var{obj} is a @var{TAG}vector, @code{#f} otherwise.
 @c JP
 @var{obj}が@var{TAG}vectorなら@code{#t}を、そうでなければ@code{#f}を返します。
 @c COMMON
 @end deftp
+
+@defun uvector? obj
+@c EN
+Returns @code{#t} iff @var{obj} is of any uniform vector type.
+@c JP
+@var{obj}がいずれかの型のユニフォームベクタなら@code{#t}を、
+そうでなければ@code{#f}を返します。
+@c COMMON
+@end defun
+
 
 @deftp {Function} {@var{TAG}vector} @r{@var{x} @dots{}}
 @findex s8vector
@@ -15721,6 +16804,22 @@ If @var{fill} is omitted, the content of the vector is undefined.
 @end example
 @end deftp
 
+@defun make-uvector @code{class} @code{len} :optional @code{fill}
+@c EN
+This is a Gauche extension; instead of using separate constructor for
+each uvector type, you can pass the class of desired uvector.
+@c JP
+これはGaucheの拡張です。各ユニフォームベクタの型に対応する関数を呼ぶかわりに、
+欲しいユニフォームベクタのクラスを渡してベクタを作ることができます。
+@c COMMON
+
+@example
+(make-uvector <u8vector> 3)    @result{} #u8(0 0 0)
+(make-uvector <s8vector> 5 -1) @result{} #s8(-1 -1 -1 -1 -1)
+@end example
+@end defun
+
+
 @deftp {Function} @var{TAG}vector-length @r{@var{vec}}
 @findex s8vector-length
 @findex u8vector-length
@@ -15756,6 +16855,19 @@ if you import @code{gauche.collection}
 @end example
 @end deftp
 
+@defun uvector-length uvector
+@c EN
+This is a generic version of @code{@var{TAG}vector-length}; you
+can pass any instance of uniform vector, and it returns the number
+of its elements.
+@c JP
+これは@code{@var{TAG}vector-length}の汎用バージョンです。
+どんな型のユニフォームベクタでも渡すことができ、
+その要素数が返されます。
+@c COMMON
+@end defun
+
+
 @defun uvector-size uvector :optional start end
 @c EN
 This function can be applied to any type of uniform vectors, and
@@ -15765,7 +16877,10 @@ When @var{start} and/or @var{end} is/are given, the size of data
 between those indices are calculated.  The special value @code{-1}
 for @var{end} indicates the end of the vector.
 The returned value matches the number of octets to be written out
-by @code{(write-block @var{uvector} port @var{start} @var{end})}.
+by @code{(write-uvector @var{uvector} port @var{start} @var{end})}.
+
+(Do not confuse this with @code{uvector-length}, which returns
+the number of elements.)
 @c JP
 この手続きは全てのユニフォームベクタに適用することができます。
 @var{uvector}のバイナリデータとしてのサイズをオクテット数で返します。
@@ -15774,8 +16889,10 @@ by @code{(write-block @var{uvector} port @var{start} @var{end})}.
 これらのインデックスの間のデータについてのみサイズが計算されます。
 @var{end}には、ベクタ終端を示すために@code{-1}を与えることもできます。
 返される値は
-@code{(write-block @var{uvector} port @var{start} @var{end})} によって
+@code{(write-uvector @var{uvector} port @var{start} @var{end})} によって
 出力されるオクテット数と一致します。
+
+(要素数を返す@code{uvector-length}と混同しないようにしてください。)
 @c COMMON
 
 @example
@@ -15786,6 +16903,22 @@ by @code{(write-block @var{uvector} port @var{start} @var{end})}.
 (uvector-size '#u32(0 1 2 3) 0 1) @result{} 4
 @end example
 @end defun
+
+@defun uvector-class-element-size class
+@c EN
+Returns the size of an element of a uvector of the given class, in bytes.
+An error is raised when @var{class} is not a uvector class.
+@c JP
+与えられたクラスのユニフォームベクタの1要素が占める大きさをバイト数で返します。
+@var{class}がユニフォームベクタのクラスでない場合はエラーが投げられます。
+@c COMMON
+
+@example
+(uvector-class-element-size <u8vector>)  @result{} 1
+(uvector-class-element-size <s64vector>) @result{} 8
+@end example
+@end defun
+
 
 @deftp {Function} @var{TAG}vector-ref @r{@var{vec} @var{k} :optional @var{fallback}}
 @findex s8vector-ref
@@ -15920,6 +17053,19 @@ If @var{start} and/or @var{end} are given, they limit the range of
 @end example
 @end deftp
 
+@defun uvector-copy vec :optional start end
+@c EN
+This is a generic version of @code{@var{TAG}vector-copy}.
+You can give any type of uvector to @var{vec}, and get its copy
+(or copy of its part, depending on @var{start}/@var{end} argument).
+@c JP
+これは@code{@var{TAG}vector-copy}の汎用バージョンです。
+どんな型のuvectorでも@var{vec}に渡すことができ、そのコピー
+(もしくは、@var{start}/@var{end}によっては一部のコピー)が返されます。
+@c COMMON
+@end defun
+
+
 @deftp {Function} @var{TAG}vector-copy! @r{@var{target} @var{tstart} @var{source} :optional @var{sstart} @var{send}}
 @findex s8vector-copy!
 @findex u8vector-copy!
@@ -15964,6 +17110,15 @@ the excess elements are silently discarded.
 もし、コピー元のベクタの @var{sstart} と @var{send} の間にある要素の
 数がコピー先のベクタの@var{tstart}以降の部分よりも大きければ、超過分の
 ベクタはだまって捨てられます。
+@c COMMON
+
+@c EN
+It is ok to pass the same vector to @var{target} and @var{source};
+it always works even if the regions of source and destination are
+overlapping.
+@c JP
+@var{target}と@var{source}に同一のベクタを渡しても構いません。
+コピー先とコピー元の領域が重なっていても、コピーは常に正しく行われます。
 @c COMMON
 
 @c EN
@@ -16148,6 +17303,31 @@ type of @var{source}.
 @end defun
 
 
+@deftp {Function} @var{TAG}vector-append vec @dots{}
+@findex s8vector-append
+@findex u8vector-append
+@findex s16vector-append
+@findex u16vector-append
+@findex s32vector-append
+@findex u32vector-append
+@findex s64vector-append
+@findex u64vector-append
+@findex f16vector-append
+@findex f32vector-append
+@findex f64vector-append
+@c EN
+All arguments must be @var{TAG}vectors.  Returns a fresh vector
+whose contents are concatenation of the given vectors.
+@c JP
+引数はすべて@var{TAG}vectorでなければなりません。
+引数ベクタの内容を全てつなぎ合わせた新たなベクタを返します。
+@c COMMON
+
+@example
+(u8vector-append '#u8(1 2 3) '#u8(4 5) '#u8() '#u8(6 7 8))
+  @result{} #u8(1 2 3 4 5 6 7 8)
+@end example
+@end deftp
 
 @node Uvector conversion operations, Uvector numeric operations, Uvector basic operations, Uniform vectors
 @subsection Uvector conversion operations
@@ -16300,21 +17480,38 @@ if you import @code{gauche.collection}.
 @end example
 @end deftp
 
-@defun string->s8vector string :optional start end
-@defunx string->u8vector string :optional start end
+@defun string->s8vector string :optional start end immutable?
+@defunx string->u8vector string :optional start end immutable?
 @c EN
 Returns an s8vector or u8vector whose byte sequence is the same
 as the internal representation of the given string.
 Optional range arguments @var{start} and @var{end} specifies
-the @emph{character position} inside @var{string} to be
+the @emph{character position} (not the byte position) inside @var{string} to be
 converted.
+
+By default, the content of the string is copied to a newly created
+mutable uvector.  However, if a true value is given to the
+optional @var{immutable?} argument, the result is an immutable
+uvector, and it may avoid copying the string body (note that
+in Gauche, the body of string is immutable; @code{string-set!} creates
+a new body, so changing the original string won't affect the
+uvector created by @code{string->u8vector} with @code{immutable?} flag.)
 
 These procedures are useful when you want to access byte
 sequence of the string randomly.
 @c JP
 与えられた文字列の内部表現のバイト列と同じバイト列を持つs8vectorもしくは
 u8vectorを返します。省略可能な範囲引数@var{start}、@var{end}は、
-変換される文字列中の文字位置を指定します。
+変換される文字列中の文字位置を指定します (バイト位置ではないことに注意)。
+
+デフォルトでは、元の文字列の内容が新たに作られる変更可能なユニフォームベクタへと
+コピーされ、そのベクタが返されます。しかし、省略可能引数@var{immutable?}に
+真の値が渡された場合、返されるユニフォームベクタは変更不可能となり、
+また文字列本体のコピーが避けられる可能性があります。
+(Gaucheでは、文字列本体は変更不可能で、@code{string-set!}は新たな
+文字列本体を作り出します。したがって@code{string->u8vector}の
+@code{immutable?}に@code{#t}を渡してユニフォームベクタを作った後、
+元の文字列を変更しても、作られたユニフォームベクタは変更されません。)
 
 これらの手続きは、文字を構成するバイト列をランダムにアクセスしたい場合などに
 有用です。
@@ -16328,6 +17525,16 @@ u8vectorを返します。省略可能な範囲引数@var{start}、@var{end}は�
 (string->u8vector "いろは") @result{} #u8(164 164 164 237 164 207)
 @c COMMON
 @end example
+
+@example
+(string->u8vector "very large string .... " 0 -1 #t)
+@c EN
+  @result{} #u8(...)  ; @r{immutable, sharing content with the original string}
+@c JP
+  @result{} #u8(...)  ; @r{変更不可、元の文字列と内容を共有}
+@c COMMON
+@end example
+
 @end defun
 
 @defun string->s8vector! target tstart string :optional start end
@@ -16396,6 +17603,27 @@ s32vectorもしくはu32vectorを返します。
 変換される文字列中の文字位置を指定します。
 
 これらの手続きは、文字列中の文字をランダムにアクセスする場合に便利です。
+@c COMMON
+@end defun
+
+@defun string->s32vector! target tstart string :optional start end
+@defunx string->u32vector! target tstart string :optional start end
+@c EN
+@var{Target} must be a mutable s32vector or u32vector, respectively.
+Fill the @var{target} from position @var{tstart} with the codepoint
+of each character of @var{string}, until either @var{string} is exhausted
+or @var{target} is filled to the end. 
+
+Optional range arguments @var{start} and @var{end} specifies
+the @emph{character position} inside @var{string} to be
+considered.
+@c JP
+@var{target}は変更可能なs32vectorもしくはu32vectorでなければなりません。
+@var{target}の場所@var{tstart}から、@var{string}の各文字のコードポイントを
+順に埋めてゆきます。@var{target}ベクタの終端に達するか、文字が無くなるまで繰り返します。
+
+省略可能な引数@var{start}と@var{end}は@var{string}内の文字位置のインデックスで、
+考慮する@var{string}の範囲を制限します。
 @c COMMON
 @end defun
 
@@ -16868,7 +18096,80 @@ So you might want to use it for binary I/O.  Yes, you can do it.
 できます。それなら、それをバイナリI/Oに使えないでしょうか。もちろんできます。
 @c COMMON
 
-@defun read-block! vec :optional iport start end endian
+@defun read-uvector class size :optional iport endian
+@c EN
+Reads @var{size} elements of uvector of class @var{class} from
+@var{iport}, and returns fleshly created uvector.  If @var{iport}
+is omitted, the curret input port is used.
+@c JP
+クラス@code{class}のユニフォームベクタの要素を@var{size}個、@var{iport}から
+読み込み、それを新たに作ったユニフォームベクタとして返します。
+@var{iport}が省略された場合は、現在の入力ポートが使われます。
+@c COMMON
+
+@c EN
+For example, you can read input as an octet stream as follows:
+@c JP
+例えば次のようにして、入力をオクテットストリームとして読み込めます:
+@c COMMON
+
+@example
+(with-input-from-string "abcde"
+  (^[] (read-uvector <u8vector> 5)))
+ @result{} #u8(97 98 99 100 101)
+@end example
+
+@c EN
+If the input port has aleady reached EOF, an EOF object is
+returned.  The returned uvector can be shorter than @var{size}
+if the input reaches EOF before @var{size} elements are read.
+@c JP
+入力ポートが既にEOFに達していた場合はEOFオブジェクトが返されます。
+@var{size}要素を読む前に入力がEOFに達した場合、返されるuvectorの長さは
+@var{size}より短いものとなります。
+@c COMMON
+
+@c EN
+If the @var{iport} is a buffered port with `modest' or `none'
+buffering mode (@xref{File ports}), @code{read-uvector} may return
+before @var{size} elements are read, even if @var{iport}
+hasn't reached EOF.  The ports connected to a pipe or a network socket
+behave so by default.
+@c JP
+@var{iport}がバッファードポートであり、そのバッファリングモードが
+`modest' か `none' であった場合、@code{read-uvector}は@var{iport}が
+EOFに達していなくても、@var{size}要素を読む前に戻ることがあります
+(バッファリングモードについては@ref{File ports}を参照して下さい)。
+パイプやネットワークに接続されたポートはデフォルトでそのように振舞います。
+@c COMMON
+
+@c EN
+The data is read as a byte stream, so if you give uniform vectors
+other than s8vector or u8vector, your result may affected by
+the endianness.  If the optional argument @var{endian} is
+given, the input is interpreted in that endianness.
+When omitted, the value of the parameter @code{default-endian}
+is used.  @xref{Endianness}, for more about endian handling.
+@c JP
+データはバイトストリームとして読まれるので、
+s8vectorとu8vector以外のユニフォームベクタを与えた場合は
+結果がエンディアンに影響を受けることに注意して下さい。
+省略可能引数@var{endian}によって、入力データのエンディアンを指定
+することができます。省略した場合はパラメータ@code{default-endian}の
+値が使われます。エンディアンの扱いについてより詳しくは@ref{Endianness}を参照して
+ください。
+@c COMMON
+
+@c EN
+R7RS has @code{read-bytevector}; it is the same as passing @code{<u8vector>}
+to @code{read-uvector}.
+@c JP
+R7RSには@code{read-bytevector}があります。これは@code{read-uvector}に
+@code{<u8vector>}を渡すのと等価です。
+@c COMMON
+@end defun
+
+@defun read-uvector! vec :optional iport start end endian
 @c EN
 Reads a chunk of data from the given input port @var{iport},
 and stores it to the uniform vector @var{vec}.
@@ -16900,17 +18201,17 @@ is filled, the rest of the vector is untouched.
 @c COMMON
 
 @c EN
-If @var{iport} is already reached EOF when @code{read-block!} is
+If @var{iport} is already reached EOF when @code{read-uvector!} is
 called, an EOF object is returned.  Otherwise,
 the procedure returns the number of @emph{elements} read (not bytes).
 @c JP
-@code{read-block!}が呼ばれた時既に@var{iport}がEOFに達していた場合は
+@code{read-uvector!}が呼ばれた時既に@var{iport}がEOFに達していた場合は
 EOFが、そうでなければ読まれた要素の数 (バイト数ではありません) が返されます。
 @c COMMON
 
 @c EN
 If the @var{iport} is a buffered port with `modest' or `none'
-buffering mode (@xref{File ports}), @code{read-block!} may return
+buffering mode (@xref{File ports}), @code{read-uvector!} may return
 before all the elements in @var{vec} is filled, even if @var{iport}
 hasn't reached EOF.  The ports connected to a pipe or a network socket
 behave so by default.  If you know there will be enough data arriving and
@@ -16918,9 +18219,9 @@ want to make sure @var{vec} is filled, change the buffering mode of
 @var{iport} to `full'.
 @c JP
 @var{iport}がバッファードポートであり、そのバッファリングモードが
-`modest' か `none' であった場合、@code{read-block!}は@var{iport}が
+`modest' か `none' であった場合、@code{read-uvector!}は@var{iport}が
 EOFに達していなくても、@var{vec}を埋める前に戻ることがあります
-(バッファリングモードについては@ref{File ports})を参照して下さい。
+(バッファリングモードについては@ref{File ports}を参照して下さい)。
 パイプやネットワークに接続されたポートはデフォルトでそのように振舞います。
 もし、十分なデータが到着することがわかっており、@var{vec}を確実に埋めたい場合は
 ポートのバッファリングモードを`full'に変更して下さい。
@@ -16944,7 +18245,18 @@ s8vectorとu8vector以外のユニフォームベクタを与えた場合は
 @c COMMON
 @end defun
 
-@defun write-block vec :optional oport start end endian
+@defun read-block! vec :optional iport start end endian
+@c EN
+An old name of @code{read-uvector!}.  Supported for the backward
+compatibility, but new code should use @code{read-uvector!}.
+@c JP
+@code{read-uvector!}の古い名前です。互換性のためサポートされていますが、
+新しいコードでは@code{read-uvector!}を使ってください。
+@c COMMON
+@end defun
+
+
+@defun write-uvector vec :optional oport start end endian
 @c EN
 Writes out the content of the uniform vector @var{vec} 'as is'
 to the output port @var{oport}.   If @var{oport} is omitted,
@@ -16964,18 +18276,29 @@ This procedure returns an unspecified value.
 
 @c EN
 If you write out a uniform vector except s8vector and u8vector, the
-care should be taken about the endianness, as in @code{read-block!}.
+care should be taken about the endianness, as in @code{read-uvector}.
 The optional argument @var{endian} specifies the output endian.
 When it is omitted, the value of the parameter @code{default-endian}
 is used (@xref{Endianness}).
 @c JP
 @code{s8vector}と@code{u8vector}以外のユニフォームベクタを与えた場合、
-@code{read-block!}と同じようにエンディアンの影響を受けることに注意して
+@code{read-uvector}と同じようにエンディアンの影響を受けることに注意して
 下さい。省略可能引数@var{endian}によって出力のエンディアンを
 指定できます。省略した場合はパラメータ@code{default-endian}の値が
 使われます (@xref{Endianness}参照)。
 @c COMMON
 @end defun
+
+@defun write-block vec :optional iport start end endian
+@c EN
+An old name of @code{write-uvector}.  Supported for the backward
+compatibility, but new code should use @code{write-uvector}.
+@c JP
+@code{write-uvector}の古い名前です。互換性のためサポートされていますが、
+新しいコードでは@code{write-uvector}を使ってください。
+@c COMMON
+@end defun
+
 
 @c ----------------------------------------------------------------------
 @node Comparing version numbers, Virtual ports, Uniform vectors, Library modules - Gauche extensions
@@ -17354,11 +18677,11 @@ value(s) read from the port.
 @c EN
 If set, the value must be a procedure that takes one argument,
 a positive exact integer.  It is called when the block binary
-input, such as @code{read-block}, is requested.
+input, such as @code{read-uvector}, is requested.
 @c JP
 設定されているなら、その値は、正の正確な整数の引数をひとつだけとる手続き
 でなければなりません。ブロックバイナリ入力、たとえば、
-@code{read-block}などが要求された場合に、呼出されます。
+@code{read-uvector}などが要求された場合に、呼出されます。
 
 @c EN
 It must return a (maybe incomplete) string up to the specified size,
@@ -17909,7 +19232,7 @@ of @code{<buffered-input-port>} above for the details.
 @c EN
 The following two procedures returns a buffered input/output port
 backed up by a uniform vector.    The source or destination vector
-can be any type of uniform vector, but they are aliased
+can be any type of uniform vector, but they will be aliased
 to @code{u8vector} (see @code{uvector-alias} in
 @ref{Uvector conversion operations}).
 @c JP
@@ -17948,18 +19271,163 @@ EOFが返されます。シーク操作も実装されています。
 @c COMMON
 @end defun
 
-@defun open-output-uvector uvector
+@defun open-output-uvector :optional uvector :key extendable
 @c EN
-Returns an output port that fills the given uvector by the
-data output to the port.  If @var{uvector} is completely
-filled, more data are silently discarded.
-Seek operation is also implemented.
+Returns an output port that uses the given uvector as the
+storage for the data output to the port.
+
+If @var{uvector} is completely filled, what happens after that
+depends on @var{extendable} - if it is false (default), the rest
+of data is discarded silently.  If it is true, the storage is
+extended automatically to accomodate more data.
+
+If you give true value to @var{extendable}, you have to retrieve
+the result by @code{get-output-uvector} below, since the uvector
+you passed in won't contain spilled data.
+
+As a special case, you can omit @var{uvector} argument; then
+@code{u8vector} is used as the storage.  In that case
+you can't specify @var{extendable} keyword argument, but it is
+assumed true, since it won't make sense otherwise.  Use
+@code{get-output-uvector} to retrieve the stored result.
+
+Seek operation is also implemented.  Note that the meaning
+of @code{SEEK_END} whence differ between extendable and
+fixed-size uvector ports.  For extendable ports,
+the end whence placed next to the biggest offset of
+the data ever written; if you open a port and just write
+one byte, the end whence is the second byte, no matter
+how big the existing buffer is.  On the other hand,
+for fixed-size uvector ports, end whence is fixed to
+the next to the end of the given buffer, no matter
+how much data you've written to it.  In the latter case,
+you can't seek on or past the end (you need to pass negative
+number along @code{SEEK_END} to @code{port-seek}).
 @c JP
-与えられた uvector をポートへのデータ出力で満たす出力ポートを返します。
-@var{uvector}が満杯になれば、それ以上のデータは黙って廃棄されます。
-シーク操作も実装されています。
+与えられた uvector をデータの格納に使うような出力ポートを返します。
+
+@var{uvector}が全て埋まった後、何が起きるかは、@var{extendable}引数によって
+変わります。もし偽の値(デフォルト)では、更に送られてきたデータは黙って捨てられます。
+@var{extendable}が真の値であった場合、追加のデータを保持するため
+格納領域は自動的に拡張されます。
+
+@var{extendable}に真の値を与えた場合、貯められたデータを取り出すには、
+下で説明する@code{get-output-uvector}を使ってください。渡した@var{uvector}
+引数には溢れたデータは格納されないので。
+
+特別な場合として、@var{uvector}引数を省略することができます。
+この場合、データストレージとして@code{u8vector}が使われます。
+@var{uvector}引数を省略した場合、@var{extendable}引数を
+与えることはできませんが、これは真の値を与えたものとみなされます。
+でないと意味がないからです。@code{get-output-uvector}で
+貯められたデータを取り出すことができます。
+
+ポートに対してシーク操作も使うことができます。
+ただし、whenceに@code{SEEK_END}を与えた場合の解釈が、@var{extendable}かどうかで
+変わることに注意してください。@var{extendable}なポートでは、
+末尾は「それまでに書き込まれたデータのうちもっとも大きなオフセット」の次に
+設定されます。uvectorポートを開いてすぐに1バイト書き込んだ状態では、
+@var{uvector}引数にどんなに大きなベクタを渡していたとしても、@code{SEEK_END}
+の基準点は2バイト目です。一方、@var{extendable}でないポートでは、
+末尾はそれまでに書き込んだデータによらず、常に与えた@var{uvector}の
+末尾の次になります。その場合は、末尾やそれ以降にシークすることはできません
+(@code{port-seek}に@code{SEEK_END}を渡す時、オフセットは必ず負数でなければ
+なりません)。
 @c COMMON
 @end defun
+
+@defun get-output-uvector port :key shared
+@c EN
+If @var{port} is a port created by @code{open-output-uvector}, returns
+a @var{uvector} that contains accumulated data.
+If @var{port} is not a port created by @code{open-output-uvector},
+@code{#f} is returned.
+
+The returned uvector is the same type as the one passed to
+@code{open-output-uvector}, containing up to actually written data; it may
+be smaller than the @var{uvector} passed to @code{open-output-uvector};
+it can be larger if the port is extendable.
+
+If the type of uvector is other than @code{s8vector} and @code{u8vector},
+and the written data doesn't fill up the whole element won't be
+in the result.
+For example, if you use @code{s32vector} to create the port,
+then write 7 bytes to it, @code{get-output-uvector} returns a
+single element @code{s32vector}, for the last 3 bytes does not
+consist a whole 32bit integer.
+
+By default, the returned vector is a fresh copy of the contents.
+Passing true value to @var{shared} may avoid copying and allow
+sharing storage for the one being used by @var{port}.  If you do so,
+keep in mind that if you seek back and write to @var{port} subsequently,
+the content of returned vector may be changed.
+@c JP
+@var{port}が@code{open-output-uvector}で作られたポートであるなら、
+これまでに蓄えられたデータを@var{uvector}として返します。
+@var{port}がそうでない場合は@code{#f}が返されます。
+
+返り値のベクタは、@code{open-output-uvector}に渡したuvector
+と同じ型で、実際に書き込まれたデータの最後尾までの範囲になります。
+それは@code{open-output-uvector}に渡された@var{uvector}より小さいかも
+しれませんし、ポート作成時に@var{extendable}に真の値が渡されていた場合は
+元の@var{uvector}よりも大きいかもしれません。
+
+uvectorの型が@code{s8vector}や@code{u8vector}以外である場合、
+書き込まれたデータのうち完全な要素に足りない部分は結果に含まれません。
+例えば、@code{s32vector}でポートを作り7バイト書き込んでから
+@code{get-output-uvector}を呼ぶと、返される@code{s32vector}は
+1要素になります。最後の3バイトは完全な32bit整数を構成しないからです。
+
+デフォルトでは、返り値のベクタは新たにアロケートされたものです。
+しかし@var{shared}キーワード引数に真の値を渡すと、可能ならば、
+@var{port}が使っている格納領域をそのまま参照するベクタが返されます。
+このオプションによってコピーを減らすことができますが、
+後で@var{port}をシークして前に戻って再書き込みすると、
+返されたベクタの内容が書き換わってしまう可能性があることに注意してください。
+@c COMMON
+@end defun
+
+@c EN
+@subsubheading List ports
+@c JP
+@subsubheading リストポート
+@c COMMON
+
+@c EN
+The following procedures allow you to use list of characters
+or octets as a source of an input port.  These are (a kind of)
+opposite of @code{port->list} family
+(@xref{Input utility functions}) or @code{port->char-lseq} famliy
+(@xref{Lazy sequences}).
+@c JP
+
+@c COMMON
+
+@defun open-input-char-list char-list
+@defunx open-input-byte-list byte-list
+Creates and returns an input port that uses
+the given list of characters and bytes as the source.
+
+@example
+(read (open-input-char-list '(#\a #\b)))
+ @result{} ab
+@end example
+@end defun
+
+@defun get-remaining-input-list port
+If @var{port} is the one created by @code{open-input-char-list} 
+or @code{open-input-byte-list}, returns a list of remaining data
+that hasn't been read yet.  If the port already read everything,
+or the port is not the one created by @code{open-input-char-list} 
+or @code{open-input-byte-list}, an empty list is returned.
+
+A caveat: Gauche allows mixing binary input and textual input from
+the same port.  If you read or even peek a byte from a port
+created from a character list, the port buffers a character
+and disassembles it to bytes; the disassembled character
+may not be included in the remaining input list.
+@end defun
+
 
 @c EN
 @subsubheading Note on finalization

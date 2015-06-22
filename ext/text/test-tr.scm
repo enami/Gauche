@@ -26,16 +26,29 @@
        (string-tr "Hello, World!" "A-Za-z" "a-z" :delete #t))
 (test* "complement" "Hello??World?"
        (string-tr "Hello, World!" "A-Za-z" "?*" :complement #t))
+(test* "complement" "Hello??World?"
+       (string-tr "Hello, World!" "a-zA-Z" "?*" :complement #t))
 (test* "complement" "H??????W?????"
        (string-tr "Hello, World!" "A-Z" "?*" :complement #t))
 (test* "complement & delete" "HelloWorld"
        (string-tr "Hello, World!" "A-Za-z" ""
+                  :complement #t :delete #t))
+(test* "complement & delete" "HelloWorld"
+       (string-tr "Hello, World!" "a-zA-Z" ""
                   :complement #t :delete #t))
 (test* "squeeze" "helo,   world!!!!"
        (string-tr "Hello,   World!!!!" "A-Za-z" "a-z" :squeeze #t))
 (test* "squeeze & complement" "Hello, World!"
        (string-tr "Hello,   World!!!!" "A-Za-z" ""
                   :squeeze #t :complement #t))
+
+(test* "spec edge case (-)" "-bacdaef"
+       (string-tr "Ab-cd-ef" "A-" "-a"))
+(test* "spec edge case (\\)" "a/b"
+       (string-tr "a\\b" "\\\\" "/"))
+(test* "spec edge case (\\)" (test-error)
+       (string-tr "a\\b" "\\" "/"))
+
 
 ;; whole test over smaller table size
 (test* "basic, table-size" "hELLO, wORLD!"

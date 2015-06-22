@@ -1,7 +1,7 @@
 ;;;
 ;;; Auxiliary script to generate EUC_JISX0213 <-> Unicode 3.2 table
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -52,19 +52,19 @@
 ;; Or
 ;;   (EUC-JP-codepoint . (UCS4-codepoint . UCS4-combining-character))
 (define (parse)
-  (port-fold (lambda (line knil)
-               (rxmatch-case line
-                 (#/^0x([0-9A-F]+)\s+U\+([0-9A-F]+)(\+[0-9A-F]+)?/
-                       (#f code uni uni2)
-                       (let ((n-code (string->number code 16))
-                             (n-uni  (string->number uni 16))
-                             (n-uni2 (and uni2 (string->number uni2 16))))
-                         (if n-uni2
-                             (acons n-code (cons n-uni n-uni2) knil)
-                             (acons n-code n-uni knil))))
-                 (else knil)))
-             '()
-             read-line))
+  (generator-fold (^[line knil]
+                    (rxmatch-case line
+                      (#/^0x([0-9A-F]+)\s+U\+([0-9A-F]+)(\+[0-9A-F]+)?/
+                            (#f code uni uni2)
+                            (let ((n-code (string->number code 16))
+                                  (n-uni  (string->number uni 16))
+                                  (n-uni2 (and uni2 (string->number uni2 16))))
+                              (if n-uni2
+                                (acons n-code (cons n-uni n-uni2) knil)
+                                (acons n-code n-uni knil))))
+                      (else knil)))
+                  '()
+                  read-line))
 
 (define (ucs4->utf8 code)
   (cond ((< code #x80)
@@ -116,7 +116,7 @@
   (define (jisx0201 data)
     (print "/****** EUC_JP -> UCS2 JISX0201-KANA (0x8e??) ******/")
     (print "/* index = e2 - 0xa1 */")
-    (print "static unsigned short euc_jisx0201_to_ucs2[] = {")
+    (print "static const unsigned short euc_jisx0201_to_ucs2[] = {")
     (begin0 (write-data data car cdr #x8ea1 #x8ee0 8)
             (print "};")
             (newline)))
@@ -124,7 +124,7 @@
   (define (jisx0213-1 data)
     (print "/****** EUC_JP -> UCS4  JISX0213 plane 1 *******/")
     (print "/* index = (e1 - 0xa1, e2 - 0xa1) */")
-    (print "static unsigned int euc_jisx0213_1_to_ucs2[][94] = {")
+    (print "static const unsigned int euc_jisx0213_1_to_ucs2[][94] = {")
     (begin0
      (let loop ((e1 #xa1) (data data))
        (if (= e1 #xff)
@@ -147,7 +147,7 @@
                      #xf7 #xf8 #xf9 #xfa #xfb #xfc #xfd #xfe))
     (print "/****** EUC_JP -> UCS4  JISX0213 plane 2 (0x8f????) *****/")
     (print "/* table to traslate second byte into the first index */")
-    (print "static short euc_jisx0213_2_index[] = {")
+    (print "static const short euc_jisx0213_2_index[] = {")
     (let loop ((e1 #xa1) (count 0) (e1list e1list))
       (cond ((= e1 #xff))
             ((= e1 (car e1list))
@@ -158,7 +158,7 @@
              (loop (+ e1 1) count e1list))))
     (print "\n};\n")
     (print "/* index = (e1table, e2 - 0xa1) */")
-    (print "static unsigned int euc_jisx0213_2_to_ucs2[][94] = {")
+    (print "static const unsigned int euc_jisx0213_2_to_ucs2[][94] = {")
     (let loop ((e1list e1list) (data data))
       (if (null? e1list)
           data
@@ -240,7 +240,7 @@
     (dolist (u0 '(#xc2 #xc3 #xc4 #xc5 #xc7 #xc9 #xca #xcb #xcc #xce #xcf
                   #xd0 #xd1))
       (format #t "\n/* 2-byte UTF8: [~X XX] */\n" u0)
-      (format #t "static unsigned short utf2euc_~x[64] = {\n" u0)
+      (format #t "static const unsigned short utf2euc_~x[64] = {\n" u0)
       (let1 v (hash-table-get root u0)
         (dotimes (i 64)
           (format #t " 0x~4,'0x," (euc-entry (vector-ref v i)))
@@ -251,7 +251,7 @@
   (define (emit-utf3b)
     (dolist (u0 '(#xe2 #xe3 #xe4 #xe5 #xe6 #xe7 #xe8 #xe9 #xef))
       (format #t "\n/* 3-byte UTF8: [~X XX XX] */\n" u0)
-      (format #t "static unsigned char utf2euc_~x[64] = {\n" u0)
+      (format #t "static const unsigned char utf2euc_~x[64] = {\n" u0)
       (let* ((v1 (hash-table-get root u0))
              (s64 (iota 64)))
         (fold (lambda (u1 count)
@@ -263,7 +263,7 @@
               1
               s64)
         (print "};\n")
-        (format #t "static unsigned short utf2euc_~x_xx[][64] = {\n" u0)
+        (format #t "static const unsigned short utf2euc_~x_xx[][64] = {\n" u0)
         (for-each (lambda (u1)
                     (and-let* ((v2 (vector-ref v1 u1)))
                       (format #t " {/* [~X ~X XX] */\n" u0 (+ u1 #x80))
@@ -280,7 +280,7 @@
     (let1 v0 (hash-table-get root #xf0)
       (dolist (u1 '(#xa0 #xa1 #xa2 #xa3 #xa4 #xa5 #xa6 #xa7 #xa8 #xa9 #xaa))
         (format #t "\n/* 4-byte UTF8: [F0 ~X XX XX] */\n" u1)
-        (format #t "static unsigned short utf2euc_f0_~x[] = {\n" u1)
+        (format #t "static const unsigned short utf2euc_f0_~x[] = {\n" u1)
         (let1 v1 (vector-ref v0 (- u1 #x80))
           (dotimes (u2 64)
             (and-let* ((v2 (vector-ref v1 u2)))

@@ -27,20 +27,20 @@
 (define (cmd-rmrf dir)
   (cond-expand
    (gauche.os.windows
-    (sys-system #`"rmdir /q /s ,(n dir) > NUL 2>&1")
-    (sys-system #`"del /q ,(n dir) > NUL 2>&1"))
+    (sys-system #"rmdir /q /s ~(n dir) > NUL 2>&1")
+    (sys-system #"del /q ~(n dir) > NUL 2>&1"))
    (else
-    (sys-system #`"rm -rf ,dir > /dev/null"))))
+    (sys-system #"rm -rf ~dir > /dev/null"))))
 
 (define (cmd-mkdir dir)
   (cond-expand
-   (gauche.os.windows (sys-system #`"mkdir ,(n dir)"))
-   (else (sys-system #`"mkdir ,dir"))))
+   (gauche.os.windows (sys-system #"mkdir ~(n dir)"))
+   (else (sys-system #"mkdir ~dir"))))
 
 (define (cmd-touch path)
   (cond-expand
-   (gauche.os.windows (sys-system #`"echo \"\" > ,(n path)"))
-   (else (sys-system #`"touch ,path"))))
+   (gauche.os.windows (sys-system #"echo \"\" > ~(n path)"))
+   (else (sys-system #"touch ~path"))))
 
 (define (get-command-output command)
   (cmd-rmrf "test.out")
@@ -80,7 +80,7 @@
 
 (test* "getenv"
        (string-trim-both
-	(get-command-output (cond-expand
+        (get-command-output (cond-expand
                              (gauche.os.windows "echo %PATH%")
                              (else "echo $PATH"))))
        (sys-getenv "PATH"))
@@ -133,9 +133,9 @@
 
 (let ([envs (sys-environ)])
   (define (env-test var)
-    (test* #`"sys-environ (,var)" #t
+    (test* #"sys-environ (~var)" #t
            (cond [(sys-getenv var)
-                  => (^[val] (boolean (member #`",|var|=,|val|" envs)))]
+                  => (^[val] (boolean (member #"~|var|=~|val|" envs)))]
                  [else #t])))
   (env-test "HOME")
   (env-test "USER")
@@ -517,7 +517,7 @@
 
 (cond-expand
  [(and (not gauche.os.windows)  ;; win32 doesn't support fork at all.
-       (not gauche.os.cygwin))	;; cygwin's fork is not reliable.
+       (not gauche.os.cygwin))  ;; cygwin's fork is not reliable.
   (test* "fork & wait" #t
          (let ((pid (sys-fork)))
            (if (= pid 0)
@@ -574,7 +574,7 @@
                (begin (close-input-port in)
                       (display (make-string 69999) out)
                       (with-error-handler
-                          (lambda (e) (sys-exit 0))
+                          (^e (sys-exit 0))
                         (lambda ()
                           (newline out)
                           (close-output-port out)
@@ -609,28 +609,37 @@
   ;; Testing fork&exec and detached process
   ;; NB: these tests assume we're running the testing gosh in the
   ;; current directory.
-  (cmd-rmrf "test.out")
-  (with-output-to-file "test.out"
-    (lambda ()
-      (write '(begin
-                (sys-nanosleep #e2e8)
-                (write (list (sys-getpid) (sys-getppid) (sys-getpgrp)))))))
-  (receive (in out) (sys-pipe :buffering :none)
-    (define (run-and-read detached)
-      (let1 pid (sys-fork-and-exec "./gosh"
-                                   `("./gosh" "-ftest" "./test.out")
-                                   :iomap `((1 . ,out))
-                                   :detached detached)
-        (begin0 (read in) (sys-waitpid pid))))
-    (test* "fork, exec and detached process (not detached)"
-           `(parent ,(sys-getpid) pgrp ,(sys-getpgrp))
-           (let1 r (run-and-read #f)
-             `(parent ,(cadr r) pgrp ,(caddr r))))
-    (test* "fork, exec and detached process (detached)"
-           `(parent 1 pgrp #t)
-           (let1 r (run-and-read #t)
-             `(parent ,(cadr r) pgrp ,(= (car r) (caddr r)))))
-    )
+  (when (file-exists? "./gosh")
+    (cmd-rmrf "test.out")
+    ;; The child process.  Gets the expected ppid in the first arg.
+    ;; If :detached is true, we expect ppid to be 1.  However, the
+    ;; immediate parent may take time to exit, so we loop to synchronize.
+    (with-output-to-file "test.out"
+      (lambda ()
+        (write '(define (main args)
+                  (let1 expected-ppid (x->integer (cadr args))
+                    (let loop ([c 0])
+                      (sys-nanosleep #e2e8)
+                      (cond [(or (eqv? (sys-getppid) expected-ppid)
+                                 (>= c 50)) ; takes about 10s
+                             (write (list (sys-getpid) (sys-getpgrp)))]
+                            [else (loop (+ c 1))])))))))
+    (define (run-and-read-test msg ppid detached)
+      (test* msg detached
+             (receive (in out) (sys-pipe :buffering :none)
+               (let1 pid (sys-fork-and-exec "./gosh"
+                                            `("./gosh" "-ftest" "./test.out"
+                                              ,(x->string ppid))
+                                            :iomap `((1 . ,out))
+                                            :detached detached)
+                 (close-port out)
+                 (let1 result (read in)
+                   (sys-waitpid pid)
+                   (eqv? (car result) (cadr result)))))))
+    (run-and-read-test "fork, exec and detached process (not detached)" 
+                       (sys-getpid) #f)
+    (run-and-read-test "fork, exec and detached process (detached)"
+                       1 #t))
   (cmd-rmrf "test.out")
 
   ;; Testing GC in forked process---we don't explicitly spawn a thread here,
@@ -668,7 +677,7 @@
            (sys-fdset-set! fdset 3 #t)
            (sys-fdset-set! fdset 4 #f)
            (cons (sys-fdset-max-fd fdset)
-                 (map (lambda (i) (sys-fdset-ref fdset i)) (iota 5)))))
+                 (map (^i (sys-fdset-ref fdset i)) (iota 5)))))
 
   (test* "fdset" '(-1 7 7 4 10 10 -1)
          (let ((fdset (make <sys-fdset>))
@@ -842,8 +851,8 @@
              (call/cc
               (lambda (k)
                 (set-signal-handler! SIGINT  k)
-                (set-signal-handler! SIGCHLD (lambda (k) (sys-wait) (set! chld #t)))
-                (set-signal-handler! SIGHUP  (lambda (k) (set! sig 'hup)))
+                (set-signal-handler! SIGCHLD (^k (sys-wait) (set! chld #t)))
+                (set-signal-handler! SIGHUP  (^k (set! sig 'hup)))
                 (sys-sigmask SIG_BLOCK mask1)
                 (let ((pid (sys-fork)))
                   (if (= pid 0)
@@ -910,7 +919,7 @@
    [(and gauche.sys.sigwait
          (not gauche.os.cygwin))
     (let ()
-      (define z (lambda (n) (raise 'foo)))
+      (define z (^n (raise 'foo)))
       
       (set-signal-handler! SIGCHLD #t)
       (set-signal-handler! SIGINT z)

@@ -1,7 +1,7 @@
 ;;;
 ;;; odbm - original dbm interface
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -201,18 +201,18 @@
    (let* ([r::int (dbminit (Scm_GetString name))])
      (when (< r 0) (Scm_SysError "couldn't open dbm database %S" name))
      (set! odbm_opened TRUE)
-     (result r)))
+     (return r)))
 
  (define-cproc odbm-close () ::<void>
    (when odbm_opened (dbmclose) (set! odbm_opened FALSE)))
 
  (define-cproc odbm-closed? () ::<boolean>
-   (result (not odbm_opened)))
+   (return (not odbm_opened)))
 
  (define-cproc odbm-store (key::<string> val::<string>) ::<int>
    (let* ([dkey::datum] [dval::datum])
      (CHECK_ODBM) (TO_DATUM dkey key) (TO_DATUM dval val)
-     (result (store dkey dval))))
+     (return (store dkey dval))))
 
  (define-cproc odbm-fetch (key::<string>)
    (let* ([dkey::datum] [dval::datum])
@@ -221,7 +221,7 @@
 
  (define-cproc odbm-delete (key::<string>) ::<int>
    (let* ([dkey::datum])
-     (CHECK_ODBM) (TO_DATUM dkey key) (result (delete dkey))))
+     (CHECK_ODBM) (TO_DATUM dkey key) (return (delete dkey))))
 
  (define-cproc odbm-firstkey ()
    (let* ([dkey::datum])

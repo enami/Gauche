@@ -1,7 +1,7 @@
 ;;;
 ;;; gauce.cgen.stub - stub forms parsing and code generation
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -37,8 +37,8 @@
   (use srfi-42)
   (use util.match)
   (use text.tr)
+  (use text.tree)
   (use file.util)
-  (use util.list)
   (use gauche.parameter)
   (use gauche.sequence)
   (use gauche.mop.instance-pool)
@@ -48,6 +48,7 @@
   (use gauche.cgen.cise)
   (use gauche.cgen.tmodule)
   (export <cgen-stub-unit> <cgen-stub-error>
+          cgen-stub-cise-ambient
           cgen-genstub
           cgen-stub-parser cgen-stub-parse-form)
   )
@@ -166,7 +167,7 @@
 ;;             results.
 ;;        a string : becomes the body of C code.
 ;;
-;;   define-cgeneric name c-name property-clause ...)
+;;   define-cgeneric name c-name property-clause ...
 ;;
 ;;      Defines generic function.   C-name specifies a C variable name
 ;;      that keeps the generic function structure.  One or more of
@@ -182,9 +183,14 @@
 ;;      (slot-spec ...)
 ;;      property-clause ...
 ;;
-;;   define-cptr scheme-class-name [qualifiers] c-typename c-class-var
-;;      property-clause ...
-;;      *UNFINISHED*
+;;   define-cptr scheme-class-name [qualifier] c-typename c-class-var
+;;               c-pred c-boxer c-unboxer
+;;               [(flags flag ...)]
+;;               [(print print-proc)]
+;;               [(cleanup cleanup-proc)]
+;;
+;;       qualifier :: :private
+;;       flag :: :keep-identity | :mak-null
 ;;
 ;;   define-symbol scheme-name [c-name]
 ;;      Defines a Scheme symbol.  No Scheme binding is created.
@@ -230,8 +236,8 @@
 (define (cgen-genstub stubfile :key (predef-syms '()))
   (unless (file-is-readable? stubfile)
     (error <cgen-stub-error> "Couldn't read input file:" stubfile))
-  (let1 prefix
-      (cgen-safe-name-friendly (path-sans-extension (sys-basename stubfile)))
+  (let1 prefix ($ cgen-safe-name-friendly $ path-sans-extension
+                  $ sys-basename stubfile)
     (parameterize ([cgen-current-unit
                     (make <cgen-stub-unit>
                       :name (path-sans-extension (sys-basename stubfile))
@@ -244,12 +250,16 @@
        (for-each cgen-define predef-syms)
        (cgen-include "<gauche.h>")
        (with-input-from-file stubfile
-         (cut port-fold
+         (cut generator-fold
               ;; We treat the initial raw strings specially---they will be
               ;; in decl part.  The flag decl-strings? tracks that.
               (^[form decl-strings?]
                 (cond [(and decl-strings? (string? form)) (cgen-decl form) #t]
-                      [else (cgen-stub-parse-form form) #f]))
+                      [else
+                       (guard (e [else
+                                  ($ raise $ make-compound-condition e
+                                     $ make <compile-error-mixin> :expr form)])
+                         (cgen-stub-parse-form form) #f)]))
               #t read))
        (cgen-emit-c (cgen-current-unit))))))
 
@@ -316,6 +326,15 @@
 (define-form-parser define-cfn args
   (cgen-body (cise-render-to-string `(define-cfn ,@args) 'toplevel)))
 
+;; extra check of valid clauses
+(define (check-clauses directive name clauses valid-keys)
+  (and-let1 bad (find (^c (or (not (pair? c))
+                              (not (memq (car c) valid-keys))))
+                      clauses)
+    (errorf <cgen-stub-error>
+            "Invalid clause for ~s ~s: Expected a list starting with either one of ~s, but got: ~s"
+            directive name valid-keys bad)))
+
 ;;===================================================================
 ;; Type handling
 ;;
@@ -327,6 +346,9 @@
 ;; define-type name c-type [desc c-predicate unboxer boxer]
 ;;
 ;;   Creates a new stub type for existing scheme type.
+;;   This form itself doesn't generate any C code, but predicate, boxer
+;;   and unboxer will be used by other stub forms to generate C code
+;;   based on stub types.
 
 (define-form-parser define-type args
   (unless (<= 2 (length args) 6)
@@ -527,12 +549,46 @@
    (flags             :initform '() :init-keyword :flags)
       ;; list of keywords to modify code generation.  currently
       ;; :fast-flonum and :constant are supported.
+   (forward-decls     :initform '())
+      ;; list of strings for code that must be emitted before the
+      ;; procedure definition
+   (info              :initform #f)
+      ;; cgen-literal of ScmObj to be set in the 'info' slot of ScmProcedure.
    ))
 
 (define (get-arg cproc arg) (find (^x (eq? arg (~ x'name))) (~ cproc'args)))
 (define (push-stmt! cproc stmt) (push! (~ cproc'stmts) stmt))
 
 (define-generic c-stub-name )
+
+;; API
+;; We use customized cise context while generating stubs
+(define (cgen-stub-cise-ambient :optional (orig-ambient (cise-ambient)))
+  (rlet1 ctx (cise-ambient-copy orig-ambient '())
+    ;; Override "return"
+    ($ cise-register-macro! 'return
+       (^[form env]
+         (match form
+           [(_)         `(goto SCM_STUB_RETURN)]
+           [(_ e0)       `(begin (set! SCM_RESULT ,e0)
+                                 (goto SCM_STUB_RETURN))]
+           [(_ e0 e1)    `(begin (set! SCM_RESULT0 ,e0)
+                                 (set! SCM_RESULT1 ,e1)
+                                 (goto SCM_STUB_RETURN))]
+           [(_ e0 e1 e2) `(begin (set! SCM_RESULT0 ,e0)
+                                 (set! SCM_RESULT1 ,e1)
+                                 (set! SCM_RESULT2 ,e2)
+                                 (goto SCM_STUB_RETURN))]
+           [_ (error "Too many values to return")]))
+       ctx)))
+
+(define-syntax with-cise-ambient
+  (syntax-rules ()
+    [(_ procstub body ...)
+     (parameterize ([cise-ambient (cgen-stub-cise-ambient (cise-ambient))])
+       body ...
+       (push! (~ procstub'forward-decls)
+              (cise-ambient-decl-strings (cise-ambient))))]))
 
 ;;-----------------------------------------------------------------
 ;; (define-cproc scheme-name (argspec) body)
@@ -580,6 +636,7 @@
                       :allow-other-keys? other-keys?)
           (process-body cproc body)
           (check-fast-flonum cproc args)
+          (assign-proc-info! cproc)
           (cgen-add! cproc))))))
 
 (define-method c-stub-name ((cproc <cproc>)) #`",(~ cproc'c-name)__STUB")
@@ -615,19 +672,19 @@
   (define (required specs args nreqs)
     (match specs
       [()                  (values (reverse args) '() nreqs 0 #f #f)]
-      [(:optional . specs) (optional specs args nreqs 0)]
-      [(:rest . specs)     (rest specs args '() nreqs 0 #f)]
-      [(:key . specs)      (keyword specs args '() nreqs 0)]
-      [(:allow-other-kyes . specs)
+      [(':optional . specs) (optional specs args nreqs 0)]
+      [(':rest . specs)     (rest specs args '() nreqs 0 #f)]
+      [(':key . specs)      (keyword specs args '() nreqs 0)]
+      [(':allow-other-kyes . specs)
        (errorf <cgen-stub-error>
                "misplaced :allow-other-key parameter: ~s in ~a" argspecs name)]
-      [(:optarray (var cnt max) . specs)
+      [(':optarray (var cnt max) . specs)
        (let1 args (cons (make-arg <optarray-arg> var nreqs
                                   :count-var cnt :max-count max)
                         args)
          (match specs
            [() (values (reverse args) '() nreqs max #f #f)]
-           [(:rest . specs) (rest specs args '() nreqs max #f)]
+           [(':rest . specs) (rest specs args '() nreqs max #f)]
            [_ (badarg specs)]))]
       [([? symbol? sym] . specs)
        (required specs
@@ -638,16 +695,16 @@
   (define (optional specs args nreqs nopts)
     (match specs
       [()   (values (reverse args) '() nreqs nopts #f #f)]
-      [(:optional . specs)
+      [(':optional . specs)
        (error <cgen-stub-error> "extra :optional parameter in "name)]
-      [(:key . specs)
+      [(':key . specs)
        (error <cgen-stub-error>
               ":key and :optional can't be used together in "name)]
-      [(:optarray . specs)
+      [(':optarray . specs)
        (error <cgen-stub-error>
               ":optarray and :optional can't be used together in "name)]
-      [(:rest . specs)     (rest specs args '() nreqs nopts #f)]
-      [(:allow-other-keys . specs)
+      [(':rest . specs)     (rest specs args '() nreqs nopts #f)]
+      [(':allow-other-keys . specs)
        (error <cgen-stub-error>
               "misplaced :allow-other-keys parameter in "name)]
       [([? symbol? sym] . specs)
@@ -670,21 +727,21 @@
   (define (keyword specs args keyargs nreqs nopts)
     (match specs
       [() (values (reverse args) (reverse keyargs) nreqs nopts #f #f)]
-      [(:allow-other-keys)
+      [(':allow-other-keys)
        (values (reverse args) (reverse keyargs) nreqs nopts #f #t)]
-      [(:allow-other-keys :rest . specs)
+      [(':allow-other-keys ':rest . specs)
        (rest specs args keyargs nreqs nopts #t)]
-      [(:allow-other-keys . specs)
+      [(':allow-other-keys . specs)
        (error <cgen-stub-error> "misplaced :allow-other-keys parameter in "name)]
-      [(:key . specs)
+      [(':key . specs)
        (error <cgen-stub-error> "extra :key parameter in "name)]
-      [(:optional . specs)
+      [(':optional . specs)
        (error <cgen-stub-error>
               ":key and :optional can't be used together in "name)]
-      [(:optarray . specs)
+      [(':optarray . specs)
        (error <cgen-stub-error>
               ":optarray and :optional can't be used together in "name)]
-      [(:rest . specs)     (rest specs args keyargs nreqs nopts #f)]
+      [(':rest . specs)     (rest specs args keyargs nreqs nopts #f)]
       [([? symbol? sym] . specs)
        (keyword specs args
                 (cons (make-arg <keyword-arg> sym (+ nreqs nopts))
@@ -720,7 +777,7 @@
     (string->symbol (string-drop (keyword->string s) 1)))
 
   (match forms
-    [(:: type . body) (values body type)]
+    [(':: type . body) (values body type)]
     [([? type-symbol? ts] . body) (values body (type-symbol-type ts))]
     [_ (values forms #f)]))
 
@@ -800,21 +857,24 @@
     (push-stmt! cproc "{")
     (push-stmt! cproc #`",(~ rettype'c-type) SCM_RESULT;")
     (push-stmt! cproc #`"SCM_RESULT = ,c-func-name(,(args));")
+    (push-stmt! cproc "SCM_STUB_RETURN:") ; label
     (push-stmt! cproc (cgen-return-stmt (cgen-box-expr rettype "SCM_RESULT")))
     (push-stmt! cproc "}"))
-  (match form
-    [([? check-expr expr])
-     (let1 rt (~ cproc'return-type)
-       (if rt
-         (process-call-spec cproc `(,rt ,expr)) ; for transition
-         (typed-result *scm-type* expr)))]
-    [('<void> [? check-expr expr])
-     (push-stmt! cproc #`",expr(,(args));")
-     (push-stmt! cproc "SCM_RETURN(SCM_UNDEFINED);")]
-    [(typename [? check-expr expr])
-     (unless (and (symbol? typename) (check-expr expr)) (err))
-     (typed-result (name->type typename) expr)]
-    [else (err)]))
+  ($ with-cise-ambient cproc
+     (match form
+       [([? check-expr expr])
+        (let1 rt (~ cproc'return-type)
+          (if rt
+            (process-call-spec cproc `(,rt ,expr)) ; for transition
+            (typed-result *scm-type* expr)))]
+       [('<void> [? check-expr expr])
+        (push-stmt! cproc #`",expr(,(args));")
+        (push-stmt! cproc "SCM_STUB_RETURN:") ; label
+        (push-stmt! cproc "SCM_RETURN(SCM_UNDEFINED);")]
+       [(typename [? check-expr expr])
+        (unless (and (symbol? typename) (check-expr expr)) (err))
+        (typed-result (name->type typename) expr)]
+       [else (err)])))
 
 (define-method process-body-spec ((cproc <procstub>) form)
   (define (err) (error <cgen-stub-error> "malformed 'body' spec:" form))
@@ -834,19 +894,21 @@
       (push-stmt! cproc "{")
       (push-stmt! cproc #`",(~ rettype'c-type) SCM_RESULT;")
       (push-stmt! cproc #`" SCM_RESULT = (,expr);")
+      (push-stmt! cproc "SCM_STUB_RETURN:") ; label
       (push-stmt! cproc (cgen-return-stmt (cgen-box-expr rettype "SCM_RESULT")))
       (push-stmt! cproc "}")))
-  (match form
-    [('<void> . stmts)
-     (error <cgen-stub-error> "<void> type isn't allowed in 'expr' directive:" form)]
-    [([? symbol? rettype] expr)
-     (typed-result (name->type rettype) expr)]
-    [(expr)
-     (let1 rt (~ cproc'return-type)
-       (if rt
-         (process-expr-spec cproc `(,rt ,expr)) ; for transition
-         (typed-result *scm-type* expr)))]
-    [else (error <cgen-stub-error> "malformed 'expr' spec:" form)]))
+  ($ with-cise-ambient cproc
+     (match form
+       [('<void> . stmts)
+        (error <cgen-stub-error> "<void> type isn't allowed in 'expr' directive:" form)]
+       [([? symbol? rettype] expr)
+        (typed-result (name->type rettype) expr)]
+       [(expr)
+        (let1 rt (~ cproc'return-type)
+          (if rt
+            (process-expr-spec cproc `(,rt ,expr)) ; for transition
+            (typed-result *scm-type* expr)))]
+       [else (error <cgen-stub-error> "malformed 'expr' spec:" form)])))
 
 (define-method process-catch-spec ((cproc <procstub>) form)
   (match form
@@ -878,6 +940,7 @@
     (push-stmt! cproc "{")
     (push-stmt! cproc #`",(~ rettype'c-type) SCM_RESULT;")
     (for-each expand-stmt stmts)
+    (push-stmt! cproc "SCM_STUB_RETURN:") ; label
     (push-stmt! cproc (cgen-return-stmt (cgen-box-expr rettype "SCM_RESULT")))
     (push-stmt! cproc "}"))
   (define (typed-results rettypes stmts)
@@ -894,6 +957,7 @@
                              (cgen-box-expr rettype #`"SCM_RESULT,i"))
                            rettypes)
            ",")
+        (push-stmt! cproc "SCM_STUB_RETURN:") ; label
         (push-stmt! cproc
                     (case nrets
                       [(0) (cgen-return-stmt "Scm_Values(SCM_NIL)")]
@@ -905,21 +969,42 @@
                       [else (cgen-return-stmt
                              #`"Scm_Values(Scm_List(,results,, NULL))")]))
         )))
-  (match rettype
-    [#f             ; the default case; we assume it is <top>.
-     (typed-result *scm-type* body)]
-    ['<void>        ; no results
-     (for-each expand-stmt body)
-     (push-stmt! cproc "SCM_RETURN(SCM_UNDEFINED);")]
-    [[? symbol? t]  ; single result
-     (typed-result (name->type t) body)]
-    [[? list? ts]   ; multiple values
-     (typed-results (map name->type ts) body)]
-    [_ (error <cgen-stub-error> "invalid cproc return type:" rettype)]))
+  ($ with-cise-ambient cproc
+     (match rettype
+       [#f             ; the default case; we assume it is <top>.
+        (typed-result *scm-type* body)]
+       ['<void>        ; no results
+        (for-each expand-stmt body)
+        (push-stmt! cproc "SCM_STUB_RETURN:") ; label
+        (push-stmt! cproc "SCM_RETURN(SCM_UNDEFINED);")]
+       [[? symbol? t]  ; single result
+        (typed-result (name->type t) body)]
+       [[? list? ts]   ; multiple values
+        (typed-results (map name->type ts) body)]
+       [_ (error <cgen-stub-error> "invalid cproc return type:" rettype)])))
+
+(define-method assign-proc-info! ((proc <cproc>))
+  (define (arginfo arg) (~ arg'name))
+  (let* ([qargs (filter (cut is-a? <> <required-arg>) (~ proc'args))]
+         [oargs (filter (cut is-a? <> <optional-arg>) (~ proc'args))]
+         [kargs (filter (cut is-a? <> <keyword-arg>) (~ proc'args))]
+         [rarg  (filter (cut is-a? <> <rest-arg>) (~ proc'args))]
+         [aarg  (filter (cut is-a? <> <optarray-arg>) (~ proc'args))]
+         [info  `(,(~ proc'scheme-name)
+                  ,@(map arginfo qargs)
+                  ,@(cond-list
+                     [(pair? oargs) @ `(:optional ,@(map arginfo oargs))]
+                     [(pair? kargs) @ `(:key ,@(map arginfo kargs))]
+                     [(pair? rarg) @ `(:rest ,(arginfo (car rarg)))]
+                     [(pair? aarg) @ `(:optarray ,(arginfo (car aarg)))]))])
+    (set! (~ proc'info) (make-literal info))))
 
 ;;;
 ;;; Emitting code
 ;;;
+
+(define-method cgen-emit-decl ((proc <procstub>))
+  (dolist [s (~ proc'forward-decls)] (p s)))
 
 (define-method cgen-emit-body ((cproc <cproc>))
   (p "static ScmObj "(~ cproc'c-name)"(ScmObj *SCM_FP, int SCM_ARGCNT, void *data_)")
@@ -983,8 +1068,8 @@
                   [else (+ (~ cproc'num-optargs) 1)])); opt
     (unless (null? flags)                             ; cst
       (if (memq :constant flags) (display "1, ") (display "0, ")))
-    (format #t "~a," (cgen-c-name (~ cproc'proc-name))); inf
-    (unless (null? flags)                              ; flags
+    (format #t "SCM_FALSE,")                          ; info - to be set in init
+    (unless (null? flags)                             ; flags
       (if (memq :fast-flonum flags)
         (display "SCM_SUBR_IMMEDIATE_ARG, ")
         (display "0, ")))
@@ -1004,6 +1089,9 @@
        (c-stub-name cproc)
        (if (or (~ cproc'inline-insn) (memq :constant (~ cproc'flags)))
          "SCM_BINDING_INLINABLE" "0")))
+  (when (~ cproc'info)
+    (f "  ~a.common.info = ~a;"
+       (c-stub-name cproc) (cgen-c-name (~ cproc'info))))
   (next-method)
   )
 
@@ -1173,7 +1261,7 @@
         (let loop ([body body])
           (match body
             [() #f]
-            [([? string?] . r) (push-stmt! method stmt) (loop r)]
+            [([? string? stmt] . r) (push-stmt! method stmt) (loop r)]
             [(('c-generic-name gen-name) . r)
              (unless (string? gen-name)
                (error <cgen-stub-error>
@@ -1534,51 +1622,106 @@
 
 ;;===================================================================
 ;; Foreign pointers
-;;  NOT FINISHED YET.
+;;
 
-;; (define-class <c-ptr> (<stub>)
-;;   ((c-type     :init-keyword :c-type)
-;;    (qualifiers :init-keyword :qualifiers)))
+;; DEFINE-CPTR generates glue code to use ScmForeignPointer easily.
+;; It is suitable when the C structure is mostly passed around using
+;; pointers; most typically, when the foreign library allocates the
+;; structure and returns the pointer to Scheme world.  It is possible
+;; to allocate the structure in Scheme side, but the gist is that
+;; foreign library treats it as a thing in heap, pointed by other
+;; structures etc.
+;;
+;; define-cptr scm-name [qualifier] c-type c-name c-pred c-boxer c-unboxer
+;;    [(flags flag ...)]
+;;    [(print print-proc)]
+;;    [(cleanup cleanup-proc)]
+;;
+;;  qualifier : :private
+;;  flag      : :keep-identity | :map-null
+;;
+;;  scm-name  : Scheme variable name; this will be bound to a newly-created
+;;              subclass of <foreign-pointer> to represent this C-ptr type.
+;;  c-type    : Name of the actual C type we wrap.
+;;  c-name    : A C variable name (must have type ScmClass *).  If :private
+;;              qualifier is given, static definition of the varaible is
+;;              generated; otherwise, the definition & declaration must
+;;              be provided elsewhere.  In initialization code, an instance
+;;              of a class (the same one bound to scm-name in the Scheme
+;;              world) will be stored in this C variable.
+;;  c-pred    : A macro name to determine if ScmObj is this type.
+;;  c-boxer   : A macro name to wrap C pointer and return ScmObj
+;;  c-unboxer : A macro name to extract C pointer from ScmObj
+;;
+;;  If :private is given, c-pred, c-boxer and c-unboxer definitions are
+;;  generated automatically.  Otherwise those definitions must be provided
+;;  elsewhere.
 
-;; (define-form-parser define-cptr (scm-name . args)
-;;   (check-arg symbol? scm-name)
-;;   (receive (quals rest) (span keyword? args)
-;;     (cond
-;;      [(lset-difference eqv? quals '(:keep-identity :map-null :private)) pair?
-;;       => (cut error <cgen-stub-error>
-;;               "unknown define-foreign-pointer qualifier(s)" <>)])
-;;     (match rest
-;;       [(c-type c-name)
-;;        (check-arg string? c-name)
-;;        (let1 fptr (make <c-ptr>
-;;                     :scheme-name scm-name :c-type c-type :c-name c-name
-;;                     :qualifiers quals)
-;;          (cgen-add! fptr))])))
+(define-class <c-ptr> (<stub>)
+  ((c-type       :init-keyword :c-type)
+   (private      :init-keyword :private)
+   (flags        :init-keyword :flags)
+   (print-proc   :init-keyword :print-proc)
+   (cleanup-proc :init-keyword :cleanup-proc)))
 
-;; (define-method cgen-emit-body ((self <c-ptr>))
-;;   (when (memv :private (~ self'qualifiers))
-;;     (let1 type (cgen-type-from-name (~ self'scheme-name))
-;;       (p "static ScmClass *" (~ self'c-name))
-;;       (p "#define "(~ type'unboxer)"(obj) "
-;;          "SCM_FOREIGN_POINTER_REF("(~ self'c-type)", obj")
-;;       (p "#define "(~ type'c-predicate)"(obj) "
-;;          "SCM_XTYPEP(obj, "(~ self'c-name)")")
-;;       (p "#define "(~ type'c-boxer)"(ptr) "
-;;          "Scm_MakeForeignPointer("(~ self'c-name)", ptr)")))
-;;   )
+(define-form-parser define-cptr (scm-name . args)
+  (check-arg symbol? scm-name)
+  (receive (quals args) (span keyword? args)
+    (let1 z (lset-difference eqv? quals '(:private))
+      (unless (null? z)
+        (errorf <cgen-stub-error>
+                "invalid qualifier(s) ~s in (define-cptr ~s ...)"
+                 z scm-name)))
+    (match args
+      [(c-type c-varname c-pred c-boxer c-unboxer . clauses)
+       (check-clauses 'define-cptr scm-name clauses '(flags print cleanup))
+       (let ([flags (or (assq-ref clauses 'flags) '())]
+             [print-proc (assq-ref clauses 'print)]
+             [cleanup-proc (assq-ref clauses 'cleanup)])
+         (cond
+          [(lset-difference eqv? flags '(:keep-identity :map-null)) pair?
+           => (cut error <cgen-stub-error>
+                   "unknown define-cptr flag(s)" <>)])
+         (let1 fptr (make <c-ptr>
+                      :scheme-name scm-name :c-type c-type :c-name c-varname
+                      :private (memq :private quals)
+                      :flags flags
+                      :print-proc (and print-proc (car print-proc))
+                      :cleanup-proc (and cleanup-proc (car cleanup-proc)))
+           (make-cgen-type scm-name c-type
+                           (x->string scm-name) ; description
+                           (x->string c-pred)
+                           (x->string c-unboxer)
+                           (x->string c-boxer))
+           (cgen-add! fptr)))]
+      [_ (error <cgen-stub-error> "invalid define-cptr clause for" scm-name)])))
 
-;; (define-method cgen-emit-init ((self <c-ptr>))
-;;   (p "  "(~ self'c-name)" = Scm_MakeForeignPointerClass(mod,"
-;;      "\""(~ self'scheme-name)"\", NULL, NULL, "
-;;      (if (null? (~ self'flags))
-;;        "0"
-;;        (string-join `(,@(if (memq ':keep-identity (~ self'flags))
-;;                           '("SCM_FOREIGN_POINTER_KEEP_IDENTITY")
-;;                           '())
-;;                       ,@(if (memq ':map-null (~ self'flags))
-;;                           '("SCM_FOREIGN_POINTER_MAP_NULL")
-;;                           '()))
-;;                     "|"))))
+(define-method cgen-emit-body ((self <c-ptr>))
+  (when (~ self'private)
+    (let1 type (cgen-type-from-name (~ self'scheme-name))
+      (p "static ScmClass *" (~ self'c-name) ";")
+      (p "#define "(~ type'unboxer)"(obj) "
+         "SCM_FOREIGN_POINTER_REF("(~ self'c-type)", obj)")
+      (p "#define "(~ type'c-predicate)"(obj) "
+         "SCM_XTYPEP(obj, "(~ self'c-name)")")
+      (p "#define "(~ type'boxer)"(ptr) "
+         "Scm_MakeForeignPointer("(~ self'c-name)", ptr)")))
+  )
+
+(define-method cgen-emit-init ((self <c-ptr>))
+  (p "  "(~ self'c-name)" = Scm_MakeForeignPointerClass(Scm_CurrentModule(),"
+     "\""(~ self'scheme-name)"\", "
+     (or (~ self'print-proc) "NULL")", "
+     (or (~ self'cleanup-proc) "NULL")", "
+     (let1 flags (cond-list
+                  [(memq ':keep-identity (~ self'flags))
+                   "SCM_FOREIGN_POINTER_KEEP_IDENTITY"]
+                  [(memq ':map-null (~ self'flags))
+                   "SCM_FOREIGN_POINTER_MAP_NULL"])
+       (if (pair? flags)
+         (string-join flags "|")
+         "0"))
+     ");"))
 
 ;;===================================================================
 ;; Miscellaneous utilities
@@ -1626,7 +1769,7 @@
     ;; TODO: search path
     (error <cgen-stub-error> "couldn't find include file: " file))
   (with-input-from-file file
-    (^[] (port-for-each cgen-stub-parse-form read)))
+    (cut generator-for-each cgen-stub-parse-form read))
   )
 
 (define-form-parser initcode codes

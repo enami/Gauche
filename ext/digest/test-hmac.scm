@@ -12,8 +12,8 @@
 (test-module 'rfc.hmac)
 
 (define hmac (make <hmac>
-	           :key (make-byte-string 16 #x0b)
-	           :hasher <md5>))
+                   :key (make-byte-string 16 #x0b)
+                   :hasher <md5>))
 (hmac-update! hmac "Hi ")
 (hmac-update! hmac "There")
 (test* "hmac-final!" "9294727a3638bb1c13f48ef8158bfc9d"
@@ -39,7 +39,7 @@ The following test data can be obtained by the following snippet:
       (write (regexp-replace
               #/^[^=]*=\s*/
               (process-output->string
-               `(openssl dgst ,#`"-,class" -hmac ,key "tmp.o"))
+               `(openssl dgst ,#"-~class" -hmac ~key "tmp.o"))
               ""))
       (print))
     (print ")"))
@@ -86,7 +86,7 @@ The following test data can be obtained by the following snippet:
         [keys *hmac-test-keys*])
     (for-each
      (^[hash key]
-       (test* #`"hmac-digest-string ,(class-name class) keylen=,(string-length key)"
+       (test* #"hmac-digest-string ~(class-name class) keylen=~(string-length key)"
               hash
               (digest-hexify (hmac-digest-string *hmac-test-message*
                                                  :key key

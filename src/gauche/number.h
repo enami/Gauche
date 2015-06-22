@@ -1,7 +1,7 @@
 /*
  * number.h - Public API for Scheme numbers
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -201,6 +201,8 @@ SCM_EXTERN u_int  Scm_GetIntegerU16Clamp(ScmObj obj, int clamp, int *oor);
 SCM_EXTERN ScmInt32  Scm_GetInteger32Clamp(ScmObj obj, int clamp, int *oor);
 SCM_EXTERN ScmUInt32 Scm_GetIntegerU32Clamp(ScmObj obj, int clamp, int *oor);
 
+SCM_EXTERN u_long Scm_GetIntegerUMod(ScmObj obj);
+
 /* 64bit integer stuff */
 #if SIZEOF_LONG == 4
 SCM_EXTERN ScmObj Scm_MakeInteger64(ScmInt64 i);
@@ -233,8 +235,8 @@ SCM_EXTERN ScmUInt64 Scm_GetIntegerU64Clamp(ScmObj obj, int clamp, int *oor);
 #define Scm_GetIntegerU64(x) Scm_GetIntegerU64Clamp(x, SCM_CLAMP_ERROR, NULL)
 
 /* for backward compatibility -- will be gone soon */
-#define Scm_MakeIntegerFromUI Scm_MakeIntegerU
-#define Scm_GetUInteger       Scm_GetIntegerU
+#define Scm_MakeIntegerFromUI(x) Scm_MakeIntegerU(x)
+#define Scm_GetUInteger(x)       Scm_GetIntegerU(x)
 
 SCM_EXTERN ScmObj Scm_MakeRational(ScmObj numer, ScmObj denom);
 SCM_EXTERN ScmObj Scm_MakeRatnum(ScmObj numer, ScmObj denom);
@@ -243,6 +245,7 @@ SCM_EXTERN ScmObj Scm_ReduceRational(ScmObj rational);
 SCM_EXTERN ScmObj Scm_MakeFlonum(double d);
 SCM_EXTERN double Scm_GetDouble(ScmObj obj);
 SCM_EXTERN ScmObj Scm_DecodeFlonum(double d, int *exp, int *sign);
+SCM_EXTERN int    Scm_FlonumSign(double d);
 SCM_EXTERN ScmObj Scm_MakeFlonumToNumber(double d, int exactp);
 SCM_EXTERN double       Scm_HalfToDouble(ScmHalfFloat v);
 SCM_EXTERN ScmHalfFloat Scm_DoubleToHalf(double v);
@@ -282,7 +285,11 @@ SCM_EXTERN ScmObj Scm_Modulo(ScmObj arg1, ScmObj arg2, int remainder);
 SCM_EXTERN ScmObj Scm_Gcd(ScmObj x, ScmObj y);
 
 SCM_EXTERN ScmObj Scm_Expt(ScmObj x, ScmObj y);
+SCM_EXTERN ScmObj Scm_ExactIntegerExpt(ScmObj x, ScmObj y);
 SCM_EXTERN long   Scm_TwosPower(ScmObj n);
+SCM_EXTERN double Scm_SinPi(double x);
+SCM_EXTERN double Scm_CosPi(double x);
+SCM_EXTERN double Scm_TanPi(double x);
 
 SCM_EXTERN int    Scm_NumEq(ScmObj x, ScmObj y);
 SCM_EXTERN int    Scm_NumLT(ScmObj x, ScmObj y);
@@ -330,8 +337,8 @@ typedef struct ScmNumberFormatRec {
 } ScmNumberFormat;
 
 SCM_EXTERN void   Scm_NumberFormatInit(ScmNumberFormat*);
-SCM_EXTERN void   Scm_PrintNumber(ScmPort *port, ScmObj n, ScmNumberFormat *f);
-SCM_EXTERN void   Scm_PrintDouble(ScmPort *port, double d, ScmNumberFormat *f);
+SCM_EXTERN size_t Scm_PrintNumber(ScmPort *port, ScmObj n, ScmNumberFormat *f);
+SCM_EXTERN size_t Scm_PrintDouble(ScmPort *port, double d, ScmNumberFormat *f);
 
 /* Higher-level convenience routines */
 SCM_EXTERN ScmObj Scm_NumberToString(ScmObj num, int radix, u_long flags);

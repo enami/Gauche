@@ -139,7 +139,7 @@
        (call-with-output-string
          (lambda (o)
            (let* ((p (make <virtual-output-port>
-                       :putc (lambda (c) (write-char c o)))))
+                       :putc (^c (write-char c o)))))
              (write-char #\a p)
              (display "bcd" p)
              (write-byte 101 p)
@@ -150,7 +150,7 @@
        (call-with-output-string
          (lambda (o)
            (let* ((p (make <virtual-output-port>
-                       :putb (lambda (b) (write-byte b o)))))
+                       :putb (^b (write-byte b o)))))
              (write-char #\a p)
              (display "bcd" p)
              (write-byte 101 p)
@@ -161,9 +161,9 @@
        (call-with-output-string
          (lambda (o)
            (let* ((p (make <virtual-output-port>
-                       :putb (lambda (b) #f)
-                       :putc (lambda (c) #f)
-                       :puts (lambda (s) (display s o)))))
+                       :putb (^b #f)
+                       :putc (^c #f)
+                       :puts (^s (display s o)))))
              (write-char #\a p)
              (display "bcd" p)
              (write-byte 101 p)
@@ -176,7 +176,7 @@
 
 (let ()
   (define (test-biport file size)
-    (let* ((ifile #`",(sys-dirname (current-load-path))/,file")
+    (let* ((ifile #"~(sys-dirname (current-load-path))/~file")
            (src (open-input-file ifile))
            (p (apply make <buffered-input-port>
                      :fill  (lambda (buf) (read-block! buf src))
@@ -234,7 +234,7 @@
 
 (let ()
   (define (test-boport file size)
-    (let* ((ifile #`",(sys-dirname (current-load-path))/,file")
+    (let* ((ifile #"~(sys-dirname (current-load-path))/~file")
            (src  (file->string ifile))
            (sink (open-output-string))
            (closed? #f)
@@ -246,7 +246,7 @@
                      (if size
                        (list :buffer-size size)
                        '()))))
-      (string-for-each (lambda (c) (write-char c p)) src)
+      (string-for-each (^c (write-char c p)) src)
       (close-output-port p)
       (list (equal? src (get-output-string sink))
             closed?)))
@@ -273,7 +273,7 @@
 
 (let ()
   (define (tester size)
-    (test* #`"size=,size" #t
+    (test* #"size=~size" #t
            (let1 v (make-u8vector size 0)
              (dotimes (i size) (u8vector-set! v i (modulo i 256)))
              (let* ((p (open-input-uvector v))
@@ -314,7 +314,7 @@
 
 (let ()
   (define (tester size)
-    (test* #`"size=,size" #t
+    (test* #"size=~size" #t
            (let1 v (make-u8vector size 0)
              (dotimes (i size) (u8vector-set! v i (modulo i 256)))
              (let* ((dst (make-u8vector size 0))
@@ -340,14 +340,57 @@
            (begin (write-byte #x11 p) (flush p) (u8vector-copy v)))
     ))
 
+(let ()
+  (define (tester size)
+    ;; We disable port-buffering so that we can test gradually extending
+    ;; the backing storage.
+    (test* #"extendable u8 size=~size"
+           (list (make-u8vector size 255) (make-u8vector size 255))
+           (let1 p (open-output-uvector '#u8() :extendable #t)
+             (set! (port-buffering p) :none)
+             (dotimes [size] (write-byte 255 p))
+             (list (get-output-uvector p)
+                   (get-output-uvector p :shared #t))))
+    (test* #"extendable s16 size=~size" (make-s16vector size #x1212)
+           (let1 p (open-output-uvector (make-s16vector 10 -1) :extendable #t)
+             (set! (port-buffering p) :none)
+             (dotimes [size] (write-byte #x12 p) (write-byte #x12 p))
+             (get-output-uvector p))))
+  
+  (tester 0)
+  (tester 16)
+  (tester 17)
+  (tester 255)
+  (tester 256)
+  (tester 257))
+
+(test* "unaligned extendable output" '#s32(#x01010101)
+       (let1 p (open-output-uvector '#s32() :extendable #t)
+         (dotimes [7] (write-byte 1 p))
+         (get-output-uvector p)))
+
+(test* "seek with extendable output" '#u8(1 0 0 0 3 0 0 2 0 4 0 0 5)
+       (let1 p (open-output-uvector)
+         (set! (port-buffering p) :none)
+         (write-byte 1 p)
+         (port-seek p 7 SEEK_SET)
+         (write-byte 2 p)
+         (port-seek p -4 SEEK_END)
+         (write-byte 3 p)
+         (port-seek p 4 SEEK_CUR)
+         (write-byte 4 p)
+         (port-seek p 2 SEEK_END)
+         (write-byte 5 p)
+         (get-output-uvector p)))
+
 ;;-----------------------------------------------------------
 (test-section "input-limited-length-port")
 
 (let ()
   (define (tester size limit)
-    (test* #`"size=,size limit=,limit" #t
+    (test* #"size=~size limit=~limit" #t
            (let* ((source (string-tabulate
-                           (lambda (i) (integer->char (modulo i 128)))
+                           (^i (integer->char (modulo i 128)))
                            size))
                   (expected (if (<= limit size)
                               (string-take source limit)
@@ -371,6 +414,49 @@
   (tester 0  0)
   (tester 0  1)
   (tester 0  10)
+  )
+
+;;-----------------------------------------------------------
+(test-section "input-list-port")
+
+(let ()
+  (define (make-char-list-port)
+    (open-input-char-list (string->list "Aloha, honua.")))
+  (define (make-byte-list-port)
+    (open-input-byte-list (iota 10 48)))
+
+  (test* "char-list, all" "Aloha, honua."
+         (call-with-output-string
+           (cut copy-port (make-char-list-port) <>)))
+  (test* "char-list, remaining" "honua."
+         (let1 p (make-char-list-port)
+           (dotimes [n 7] (read-char p))
+           (list->string (get-remaining-input-list p))))
+  (test* "char-list, remaining, with push-back" "honua."
+         (let1 p (make-char-list-port)
+           (dotimes [n 7] (read-char p))
+           (peek-char p)
+           (list->string (get-remaining-input-list p))))
+
+  (test* "byte-list, all" "0123456789"
+         (let1 p (make-byte-list-port)
+           (with-output-to-string
+             (cut generator-for-each (^b (write-char (integer->char b)))
+                  (cut read-byte p)))))
+  (test* "byte-list, remaining" '(53 54 55 56 57)
+         (let1 p (make-byte-list-port)
+           (dotimes [n 5] (read-byte p))
+           (get-remaining-input-list p)))
+  (test* "byte-list, push-back, remaining" '(53 54 55 56 57)
+         (let1 p (make-byte-list-port)
+           (dotimes [n 5] (read-byte p))
+           (peek-byte p)
+           (get-remaining-input-list p)))
+  (test* "byte-list, push-back as char, remaining" '(53 54 55 56 57)
+         (let1 p (make-byte-list-port)
+           (dotimes [n 5] (read-byte p))
+           (peek-char p)
+           (get-remaining-input-list p)))
   )
 
 (test-end)

@@ -1,7 +1,7 @@
 ;;;
 ;;; libexc.scm - errors and exceptions
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -55,7 +55,27 @@
     (result (Scm_VMWithGuardHandler handler thunk))
     (result (Scm_VMWithErrorHandler handler thunk))))
 
-(define-cproc report-error (exception) ::<void> Scm_ReportError)
+(define-cproc report-error (exception :optional port)
+  ;; TRANSIENT: change this to Scm_ReportError when switching API to 0.95.
+  Scm_ReportError2)
+
+(define-cproc condition-type-name (c) Scm_ConditionTypeName)
+
+(define (print-default-error-heading exc out)
+  (guard (e [else (display "*** ERROR:" out)
+                  (display exc out)
+                  (display "\n" out)])
+    (if (not (condition? exc))
+      (format out "*** ERROR: unhandled exception: ~s\n" exc)
+      (receive (mixins mains)
+          (if (is-a? exc <compound-condition>)
+            (partition (cut is-a? <> <mixin-condition>) (~ exc'%conditions))
+            (values '() (list exc)))
+        (let1 name (condition-type-name exc)
+          (if (condition-has-type? exc <message-condition>)
+            (format out "*** ~a: ~a\n" name (~ exc'message))
+            (format out "*** ~a\n" name)))
+        (for-each (cut report-mixin-condition <> out) mixins)))))
 
 ;;;
 ;;; Srfi-18 primitives
@@ -68,7 +88,15 @@
 (define-cproc with-exception-handler (handler thunk)
   Scm_VMWithExceptionHandler)
 
-(define-cproc raise (exception)  Scm_Raise)
+;; The optional arg is to support r7rs semantics
+(select-module gauche.internal)
+(define-cproc %raise (exception :optional (non-continuable? #f))
+  (let* ([flags::u_long
+          (?: (SCM_FALSEP non-continuable?) 0 SCM_RAISE_NON_CONTINUABLE)])
+    (result (Scm_Raise2 exception flags))))
+
+;; srfi-18 raise
+(define-in-module gauche (raise c) (%raise c))
 
 ;;;
 ;;; Srfi-35
@@ -87,14 +115,12 @@
 ;;; Thread exception classes
 ;;;
 
+;; TODO - set metaclass of those exceptions to <condition-meta>
+
 (select-module gauche)
 (inline-stub
  (define-cfn thread_exception_allocate (klass::ScmClass* initargs) :static
-   (let* ([e::ScmThreadException* (SCM_ALLOCATE ScmThreadException klass)])
-     (SCM_SET_CLASS e klass)
-     (set! (-> e thread) NULL)
-     (set! (-> e data) SCM_UNDEFINED)
-     (return (SCM_OBJ e))))
+   (return (Scm_MakeThreadException klass NULL)))
 
  (define-cfn thread_exception_print (obj port::ScmPort* ctx::ScmWriteContext*)
    ::void :static
@@ -173,4 +199,119 @@
    (printer   (c "uncaught_exception_print")))
  )
 
+;;;
+;;; Mixin classes
+;;;
+
+;; TODO - set metaclass of those mixins to <condition-meta>
+
+(select-module gauche)
+(inline-stub
+ "static ScmClass *mixin_condition_cpa[] = {
+   SCM_CLASS_STATIC_PTR(Scm_MixinConditionClass),
+   SCM_CLASS_STATIC_PTR(Scm_ConditionClass),
+   SCM_CLASS_STATIC_PTR(Scm_TopClass),
+   NULL
+  };"
+
+ (define-cclass <mixin-condition>
+   "ScmCondition*" "Scm_MixinConditionClass"
+   (c "mixin_condition_cpa+1")
+   () ())
+ 
+ (define-cfn load-condition-mixin-allocate (klass::ScmClass* initargs) :static
+   (let* ([c::ScmLoadConditionMixin* (SCM_ALLOCATE ScmLoadConditionMixin klass)])
+     (SCM_SET_CLASS c klass)
+     (set! (-> c history) SCM_FALSE)
+     (set! (-> c port) SCM_FALSE)
+     (return (SCM_OBJ c))))
+ 
+ (define-cclass <load-condition-mixin>
+   "ScmLoadConditionMixin*" "Scm_LoadConditionMixinClass"
+   (c "mixin_condition_cpa")
+   ((history)
+    (port))
+   (allocator (c "load_condition_mixin_allocate")))
+
+ (define-cfn compile-error-mixin-allocate (klass::ScmClass* initargs) :static
+   (let* ([c::ScmCompileErrorMixin* (SCM_ALLOCATE ScmCompileErrorMixin klass)])
+     (SCM_SET_CLASS c klass)
+     (set! (-> c expr) SCM_FALSE)
+     (return (SCM_OBJ c))))
+ 
+ (define-cclass <compile-error-mixin>
+   "ScmCompileErrorMixin*" "Scm_CompileErrorMixinClass"
+   (c "mixin_condition_cpa")
+   ((expr))
+   (allocator (c "compile_error_mixin_allocate")))
+
+ ;; Filename errors are defined in srfi-36.  Internally most of those filename
+ ;; errors occur as <system-error> first; we compound the following conditions
+ ;; as needed.  In C name we use "Mixin", but in Scheme we follow srfi-36
+ ;; names and drop "-mixin".
+ ;; In C-level all filename mixin classes share one struct definition, and
+ ;; one allocator.
+ (define-cfn filename-error-mixin-allocate (klass::ScmClass* initargs) :static
+   (let* ([c::ScmFilenameErrorMixin* (SCM_ALLOCATE ScmFilenameErrorMixin klass)])
+     (SCM_SET_CLASS c klass)
+     (set! (-> c filename) SCM_FALSE)
+     (return (SCM_OBJ c))))
+
+ "static ScmClass *filename_condition_cpa[] = {
+   SCM_CLASS_STATIC_PTR(Scm_FileProtectionErrorMixinClass),
+   SCM_CLASS_STATIC_PTR(Scm_FilenameErrorMixinClass),
+   SCM_CLASS_STATIC_PTR(Scm_MixinConditionClass),
+   SCM_CLASS_STATIC_PTR(Scm_ConditionClass),
+   SCM_CLASS_STATIC_PTR(Scm_TopClass),
+   NULL
+  };"
+
+ (define-type <i/o-filename-error> "ScmFilenameErrorMixin*" #f
+   "SCM_FILENAME_ERROR_MIXIN_P" "SCM_FILENAME_ERROR_MIXIN")
+ (define-cclass <i/o-filename-error>
+   "ScmFilenameErrorMixin*" "Scm_FilenameErrorMixinClass"
+   (c "filename_condition_cpa+2")
+   ((filename))
+   (allocator (c "filename_error_mixin_allocate")))
+
+ (define-type <i/o-malformed-filename-error> "ScmFilenameErrorMixin*" #f
+   "SCM_FILENAME_ERROR_MIXIN_P" "SCM_FILENAME_ERROR_MIXIN")
+ (define-cclass <i/o-malformed-filename-error>
+   "ScmFilenameErrorMixin*" "Scm_MalformedFilenameErrorClass"
+   (c "filename_condition_cpa+1")
+   ((filename))
+   (allocator (c "filename_error_mixin_allocate")))
+
+ (define-type <i/o-file-protection-error> "ScmFilenameErrorMixin*" #f
+   "SCM_FILENAME_ERROR_MIXIN_P" "SCM_FILENAME_ERROR_MIXIN")
+ (define-cclass <i/o-file-protection-error>
+   "ScmFilenameErrorMixin*" "Scm_FileProtectionErrorMixinClass"
+   (c "filename_condition_cpa+1")
+   ((filename))
+   (allocator (c "filename_error_mixin_allocate")))
+
+ (define-type <i/o-file-is-read-only-error> "ScmFilenameErrorMixin*" #f
+   "SCM_FILENAME_ERROR_MIXIN_P" "SCM_FILENAME_ERROR_MIXIN")
+ (define-cclass <i/o-file-is-read-only-error>
+   "ScmFilenameErrorMixin*" "Scm_FileIsReadOnlyErrorMixinClass"
+   (c "filename_condition_cpa")
+   ((filename))
+   (allocator (c "filename_error_mixin_allocate")))
+
+ (define-type <i/o-file-already-exists-error> "ScmFilenameErrorMixin*" #f
+   "SCM_FILENAME_ERROR_MIXIN_P" "SCM_FILENAME_ERROR_MIXIN")
+ (define-cclass <i/o-file-already-exists-error>
+   "ScmFilenameErrorMixin*" "Scm_FileAlreadyExistsErrorMixinClass"
+   (c "filename_condition_cpa+1")
+   ((filename))
+   (allocator (c "filename_error_mixin_allocate")))
+
+ (define-type <i/o-no-such-file-error> "ScmFilenameErrorMixin*" #f
+   "SCM_FILENAME_ERROR_MIXIN_P" "SCM_FILENAME_ERROR_MIXIN")
+ (define-cclass <i/o-no-such-file-error>
+   "ScmFilenameErrorMixin*" "Scm_NoSuchFileErrorMixinClass"
+   (c "filename_condition_cpa+1")
+   ((filename))
+   (allocator (c "filename_error_mixin_allocate")))
+ )
 

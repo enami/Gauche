@@ -6,30 +6,37 @@
  * the latter of which doesn't link to the rest of gauche stuff.
  *
  * This file is to included from both system.c and gauche-config.c.
+ * We distinguish which file we're included by checking GAUCHE_H.
+ *
+ * If used from gauche-config.c, we always allocate memory by malloc
+ * (gauche-config doesn't link to GC), regardless of use_gc flag.
+ * If used from system.c, we allocate GC-able memory when use_gc is true,
+ * and malloc when it is false.
+ * The caller is responsible to free it if malloc is used.
  */
 
-/* If used from gauche-config.c, the caller must free the allocated
-   buffer (gauche-config doesn't link to GC). */
-
-static WCHAR *mbs2wcs(const char *s, void (*errfn)(const char *, ...))
+static WCHAR *mbs2wcs(const char *s, int use_gc,
+                      void (*errfn)(const char *, ...))
 {
     WCHAR *wb;
-    int nc = MultiByteToWideChar(CP_ACP, MB_PRECOMPOSED, s, -1, NULL, 0);
+    int nc = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
     if (nc == 0) {
         errfn("Windows error %d on MultiByteToWideChar", GetLastError());
     }
 #if defined(GAUCHE_H)
-    wb = SCM_NEW_ATOMIC_ARRAY(WCHAR, nc);
+    if (use_gc) wb = SCM_NEW_ATOMIC_ARRAY(WCHAR, nc);
+    else        wb = (WCHAR*)malloc(nc * sizeof(WCHAR));
 #else
     wb = (WCHAR*)malloc(nc * sizeof(WCHAR));
 #endif
-    if (MultiByteToWideChar(CP_ACP, MB_PRECOMPOSED, s, -1, wb, nc) == 0) {
+    if (MultiByteToWideChar(CP_UTF8, 0, s, -1, wb, nc) == 0) {
         errfn("Windows error %d on MultiByteToWideChar", GetLastError());
     }
     return wb;
 }
 
-static const char *wcs2mbs(const WCHAR *s, void (*errfn)(const char*, ...))
+static const char *wcs2mbs(const WCHAR *s, int use_gc,
+                           void (*errfn)(const char*, ...))
 {
     char *mb;
     int nb = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, 0, 0);
@@ -37,7 +44,8 @@ static const char *wcs2mbs(const WCHAR *s, void (*errfn)(const char*, ...))
         errfn("Windows error %d on WideCharToMultiByte", GetLastError());
     }
 #if defined(GAUCHE_H)
-    mb = SCM_NEW_ATOMIC_ARRAY(char, nb);
+    if (use_gc) mb = SCM_NEW_ATOMIC_ARRAY(char, nb);
+    else        mb = (char*)malloc(nb);
 #else
     mb = (char*)malloc(nb);
 #endif

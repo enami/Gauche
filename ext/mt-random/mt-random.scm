@@ -1,7 +1,7 @@
 ;;;
 ;;; mt-random - Mersenne Twister interface
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -46,7 +46,65 @@
   )
 (select-module math.mt-random)
 
-(dynamic-load "math--mt-random")
+(inline-stub
+ (declcode "#include \"mt-random.h\"")
+ (initcode (Scm_Init_mt_random))
+ 
+ (define-type <mersenne-twister> "ScmMersenneTwister*")
+ (define-type <u32vector> "ScmU32Vector*")
+ (define-type <f32vector> "ScmF32Vector*")
+ (define-type <f64vector> "ScmF64Vector*")
+
+ (define-cproc mt-random-set-seed! (mt::<mersenne-twister> init) ::<void>
+   Scm_MTSetSeed)
+
+ (define-cproc mt-random-get-state (mt::<mersenne-twister>)
+   (let* ([v (Scm_MakeU32Vector (+ N 1) 0)])
+     (dotimes (i N)
+       (set! (aref (SCM_U32VECTOR_ELEMENTS v) i) (aref (-> mt mt) i)))
+     (set! (aref (SCM_U32VECTOR_ELEMENTS v) N) (-> mt mti))
+     (return v)))
+
+ (define-cproc mt-random-set-state! (mt::<mersenne-twister> state::<u32vector>)
+   ::<void>
+   (unless (== (SCM_U32VECTOR_SIZE state) (+ N 1))
+     (Scm_Error "u32vector of length %d is required, but got length %d"
+                (+ N 1) (SCM_U32VECTOR_SIZE state)))
+   (dotimes [i N]
+     (set! (aref (-> mt mt) i)
+           (aref (SCM_U32VECTOR_ELEMENTS state) i)))
+   (set! (-> mt mti) (aref (SCM_U32VECTOR_ELEMENTS state) N)))
+
+ (define-cproc mt-random-real (mt::<mersenne-twister>) ::<double>
+   (return (Scm_MTGenrandF64 mt TRUE)))
+
+ (define-cproc mt-random-real0 (mt::<mersenne-twister>) ::<double>
+   (return (Scm_MTGenrandF64 mt FALSE)))
+
+ (define-cproc %mt-random-integer (mt::<mersenne-twister> n)
+   Scm_MTGenrandInt)
+
+ (define-cproc %mt-random-uint32 (mt::<mersenne-twister>) ::<ulong>
+   Scm_MTGenrandU32)
+
+ (define-cproc mt-random-fill-u32vector! (mt::<mersenne-twister> v::<u32vector>)
+   (let* ([p::ScmUInt32* (SCM_U32VECTOR_ELEMENTS v)])
+     (dotimes [i (SCM_U32VECTOR_SIZE v)]
+       (set! (* (post++ p)) (Scm_MTGenrandU32 mt)))
+     (return (SCM_OBJ v))))
+
+ (define-cproc mt-random-fill-f32vector! (mt::<mersenne-twister> v::<f32vector>)
+   (let* ([p::float* (SCM_F32VECTOR_ELEMENTS v)])
+     (dotimes [i (SCM_F32VECTOR_SIZE v)]
+       (set! (* (post++ p)) (Scm_MTGenrandF32 mt TRUE)))
+     (return (SCM_OBJ v))))
+
+ (define-cproc mt-random-fill-f64vector! (mt::<mersenne-twister> v::<f64vector>)
+   (let* ([p::double* (SCM_F64VECTOR_ELEMENTS v)])
+     (dotimes [i (SCM_F64VECTOR_SIZE v)]
+       (set! (* (post++ p)) (Scm_MTGenrandF64 mt TRUE)))
+     (return (SCM_OBJ v))))
+ )
 
 (define (%get-nword-random-int mt n)
   (let loop ([i 0] [r (%mt-random-uint32 mt)])

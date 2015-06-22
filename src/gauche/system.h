@@ -1,7 +1,7 @@
 /*
  * system.h - Gauche system interface
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -45,16 +45,21 @@
  * hides restarting.
  */
 
-#define SCM_SYSCALL3(result, expr, check)       \
-  do {                                          \
-    (result) = (expr);                          \
-    if ((check) && errno == EINTR) {            \
-      ScmVM *vm__ = Scm_VM();                   \
-      errno = 0;                                \
-      SCM_SIGCHECK(vm__);                       \
-    } else {                                    \
-      break;                                    \
-    }                                           \
+#define SCM_SYSCALL3(result, expr, check)                       \
+  do {                                                          \
+    (result) = (expr);                                          \
+    if ((check) && (errno == EINTR || errno == EPIPE)) {        \
+      ScmVM *vm__ = Scm_VM();                                   \
+      int epipe__ = (errno == EPIPE);                           \
+      errno = 0;                                                \
+      SCM_SIGCHECK(vm__);                                       \
+      if (epipe__) {                                            \
+        errno = EPIPE;                                          \
+        break;                                                  \
+      }                                                         \
+    } else {                                                    \
+      break;                                                    \
+    }                                                           \
   } while (1)
 
 #define SCM_SYSCALL(result, expr) \
@@ -76,6 +81,7 @@ SCM_EXTERN ScmObj Scm_OffsetToInteger(off_t o);
  */
 
 SCM_EXTERN ScmObj Scm_ReadDirectory(ScmString *pathname);
+SCM_EXTERN ScmObj Scm_GetCwd(void);
 
 #define SCM_PATH_ABSOLUTE       (1L<<0)
 #define SCM_PATH_EXPAND         (1L<<1)
@@ -114,6 +120,8 @@ SCM_EXTERN time_t Scm_GetSysTime(ScmObj val);
 
 SCM_EXTERN void Scm_GetTimeOfDay(u_long *sec, u_long *usec);
 SCM_EXTERN long Scm_CurrentMicroseconds();
+SCM_EXTERN int  Scm_ClockGetTimeMonotonic(u_long *sec, u_long *nsec);
+SCM_EXTERN int  Scm_ClockGetResMonotonic(u_long *sec, u_long *nsec);
 
 /* Gauche also has a <time> object, as specified in SRFI-18, SRFI-19
  * and SRFI-21.  It can be constructed from the basic system interface
@@ -139,13 +147,18 @@ SCM_EXTERN ScmObj Scm_Int64SecondsToTime(ScmInt64 sec);
 SCM_EXTERN ScmObj Scm_RealSecondsToTime(double sec);
 SCM_EXTERN ScmObj Scm_TimeToSeconds(ScmTime *t);
 
-#if !defined(HAVE_STRUCT_TIMESPEC)
-struct timespec {
+/* struct timespec compatibility handling.  Mingw 3.21, at least, has
+   incompatible struct timespec. */
+#if defined(HAVE_STRUCT_TIMESPEC) && !defined(GAUCHE_WINDOWS)
+typedef struct timespec ScmTimeSpec;
+#else
+typedef struct ScmTimeSpecRec {
     time_t tv_sec;
-    long   tv_usec;
-};
-#endif /*!HAVE_STRUCT_TIMESPEC*/
-SCM_EXTERN struct timespec *Scm_GetTimeSpec(ScmObj t, struct timespec *spec);
+    long   tv_nsec;
+} ScmTimeSpec;
+#endif /*!HAVE_STRUCT_TIMESPEC && GAUCHE_WINDOWS*/
+
+SCM_EXTERN ScmTimeSpec *Scm_GetTimeSpec(ScmObj t, ScmTimeSpec *spec);
 
 /* sched_yield */
 SCM_EXTERN void   Scm_YieldCPU(void);
@@ -164,6 +177,8 @@ SCM_CLASS_DECL(Scm_SysTmClass);
 
 SCM_EXTERN ScmObj Scm_MakeSysTm(struct tm *);
 
+SCM_EXTERN int    Scm_NanoSleep(const ScmTimeSpec *req,
+                                ScmTimeSpec *rem);
 
 /*==============================================================
  * Groups and users
@@ -247,9 +262,9 @@ SCM_CLASS_DECL(Scm_SysFdsetClass);
 #define SCM_SYS_FDSET_P(obj)    (SCM_XTYPEP(obj, SCM_CLASS_SYS_FDSET))
 
 SCM_EXTERN ScmObj Scm_SysSelect(ScmObj rfds, ScmObj wfds, ScmObj efds,
-				ScmObj timeout);
+                                ScmObj timeout);
 SCM_EXTERN ScmObj Scm_SysSelectX(ScmObj rfds, ScmObj wfds, ScmObj efds,
-				 ScmObj timeout);
+                                 ScmObj timeout);
 #else  /*!HAVE_SELECT*/
 /* dummy definitions */
 typedef struct ScmHeaderRec ScmSysFdset;
@@ -264,9 +279,11 @@ typedef struct ScmHeaderRec ScmSysFdset;
 SCM_EXTERN int    Scm_Mkstemp(char *tmpl);
 SCM_EXTERN ScmObj Scm_SysMkstemp(ScmString *tmpl);
 SCM_EXTERN ScmObj Scm_Environ(void);
+SCM_EXTERN const char *Scm_GetEnv(const char *name);
 SCM_EXTERN void Scm_SetEnv(const char *name, const char *value, int overwrite);
 SCM_EXTERN void Scm_UnsetEnv(const char *name);
 SCM_EXTERN void Scm_ClearEnv(void);
+SCM_EXTERN int  Scm_AvailableProcessors(void);
 
 /*==============================================================
  * Windows-specific utility functions

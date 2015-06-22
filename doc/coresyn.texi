@@ -15,6 +15,7 @@
 * Quasiquotation::              
 * Definitions::                 
 * Inclusions::                  
+* Feature conditional::         
 * Modules::                     
 @end menu
 
@@ -23,44 +24,94 @@
 @c NODE 字句構造
 
 @c EN
-Gauche extends R5RS Scheme parser in some ways:
+Gauche extends R7RS Scheme lexical parser in some ways.
+Besides, because of historical reasons, a few of the default
+lexical syntax may conflict R7RS specification.
+You can set a reader mode to make it R7RS compliant.
 @c JP
-GaucheはR5RS Schemeのパーザをいくつかの点で拡張しています。
+GaucheはR7RS Schemeのパーザをいくつかの点で拡張しています。
+また、歴史的経緯から、デフォルトの字句構文の中に、R7RSの仕様と相反するものが
+いくつかあります。リーダのモードを設定することで、
+R7RS互換にすることもできます。
 @c COMMON
 
 @table @emph
 @c EN
-@item Nested block comments (SRFI-30)
-A text surrounded by '@code{#|}' and '@code{|#}' becomes a comment.
-It can be nested.
+@item Hash-bang directives 
+Tokens beginning with @code{#!} may have special meanings to
+the reader.  R7RS defines two of such directives---@code{#!fold-case}
+and @code{#!no-fold-case}, which switches whether symbols
+are read in case-folding or non-case-folding mode, respectively.
+
+@xref{Hash-bang token} below, for all the directives
+Gauche has.
 @c JP
-@item ネスト可能なブロックコメント (SRFI-30)
-'@code{#|}' と '@code{|#}' で囲まれたテキストはコメントになります。
-ネスト可能です。
+@item hash-bang指示子
+@code{#!}で始まるトークンはリーダに特別な影響を与えます。
+R7RSではそういった指示子がふたつ定義されています。
+シンボルのリード時に大文字小文字を無視するかしないかを
+切り替える、@code{#!fold-case}と@code{#!no-fold-case}です。
+
+Gaucheで使える指示子の一覧については、下の@ref{Hash-bang token}を参照してください。
 @c COMMON
 
 @c EN
-@item Numeric literals
-Either integral part or fraction part of inexact real numbers can be omitted
-if it is zero, i.e. @code{30.}, @code{.25}, @code{-.4} are read as
-real numbers.
-The number reader recognizes '@code{#}' as insignificant digits.
-Complex numbers can be written both in the rectangular format
-(e.g. @code{1+0.3i}) and in the polar format (e.g. 3.0@@1.57).
-Inexact real numbers include
-the positive infinity, the negative infinity, and NaN,
-which are represented as @code{+inf.0}, @code{-inf.0} and @code{+nan.0},
-respectively.  (@code{-nan.0} is also read as NaN.)
+@item Square brackets
+@lxindex [
+Gauche adopts the R6RS syntax that regards @code{[]} the same
+as @code{()}.  Both kind of parentheses are equivalent,
+but the kind of corresponding open and close parentheses match.
+Some seasoned Lisper may frown on them, but it
+helps visually distinguish different roles of parentheses.
+
+A general convention is to use @code{[]} for groupings other than
+function and macro application.  If such grouping nests, however, use @code{()}
+for outer groupings.  Examples:
 @c JP
-@item 数値リテラル
-不正確な実数の整数部または小数部のいずれかが0の場合、それを省略することが
-できます。例：@code{30.}, @code{.25}, @code{-.4}。
-数値のリーダは、パディングの'@code{#}'を認識します。
-複素数表記は直交座標形 (例：@code{1+0.3i}) でも極座標形 (例：3.0@@1.57) でも
-認識されます。
-非正確な実数は、正の無限大、負の無限大、非数(NaN)を含み、
-それらはそれぞれ@code{+inf.0}、@code{-inf.0}、および@code{+nan.0}と
-表記されます。(@code{-nan.0}も非数(NaN)として読まれます)。
+@item 角括弧
+@lxindex [
+Gaucheは、R6RSの@code{[]}を@code{()}と同様に扱う構文規則を採用しています。
+どちらの括弧も全く等価ですが、それぞれの開き括弧と閉じ括弧は対応していなければなりません。
+括弧を混ぜることに眉をひそめる熟練のLisperもいますが、
+括弧の種類を使い分けるのは、括弧の役割を視覚的に識別するのに役に立ちます。
+
+一般的な慣習は、関数とマクロ呼び出し以外のグルーピングには@code{[]}を使う、
+というものです。ただしそのようなグルーピングがネストする場合は、外側には@code{()}を
+使います。例:
+@c COMMON
+
+@example
+(cond [(test1 x) (y z)]
+      [(test2 x) (s t)]
+      [else (u v)])
+
+(let ([x (foo a b)]
+      [y (bar c d)])
+  (baz x y))
+@end example
+
+@c EN
+It is purely optional, so you don't need to use them if you don't like them.
+R7RS doesn't adopt this syntax and leaves @code{[]} for extensions,
+so it is safe to stick to @code{()} in portable R7RS programs.
+(If the reader is in @code{strict-r7} mode, an error is signalled
+when @code{[]} is used.)
+
+Scheme-specific modes of some editors (e.g. Quack on Emacs) allows
+you to type just @code{)} and inserts either @code{]} or @code{)}
+depending on which kind parenthesis it is closing.  We recommend
+using such modes if you use this convention.
+@c JP
+この記法は、必ず従わなければいけないというものではありません。
+R7RSではこの構文を採用せず、@code{[]}は言語拡張用に取ってあるので、
+ポータブルなR7RSプログラムを書く場合は@code{()}だけを使うのが良いでしょう。
+(リーダが@code{strict-r7}モードの時は、@code{[]}が使われていたら
+エラーが通知されます)
+
+エディタのSchemeモードの中には、@code{)}をタイプするとそれがどちらの
+種類の括弧を閉じるかに応じて自動的に@code{]}か@code{)}を選んで挿入してくれる
+ものがあります (EmacsのQuackなど)。この記法を使うときは
+そういったモードを活用すると良いでしょう。
 @c COMMON
 
 @c EN
@@ -82,16 +133,92 @@ it with '|', e.g. '@code{|this is a symbol|}'.
 @c COMMON
 
 @c EN
-@item Character literal by character code
-Character literals can be written using its code,
-by @code{#\x@var{NN}} (Gauche internal code) or @code{#\u@var{NN}} (Unicode).
-@xref{Characters}, for details.
+@item Numeric literals
+Either integral part or fraction part of inexact real numbers can be omitted
+if it is zero, i.e. @code{30.}, @code{.25}, @code{-.4} are read as
+real numbers.
+The number reader recognizes '@code{#}' as insignificant digits.
+Complex numbers can be written both in the rectangular format
+(e.g. @code{1+0.3i}) and in the polar format (e.g. 3.0@@1.57).
+Inexact real numbers include
+the positive infinity, the negative infinity, and NaN,
+which are represented as @code{+inf.0}, @code{-inf.0} and @code{+nan.0},
+respectively.  (@code{-nan.0} is also read as NaN.)
+
+As an extension of Gauche, a character @code{_} can be inserted
+in or around a sequence of digits in number literals, as far as
+the literal is explicitly prefixed (@code{#e}, @code{#x}, etc).
+Those @code{_}'s are just ignored.
+It is to improve readability, e.g. @code{#b1100_1010_1111_1110}.
 @c JP
-@item 文字コードによる文字リテラル
-文字リテラルを文字コードにより表記することができます。
-Gauche内部コードを使う @code{#\x@var{NN}} と、
-Unicodeを使う @code{#\u@var{NN}}という表記があります。
-@ref{Characters}を参照して下さい。
+@item 数値リテラル
+不正確な実数の整数部または小数部のいずれかが0の場合、それを省略することが
+できます。例：@code{30.}, @code{.25}, @code{-.4}。
+数値のリーダは、パディングの'@code{#}'を認識します。
+複素数表記は直交座標形 (例：@code{1+0.3i}) でも極座標形 (例：3.0@@1.57) でも
+認識されます。
+非正確な実数は、正の無限大、負の無限大、非数(NaN)を含み、
+それらはそれぞれ@code{+inf.0}、@code{-inf.0}、および@code{+nan.0}と
+表記されます。(@code{-nan.0}も非数(NaN)として読まれます)。
+
+Gaucheの拡張機能として、プレフィクス(@code{#e}, @code{#x}等)つき数値リテラル中の
+数字の中に@code{_}を自由に挿入することができます。@code{_}は単に無視されます。
+桁を適切に区切って読みやすくするのに便利です(例: @code{#b1100_1010_1111_1110})。
+@c COMMON
+
+@c EN
+@item Hex character escapes
+@lxindex \x
+You can denote a character using hexadecimal
+notation of the character code in some literals; specifically,
+character literals, charcter set literals, string literals,
+symbols, regular expression literals.
+
+R7RS adopted a hex escape notation @code{\xNNNN;} for strings
+and symbols surrounded by vertical bars, and @code{#\xNNNN} for
+characters.  The number of digits is variable, and
+the character code is Unicode codepoint.
+
+Gauche had been using two types of escapes; @code{\u}
+and @code{\x}.  In general, @code{u} is for Unicode
+codepoint, while @code{x} is for the character code in the internal
+encoding.  Besides, except character literals, we used fixed number
+of digits, instead of using the terminator @code{;} as in R7RS.
+
+Since 0.9.4, we interpret @code{\x}-escape as R7RS whenever if
+it consists a valid R7RS hex-escape, and if not,
+try to interpret it as legacy Gauche hex-escape.
+
+Although rarely, there are cases that can interpreted
+both in R7RS syntax and legacy Gauche syntax, but yielding different
+characters.  Reading legacy files with such literals in
+the current Gauche may cause unexpected behavior.
+You can switch the reader mode so that it becomes
+backward-compatible.  @xref{Reader lexical mode}, for the details.
+@c JP
+@item 16進数文字エスケープ
+@lxindex \x
+いくつかのリテラル中では、文字をその文字コードの16進数表記で記入できます。
+具体的には、文字、文字セット、文字列、シンボル、正規表現リテラルです。
+
+R7RSは文字列および縦棒で囲まれたシンボル中では@code{\xNNNN;}、文字単独では
+@code{#\xNNNN}というエスケープ構文を採用しました。16進数の桁数は可変で、
+文字コードはUnicodeコードポイントです。
+
+Gaucheは歴史的に2種類のエスケープを使ってきました。
+@code{\u}と@code{\x}です。
+@code{u}はUnicodeコードポイントに、@code{x}は内部エンコーディングによる
+文字コードに使っていました。また、文字リテラル以外では
+16進数の桁数は固定で、したがってR7RSのような終端文字(@code{;})を必要としませんでした。
+
+0.9.4からは、@code{\x}エスケープはそれが正しいR7RSの16進エスケープと解釈できる
+限りはそう読まれます。R7RSの構文に合致しない場合は、以前のGaucheの構文とみなされます。
+
+滅多にないことですが、R7RSとも以前のGauche構文ともみなすことができて、しかし解釈に違いが
+生じるような場合というのが存在します。そのようなリテラルを含む昔のソースを
+現在のGaucheで読むと、予想外の動作が起きるかもしれません。
+その場合は、リーダのモードを以前との互換モードに変更できます。
+詳細は@ref{Reader lexical mode}を参照してください。
 @c COMMON
 
 @c EN
@@ -105,6 +232,15 @@ See the table below.
 @c COMMON
 @end table
 
+@menu
+* Sharp syntax::                
+* Hash-bang token::             
+@end menu
+
+@node Sharp syntax, Hash-bang token, Lexical structure, Lexical structure
+@subsection Sharp syntax
+@c NODE #構文
+
 @c EN
 The table below lists sharp-syntaxes.
 @c JP
@@ -114,15 +250,21 @@ The table below lists sharp-syntaxes.
 @multitable {aaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
 @item @code{#!}
 @c EN
- @tab [R6RS][SRFI-22] It is either a beginning of an interpreter line
+ @tab [R6RS][R7RS][SRFI-22] It is either a beginning of an interpreter line
       (shebang) of a script, or a special token that affects the mode
       of the reader.  See `hash-bang token' section below.
 @c JP
- @tab [R6RS][SRFI-22] これは、スクリプトのインタプリタ指定行(shebang)の
+ @tab [R6RS][R7RS][SRFI-22] これは、スクリプトのインタプリタ指定行(shebang)の
       開始を示すか、リーダのモードに影響を与える特別なトークンとして読まれます。
       下の`hash-bang token'の節を参照してください。
 @c COMMON
-@item @code{#"}, @code{##}, @code{#$}, @code{#%}, @code{#&}, @code{#'}
+@item @code{#"}
+@c EN
+ @tab Introduces an interpolated string.  @xref{String interpolation}.
+@c JP
+ @tab 補間された文字列を先導します。@ref{String interpolation}参照。
+@c COMMON
+@item @code{##}, @code{#$}, @code{#%}, @code{#&}, @code{#'}
 @c EN
  @tab Unused.
 @c JP
@@ -130,9 +272,9 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#(}
 @c EN
- @tab [R5RS] Introduces a vector.
+ @tab [R7RS] Introduces a vector.
 @c JP
- @tab [R5RS] リテラルベクタ表記の開始です。
+ @tab [R7RS] リテラルベクタ表記の開始です。
 @c COMMON
 @item @code{#)}
 @c EN
@@ -221,9 +363,9 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#b}
 @c EN
- @tab [R5RS] Binary number prefix.
+ @tab [R7RS] Binary number prefix.
 @c JP
- @tab [R5RS] 2進数接頭辞。
+ @tab [R7RS] 2進数接頭辞。
 @c COMMON
 @item @code{#c}
 @c EN
@@ -233,23 +375,25 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#d}
 @c EN
- @tab [R5RS] Decimal number prefix.
+ @tab [R7RS] Decimal number prefix.
 @c JP
- @tab [R5RS] 10進数接頭辞。
+ @tab [R7RS] 10進数接頭辞。
 @c COMMON
 @item @code{#e}
 @c EN
- @tab [R5RS] Exact number prefix.
+ @tab [R7RS] Exact number prefix.
 @c JP
- @tab [R5RS] 正確数接頭辞。
+ @tab [R7RS] 正確数接頭辞。
 @c COMMON
 @item @code{#f}
 @c EN
- @tab [R5RS] Boolean false, or
+ @tab [R7RS] Boolean false, or
       introducing SRFI-4 uniform vector.  @xref{Uniform vectors}.
+      R7RS defines both @code{#f} and @code{#false} as a boolean false value.
 @c JP
- @tab [R5RS] 真理値の偽、あるいは
-      SRFI-4 のユニフォームベクタを先導します。@ref{Uniform vectors}参照
+ @tab [R7RS] 真理値の偽、あるいは
+      SRFI-4 のユニフォームベクタを先導します。@ref{Uniform vectors}参照。
+      R7RSでは真理値の偽として@code{#f}と@code{#false}が使えます。
 @c COMMON
 @item @code{#g}, @code{#h}
 @c EN
@@ -259,9 +403,9 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#i}
 @c EN
- @tab [R5RS] Inxact number prefix.
+ @tab [R7RS] Inexact number prefix.
 @c JP
- @tab [R5RS] 不正確数接頭辞。
+ @tab [R7RS] 不正確数接頭辞。
 @c COMMON
 @item @code{#j}, @code{#k}, @code{#l}, @code{#m}, @code{#n}
 @c EN
@@ -271,9 +415,9 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#o}
 @c EN
- @tab [R5RS] Octal number prefix.
+ @tab [R7RS] Octal number prefix.
 @c JP
- @tab [R5RS] 8進数接頭辞。
+ @tab [R7RS] 8進数接頭辞。
 @c COMMON
 @item @code{#p}, @code{#q}, @code{#r}
 @c EN
@@ -289,15 +433,20 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#t}
 @c EN
- @tab [R5RS] Boolean true.
+ @tab [R7RS] Boolean true.  R7RS defines @code{#t} and @code{#true}
+      as a boolean true value.
 @c JP
- @tab [R5RS] 真理値の真。
+ @tab [R7RS] 真理値の真。R7RSでは真理値の真として@code{#t}と@code{#true}が使えます。
 @c COMMON
 @item @code{#u}
 @c EN
  @tab [SRFI-4] introducing SRFI-4 uniform vector.  @xref{Uniform vectors}.
+ R7RS uses @code{#u8} prefix for bytevectors, which is compatible to
+ @code{u8} uniform vectors.
 @c JP
  @tab [SRFI-4] SRFI-4 のユニフォームベクタを先導します。@ref{Uniform vectors}参照。
+ R7RSもバイトベクタに@code{#u8}のプリフィクスを使いますが、これは
+ @code{u8}ユニフォームベクタと互換です。
 @c COMMON
 @item @code{#v}, @code{#w}
 @c EN
@@ -307,9 +456,9 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#x}
 @c EN
- @tab [R5RS] Hexadecimal number prefix.
+ @tab [R7RS] Hexadecimal number prefix.
 @c JP
- @tab [R5RS] 16進数接頭辞
+ @tab [R7RS] 16進数接頭辞
 @c COMMON
 @item @code{#y}, @code{#z}
 @c EN
@@ -325,9 +474,9 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#\}
 @c EN
- @tab [R5RS] Introduces a literal character.  @xref{Characters}.
+ @tab [R7RS] Introduces a literal character.  @xref{Characters}.
 @c JP
- @tab [R5RS] リテラルの文字を先導します。@ref{Characters}参照。
+ @tab [R7RS] リテラルの文字を先導します。@ref{Characters}参照。
 @c COMMON
 @item @code{#]}, @code{#^}, @code{#_}
 @c EN
@@ -337,9 +486,9 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @item @code{#`}
 @c EN
- @tab Introduces an interpolated string.  @xref{String interpolation}.
+ @tab Legacy syntax for string interpolation, superseded by @code{#"}.
 @c JP
- @tab 補間された文字列を先導します。@ref{String interpolation}参照。
+ @tab 文字列補間の古い構文です。新しいコードでは@code{#"}を使ってください。
 @c COMMON
 @item @code{#@{}
 @c EN
@@ -361,7 +510,14 @@ The table below lists sharp-syntaxes.
 @c COMMON
 @end multitable
 
-@subheading Hash-bang token
+@menu
+* Hash-bang token::             
+@end menu
+
+@node Hash-bang token,  , Sharp syntax, Lexical structure
+@subsection Hash-bang token
+@c NODE Hash-bangトークン
+@lxindex #!
 
 @c EN
 A character sequence @code{#!} has two completely different
@@ -377,16 +533,7 @@ Other than the above case, @code{#!@var{identifier}} is read as
 a token with special meanings.  This kind token can be a special
 directive for the reader, instead of read as a datum.
 
-By default, three of such tokens are recognized.  @code{#!fold-case}
-and @code{#!no-fold-case} switches the reader's case sensitivity;
-@code{#!fold-case} makes the reader case insensitive, and
-@code{#!no-fold-case} makes it case sensitive.  (Also see
-@ref{Case-sensitivity}).
-
-The token @code{#!r6rs} is introduced in R6RS and used to indicate the
-program is strictly conforms R6RS.  Gauche doesn't support R6RS, and
-currently it issues warning when it sees @code{#!r6rs} token, though
-it keeps reading on.
+By default, the following tokens are recognized.
 @c JP
 文字シーケンス@code{#!}は、どこでどのように現れるかによって2つの全く異なる
 意味を持ちます。
@@ -401,16 +548,53 @@ it keeps reading on.
 れ、特別な意味を持ちます。この種のトークンはデータとして読まれるのでは
 なく、リーダに対して特別な指定を与えることもあります。
 
-デフォルトでは、このような3つのトークンが認識されます。
-@code{#!fold-case}と@code{#!no-fold-case}はリーダが大文字小文字を区別す
-るかどうかを切り替えます。@code{#!fold-case}に出会うとリーダは大文字小
+デフォルトでは、以下のトークンが認識されます。
+@c COMMON
+
+@table @code
+@item #!fold-case
+@itemx #!no-fold-case
+@c EN
+Switches the reader's case sensitivity;
+@code{#!fold-case} makes the reader case insensitive, and
+@code{#!no-fold-case} makes it case sensitive.  (Also see
+@ref{Case-sensitivity}).
+@c JP
+リーダが大文字小文字を区別するかどうかを切り替えます。
+@code{#!fold-case}に出会うとリーダは大文字小
 文字を区別しないモードになり、@code{#!no-fold-case}に出会うとその逆にな
 ります。(@ref{Case-sensitivity}も参照してください。)
-
-トークン@code{#!r6rs}はR6RSで導入され、プログラムがR6RSに準拠しているこ
-とを示します。GaucheはR6RSをサポートしていませんが、今のところこのトー
+@c COMMON
+@item #!r6rs
+@c EN
+This token is introduced in R6RS and used to indicate the
+program strictly conforms R6RS.  Gauche doesn't conform R6RS, but
+currently it just issues warning when it sees @code{#!r6rs} token, and
+it keeps reading on.
+@c JP
+このトークンはR6RSで導入され、プログラムがR6RSに準拠しているこ
+とを示します。GaucheはR6RSに準拠していませんが、今のところこのトー
 クンに出会っても警告を出すだけで読み込みは継続します。
 @c COMMON
+@item #!r7rs
+@c EN
+Make the reader @code{strict-r7} mode, that complies R7RS.
+@xref{Reader lexical mode}, for the details.
+@c JP
+リーダをR7RSに準拠した@code{strict-r7}モードにします。
+詳細は@ref{Reader lexical mode}を参照してください。
+@c COMMON
+@c TODO: Describe concrete details
+@item #!gauche-legacy
+@c EN
+Make the reader @code{legacy} mode, that is
+compatible to Gauche 0.9.3 and before.
+@xref{Reader lexical mode}, for the details.
+@c JP
+リーダをGauche 0.9.3およびそれ以前のものと互換な@code{legacy}モードにします。
+詳細は@ref{Reader lexical mode}を参照してください。
+@c COMMON
+@end table
 
 @c ----------------------------------------------------------------------
 @node Literals, Making Procedures, Lexical structure, Core syntax
@@ -418,7 +602,7 @@ it keeps reading on.
 @c NODE リテラル
 
 @defspec quote datum
-[R5RS]
+[R7RS]
 @c EN
 Evaluates to @var{datum}.
 @c JP
@@ -431,7 +615,8 @@ Evaluates to @var{datum}.
 @end defspec
 
 @deftp {Reader Syntax} @code{'@var{datum}}
-[R5RS]
+@lxindex '
+[R7RS]
 @c EN
 Equivalent to @code{(quote datum)}.
 @c JP
@@ -444,7 +629,7 @@ Equivalent to @code{(quote datum)}.
 @end deftp
 
 @c EN
-@emph{Note:}  R5RS says it is an error to alter the value of
+@emph{Note:}  RnRS says it is an error to alter the value of
 a literal expression.
 Gauche doesn't check constant-ness of pairs and vectors, and does
 not signal an error if you modify them using the destructive
@@ -453,7 +638,7 @@ and @code{vector-set!}.  Doing so will cause unexpected results.
 Gauche does check constant-ness of strings, and signals an error
 if you try to alter a constant string.
 @c JP
-@emph{注:} R5RSは、リテラル式の値を変更するのはエラーであるとしています。
+@emph{注:} RnRSは、リテラル式の値を変更するのはエラーであるとしています。
 しかしGaucheはペアとベクタについてはそれが定数であるかどうかをチェックしておらず、
 @code{set-car!}や@code{vector-set!}等の破壊的手続きによってそれらの値を
 変更してもエラーは報告されません。そうした場合の動作は不定です。
@@ -468,7 +653,7 @@ if you try to alter a constant string.
 
 @defspec lambda formals body @dots{}
 @defspecx ^ formals body @dots{}
-[R5RS+]
+[R7RS+]
 @c EN
 Evaluates to a procedure.  The environment in effect when this expression
 is evaluated is stored in the procedure.   When the procedure
@@ -501,16 +686,16 @@ and returns the value(s) of the last expression in the body.
 @end example
 
 @c EN
-Gauche also extends R5RS @code{lambda} to take extended syntax in
+Gauche also extends R7RS @code{lambda} to take extended syntax in
 @var{formals} to specify optional and keyword arguments easily.
-The same functionality can be written in pure R5RS, with parsing
+The same functionality can be written in pure R7RS, with parsing
 variable-length arguments explicitly, but the code tends
 to be longer and verbose.   It is recommended to use extended syntax
 unless you're writing portable code.
 @c JP
 Gaucheはまた、@code{lambda}が取る@var{formals}の構文を拡張し、
 省略可能引数やキーワード引数を簡単に指定できるようにしています。
-同じ機能は純粋なR5RSでも、可変長引数を自力で解析することで実現可能ですが、
+同じ機能は純粋なR7RSでも、可変長引数を自力で解析することで実現可能ですが、
 コードはより長く冗長になってしまいます。ポータブルなコードを書いているのでなければ
 拡張構文を使った方が良いでしょう。
 @c COMMON
@@ -799,9 +984,9 @@ after required and optional arguments are taken.
 See also @code{let-optionals*}, @code{let-keywords} and
 @code{let-keywords*} macros in @ref{Optional argument parsing}
 for an alternative way to receive optional/keyword arguments
-within the spec of R5RS.
+within the spec of R7RS.
 @c JP
-R5RSの仕様範囲内で省略可能引数、キーワード引数を受け取るように
+R7RSの仕様範囲内で省略可能引数、キーワード引数を受け取るように
 書くこともできます。@ref{Optional argument parsing}の
 @code{let-optionals*}、@code{let-keywords}、
 @code{let-keywords*}を参照してください。
@@ -963,9 +1148,9 @@ The @code{$} notation can be chained.
 
 @c EN
 If @code{$*} appears in the argument list instead of @code{$},
-it fills the rest of the argument, instead of the last argument.
+it fills the rest of the arguments, instead of just the last argument.
 @c JP
-@code{$}のかわりに@code{$*}が現れた場合は、最後の引数のかわりに
+@code{$}のかわりに@code{$*}が現れた場合は、最後の引数ひとつだけでなく
 「残りの引数全部」を示します。
 @c COMMON
 
@@ -1001,7 +1186,7 @@ tempted to write it as a chain of nested function calls.
 The Scheme syntax can get awkward in such code.  Close
 parentheses tend to clutter at the end of expressions.
 Inner applications tends to pushed toward right columns
-with the standard indentention rules.  Compare the
+with the standard indentation rules.  Compare the
 following two code functionally equivalent to each other:
 @c JP
 関数的にコードを書いていると、関数呼び出しが深くネストすることが多くなります。
@@ -1034,7 +1219,7 @@ sparingly, like spices.
 
 @c EN
 As a corner case, if neither @code{$} nor @code{$*} appear in the
-argument list, it is just calls the function.
+argument list, it just calls the function.
 @c JP
 コーナーケースとして、引数リストに@code{$}も@code{$*}も現れなかった場合は、
 単なる関数呼び出しになります。
@@ -1046,7 +1231,7 @@ argument list, it is just calls the function.
 @end defmac
 
 @defmac case-lambda clause @dots{}
-[SRFI-16]
+[R7RS][SRFI-16]
 @c EN
 Each @var{clause} should have the form (@var{formals} @var{expr} @dots{}),
 where @var{formals} is a formal arguments list as for @code{lambda}.
@@ -1087,7 +1272,7 @@ the @var{formals} of any @var{clause}.
 
 @defspec set! symbol expression
 @defspecx set! (proc arg @dots{}) expression
-[R5RS][SRFI-17]
+[R7RS][SRFI-17]
 @c EN
 First, @var{expression} is evaluated.
 In the first form, the binding of @var{symbol} is modified
@@ -1377,7 +1562,7 @@ a @result{} (6 . 0)
 
 @defspec if test consequent alternative
 @defspecx if test consequent
-[R5RS]
+[R7RS]
 @c EN
 @var{Test} is evaluated.  If it yields a true value,
 @var{consequent} is evaluated.  Otherwise, @var{alternative} is
@@ -1401,7 +1586,7 @@ evaluated.  If @var{alternative} is not provided, it results undefined value.
 @end defspec
 
 @defspec cond clause1 clause2 @dots{}
-[R5RS][SRFI-61]
+[R7RS][SRFI-61]
 @c EN
 Each @code{clause} must be the form
 @example
@@ -1478,7 +1663,7 @@ If the last clause is else clause and all tests are failed,
 
 
 @defspec case key clause1 clause2 @dots{}
-[R5RS][SRFI-87]
+[R7RS][SRFI-87]
 @c EN
 @var{Key} may be any expression.
 Each @var{clause} should have the form
@@ -1496,7 +1681,7 @@ may be an ``else clause,'' which has the form
 
 First, @var{key} is evaluated and its result is compared against each
 @var{datum}.  If the result of evaluating @var{key} is equivalent
-(using @code{eqv?}, @xref{Equivalence}), to a @var{datum},
+(using @code{eqv?}, @xref{Equality}), to a @var{datum},
 then the expressions in the corresponding clause are evaluated
 sequentially, and the result(s) of the last expression in the
 @var{clause} is(are) returned from the case expression.
@@ -1523,7 +1708,7 @@ otherwise the result of the case expression is undefined.
 @end example
 
 まず@var{key}が評価され、その結果がそれぞれの@var{datum}と比較されます。
-@var{key}の値と@code{eqv?}(@ref{Equivalence}参照)を使って一致する@var{datum}
+@var{key}の値と@code{eqv?}(@ref{Equality}参照)を使って一致する@var{datum}
 が見つかれば、対応する@var{expr}が順に評価され、その最後の値が@code{case}の
 値となります。@code{=>}を含む節はSRFI-87で定義されています。これらの節では、
 @var{key}の結果が@var{proc}に渡され、その結果が@code{case}の値となります。
@@ -1585,7 +1770,7 @@ you want to detect when unexpected value is passed just in case.
 @end defmac
 
 @defspec and test @dots{}
-[R5RS]
+[R7RS]
 @c EN
 The @var{test} expressions are evaluated from left to right,
 and the value of the first expression that evaluates to a false
@@ -1611,7 +1796,7 @@ If there are no expressions then @code{#t} is returned.
 
 
 @defspec or test @dots{}
-[R5RS]
+[R7RS]
 @c EN
 The @var{test} expressions are evaluated from left to right,
 and the value of the first expression that evaluates to a true
@@ -1637,6 +1822,7 @@ last expression is returned. If there are no expressions then
 
 @defspec when test body @dots{}
 @defspecx unless test body @dots{}
+[R7RS]
 @c EN
 Evaluates @var{test}.  If it yields true value (or false in case of
 @code{unless}), @var{body} @dots{} are evaluated sequentially, and
@@ -1656,7 +1842,8 @@ value is returned.
 @defspec let ((var expr) @dots{}) body @dots{}
 @defspecx let* ((var expr) @dots{}) body @dots{}
 @defspecx letrec ((var expr) @dots{}) body @dots{}
-[R5RS]
+@defspecx letrec* ((var expr) @dots{}) body @dots{}
+[R7RS]
 @c EN
 Creates a local scope where @var{var} @dots{} are bound to the
 value of @var{expr} @dots{}, then evaluates @var{body} @dots{}.
@@ -1671,20 +1858,36 @@ the value(s) of this form.
 @c COMMON
 
 @c EN
-The three forms differ in terms of the scope @var{expr}s are evaluated.
+The four forms differ in terms of the scope and the order 
+@var{expr}s are evaluated.
 @code{Let} evaluates @var{expr}s before (outside of) @code{let} form.
-@code{Let*} evaluates @var{expr}s in the scope where @var{var}s before
-it are bound.   @code{Letrec} evaluates @var{expr}s in the environment
-where @var{var}s are already bound (to an undefined value, initially).
+The order of evaluation of @var{expr}s is undefined, and the compiler
+may reorder those @var{expr}s freely for optimization.
+@code{Let*} evaluates @var{expr}s, in the order they appears,
+and each @var{expr} is evaluated in the scope 
+where @var{var}s before it are bound.
+
+@code{Letrec} evaluates @var{expr}s, in an undefined order,
+in the environment where @var{var}s are already bound
+(to an undefined value, initially).
 @code{letrec} is necessary to define mutually recursive local procedures.
+Finally, @code{letrec*} uses the same scope rule as @code{letrec},
+and it evaluates @var{expr} in the order of appearance.
 @c JP
-これらの3つのフォームの違いは、@var{expr}が評価される時点のスコープにあります。
+これらの4つのフォームの違いは、@var{expr}が評価される時点のスコープと順序にあります。
 @code{let}は@var{expr}を@var{let}フォームに入る前の環境において評価します。
-@code{let*}は@var{expr}を順に、それ以前の@var{var}が束縛された環境において評価して
-ゆきます。@var{letrec}は全ての@var{var}が仮想的に不定の値に束縛された環境において
-各@var{expr}を評価します。@var{letrec}は相互再帰的なローカル関数を定義する場合に
-必要です。
+各@var{expr}の評価される順序は不定で、コンパイラは最適化のために自由に順序を
+変更することがあります。
+一方、@code{let*}は@var{expr}を現れた順に、
+それ以前の@var{var}が束縛された環境において評価してゆきます。
+
+@code{letrec}は全ての@var{var}が仮想的に不定の値に束縛された環境において
+各@var{expr}を(順不同で)評価します。
+@code{letrec}は相互再帰的なローカル関数を定義する場合に必要です。
+最後に、@code{letrec*}は@code{letrec}と同じスコープ規則を使い、
+さらに@var{expr}を現れる順に評価するものです。
 @c COMMON
+
 @example
 (define x 'top-x)
 
@@ -1699,6 +1902,49 @@ where @var{var}s are already bound (to an undefined value, initially).
          (list (lambda (a b) (cons a (cons b 0)))))
   (list 1 2))  @result{} 3
 @end example
+
+@c EN
+You need to use @code{letrec*} if evaluation of one @var{expr} requires
+the value of @var{var} that appears before the @var{expr}.  In the following
+example, calculating the value of @var{a} and @var{b} requires the value
+of @var{cube}, so you need @code{letrec*}.   (Note the difference from
+the above example, where @emph{calculating} the value of @var{list}
+doesn't need to take the value of @var{cons} bound in the same @code{letrec}.
+The value of @var{cons} isn't required until @var{list} is actually applied.)
+@c JP
+ひとつの@var{expr}を評価するために、それまでに現れた@var{var}の値を参照する
+必要がある時は、@code{letrec*}を使わなければなりません。
+下の例では、@var{a}と@var{b}の値を計算するために@var{cube}の値を
+使っているので、@code{letrec*}にする必要があります。
+(上の例との違いに注意してください。上の例では、@var{list}の値を@emph{計算する}
+時には、同時に束縛されている@var{cons}の値は必要とされません。@var{cons}の値が
+必要になるのは@var{list}が実際に適用される時です。)
+@c COMMON
+
+@example
+(letrec* ((cube (lambda (x) (* x x x)))
+          (a (+ (cube 1) (cube 12)))
+          (b (+ (cube 9) (cube 10))))
+  (= a b)) @result{} #t
+@end example
+
+@c EN
+This example happens to work with @code{letrec} in the current Gauche, but
+it is not guaranteed to keep working in future.  You just should not
+rely on evaluation order when you use @code{letrec}.
+In retrospect, it would be a lot simpler if we only have @code{letrec*}.
+Unfortunately @code{letrec} preceded for long time in Scheme history
+and it's hard to remove that.  Besides, @code{letrec} does have more
+opportunities to optimize than @code{letrec*}.
+@c JP
+この例は現在のGaucheでは@code{letrec}を使ってもたまたま動作しますが、
+将来にわたって動作し続けることは保証されません。
+@code{letrec}を使うなら評価順に依存しないように、プログラマが気をつけないといけません。
+振り返ってみれば、@code{letrec*}だけが提供されてた方が単純だったでしょう。
+生憎、Schemeの歴史の中では@code{letrec}の方がずっと前からあったので、いまさら
+取り除くこともできないのです。また、@code{letrec*}に出来ない最適化が
+@code{letrec}だと可能になることもあります。
+@c COMMON
 @end defspec
 
 @defmac let1 var expr body @dots{}
@@ -1835,6 +2081,43 @@ number from a few possibilities (environment variable, configuration file,
 
 @end defmac
 
+@defmac and-let1 var test exp1 exp2 @dots{}
+@c EN
+Evaluates @var{test}, and if it isn't @code{#f}, binds @var{var} to it
+and evaluates @var{exp1} @var{exp2} @dots{}.  Returns the result(s) of
+the last expression.  If @var{test} evaluates to @code{#f}, returns @code{#f}.
+
+This can be easily written by @code{and-let*} or @code{if-let1} as follows.
+However, we've written this idiom so many times that it deserves
+another macro.
+@c JP
+@var{test}を評価し、それが@code{#f}でなければ@var{var}をその値に束縛して
+@var{exp1} @var{exp2} @dots{}を評価します。戻り値は最後の式の値です。
+@var{test}が@code{#f}だった場合は単に@code{#f}を返します。
+
+これは@code{and-let*}や@code{if-let1}を使って次のとおり書くこともできます。
+しかし、このパターンを書くことがあまりに多いため、専用のマクロを用意する価値が
+あると判断しました。
+@c COMMON
+
+@example
+(and-let var test
+  exp1
+  exp2 @dots{})
+
+@equiv{}
+
+(and-let* ([var test])
+  exp1
+  exp2 @dots{})
+
+@equiv{}
+
+(if-let1 var test
+  (begin exp1 exp2 @dots{})
+  #f)
+@end example
+@end defmac
 
 @defmac fluid-let ((var val) @dots{}) body @dots{}
 @c EN
@@ -1908,14 +2191,14 @@ then @var{body} @dots{} are evaluated.
 See also @code{call-with-values} in @ref{Multiple values}
 which is the procedural equivalent of @code{receive}.
 You can use @code{define-values} (@xref{Definitions}) to
-bind multiple values to the toplevel variables simultaneously.
+bind multiple values to variables simultaneously.
 Also @code{let-values} and @code{let*-values}
 in SRFI-11 (@ref{Let-values}) provides
 @code{let}-like syntax with multiple values.
 @c JP
 なお、@ref{Multiple values}の@code{call-with-values}は
 @code{receive}と等価な手続き的インタフェースです。
-多値を複数のトップレベル変数に束縛するには、@code{define-values}
+多値を複数の変数に同時に束縛するには、@code{define-values}
 (@ref{Definitions}参照) が使えます。
 また、SRFI-11 (@ref{Let-values}) の@code{let-values}と
 @code{let*-values}は@code{let}のような形式で多値を扱うことができます。
@@ -1966,7 +2249,7 @@ Some examples:
 
 
 @defspec begin form @dots{}
-[R5RS]
+[R7RS]
 @c EN
 Evaluates @var{form}s sequentially, and returns the last result(s).
 @c JP
@@ -1974,14 +2257,14 @@ Evaluates @var{form}s sequentially, and returns the last result(s).
 @c COMMON
 
 @c EN
-@code{Begin} doesn't introduce new "block" like @code{let}, that is,
+@code{Begin} doesn't introduce new scope like @code{let}, that is,
 you can't place "internal define" at the beginning of @var{form}s
 generally.   Semantically @code{begin} behaves as if @var{form}s
 are spliced into the surrounding context.
-For example, topleve expression like the following is the same
+For example, toplevel expression like the following is the same
 as two toplevel definitions:
 @c JP
-@code{Begin}は@code{let}のような「ブロック」を作成するわけではありません。
+@code{Begin}は@code{let}のように新たなスコープを作成するわけではありません。
 すなわち、一般的には@var{form} @dots{}の先頭に「内部のdefine (internal define)」を
 置くことはできません。意味的には、@code{begin}はまるで@var{form} @dots{}が
 @code{begin}を囲むコンテクスト中に展開されているかのように振舞います。
@@ -2023,14 +2306,14 @@ Evaluates @var{exp0}, @var{exp1}, @dots{}, then returns the result(s)
 of @var{exp0}.   The name is taken from MzScheme.
 This is called @code{prog1} in CommonLisp.
 
-Unlike @code{begin}, this @emph{does} creates a "block",
+Unlike @code{begin}, this @emph{does} creates a new scope,
 for the @code{begin0} form is expanded as follows.
 @c JP
 @var{exp0}, @var{exp1}, @dots{} を評価し、@var{exp0}の結果を返します。
 この名前はMzSchemeから取られました。これはCommonLispで
 @code{prog1}と呼ばれているものです。
 
-@code{begin}と違って、これは「ブロック」を構成します。
+@code{begin}と違って、これは新たなスコープを構成します。
 @code{begin0}フォームは次のように展開されるからです。
 @c COMMON
 
@@ -2047,12 +2330,12 @@ for the @code{begin0} form is expanded as follows.
 @c NODE 繰り返し
 
 @defspec do ((variable init [step]) @dots{}) (test expr @dots{}) body @dots{}
-[R5RS]
+[R7RS]
 @c EN
 @enumerate
 @item
 Evaluates @var{init} @dots{} and binds @var{variable} @dots{} to each result.
-The following steps are evaluated under the enviornment where
+The following steps are evaluated under the environment where
 @var{variables} are bound.
 @item
 Evaluate @var{test}.  If it yields true, evaluates
@@ -2156,7 +2439,7 @@ created.
 
 
 @defspec let name ((var init) @dots{}) body @dots{}
-[R5RS]
+[R7RS]
 @c EN
 This variation of @code{let} is called ``named let''.  It creates
 the following procedure and binds it to @var{name}, then calls
@@ -2231,28 +2514,70 @@ The tricky use of @code{letrec} in the expansion is to make
 
 
 
-@defmac dotimes (variable limit [result]) body @dots{}
-@defmacx dolist (variable lexpr [result]) body @dots{}
+@defmac dotimes ([variable] expr [result]) body @dots{}
+@defmacx dolist ([variable] expr [result]) body @dots{}
 @c EN
-Imported from Common Lisp.  These are equivalent to the following forms,
-respectively.
+Imported from Common Lisp.  The full form are
+expanded as follows:
 @c JP
-Common Lispからの輸入です。それぞれ以下のように展開されます。
+Common Lispからの輸入です。完全なフォームは以下のように展開されます。
 @c COMMON
 @example
-(dotimes (variable limit result) body @dots{})
+(dotimes (variable expr result) body @dots{})
 ==>
-(do ((tlimit limit)
+(do ((limit expr)
      (variable 0 (+ variable 1)))
-    ((>= variable tlimit) result)
+    ((>= variable expr) result)
   body @dots{})
 
-(dolist (variable lexpr result) body @dots{})
+(dolist (variable expr result) body @dots{})
 ==>
 (begin
-  (for-each (lambda (variable) body @dots{}) lexpr)
+  (for-each (lambda (variable) body @dots{}) expr)
   (let ((variable '())) result))
 @end example
+
+@c EN
+(The reason we bind @var{variable} to @code{()} to evaluate @var{result}
+in @code{dolist} is the CL compatibility.)
+@c JP
+(@code{dolist}で@var{result}の評価時に@var{variable}を@code{()}に
+束縛しているのはCLとの互換性のためです。)
+@c COMMON
+
+@c EN
+You can omit @var{result}, or both @var{result} and @var{variable}.
+That is, if the first argument has two elements, they're @var{variable}
+and @var{expr}.  In which case, the result of these forms is
+undefined.
+
+If both @var{result} and @var{variable} are omitted, these forms
+just repeatedly executes @var{body} @dots{}
+number of times determined by @var{expr}.
+@c JP
+@var{result}、もしくは@var{result}と@var{variable}両方を省略することが
+できます。つまり、最初の引数が2要素であれば、それは@var{variable}と
+@var{expr}だということです。その場合、これらのフォームの結果は未定義です。
+
+もし@var{result}と@var{variable}の両方が省略されたら、
+@var{expr}で決定される回数だけ単に@var{body} @dots{}を繰り返し実行します。
+@c COMMON
+
+@example
+;; print "a" 10 times.
+(dotimes (10) (print "a")) 
+
+;; print "a" (length lst) times.
+(dolist (lst) (print "a"))
+@end example
+
+@c EN
+See also @ref{Eager comprehensions}, which provides
+rich way to iterate.
+@c JP
+@ref{Eager comprehensions}も参照してください。
+より複雑な繰り返しを記述できます。
+@c COMMON
 @end defmac
 
 @defmac while expr body @dots{}
@@ -2360,7 +2685,7 @@ The return value of @code{until} form itself isn't specified.
 @c NODE 準クオート, 準クオート(Quasiquote)
 
 @defspec quasiquote template
-[R5RS]
+[R7RS]
 @c EN
 Quasiquotation is a convenient way to build a structure that has
 some fixed parts and some variable parts.  See the explanation below.
@@ -2371,7 +2696,8 @@ some fixed parts and some variable parts.  See the explanation below.
 @end defspec
 
 @deftp {Reader Syntax} @code{`@var{template}}
-[R5RS]
+@lxindex `
+[R7RS]
 @c EN
 The syntax @code{`x} is read as @code{(quasiquote x)}.
 @c JP
@@ -2381,7 +2707,7 @@ The syntax @code{`x} is read as @code{(quasiquote x)}.
 
 @defspec unquote datum @dots{}
 @defspecx unquote-splicing datum @dots{}
-[R5RS+][R6RS]
+[R7RS]
 @c EN
 These syntaxes have meaning only when they appear in the @var{template}
 of quasiquoted form.  R5RS says nothing about these syntaxes
@@ -2410,7 +2736,9 @@ R6RSではこれらの場合も定義されており、Gaucheもそれに倣っ�
 
 @deftp {Reader Syntax} @code{,@var{datum}}
 @deftpx {Reader Syntax} @code{,@@@var{datum}}
-[R5RS]
+@lxindex ,
+@lxindex ,@@
+[R7RS]
 @c EN
 The syntaxes @code{,x} and @code{,@@x} are read as @code{(unquote x)}
 and @code{(unquote-splicing x)}, respectively.
@@ -2630,7 +2958,7 @@ R5RSの仕様では、これらのフォームで、内側のunquote-splicingが
 @c COMMON
 
 @c EN
-@subheading How static are quasiquated forms?
+@subheading How static are quasiquoted forms?
 @c JP
 @subheading 準クォートはどのくらい静的か
 @c COMMON
@@ -2651,7 +2979,7 @@ a quasiquoted form has static parts.
 @c EN
 First of all, if there's no variable parts in quasiquoted
 form, like @code{`(a b c)}, the entire form is allocated statically.
-If there is a static tail in the sturcture, it is also allocated
+If there is a static tail in the structure, it is also allocated
 statically; e.g. @code{`((,x a b) (,y c d))} works like
 @code{(list (cons x '(a b)) (cons y '(c d)))}.
 @c JP
@@ -2663,7 +2991,7 @@ statically; e.g. @code{`((,x a b) (,y c d))} works like
 
 @c EN
 Furthermore, when an unquoted expression is a
-constant expressoin, Gauche embeds it into the static
+constant expression, Gauche embeds it into the static
 form.  If you've defined a constant like
 @code{(define-constant x 3)}, then the form
 @code{`(,x ,(+ x 1))} is compiled as the constant @code{'(3 4)}.
@@ -2696,7 +3024,7 @@ mutating such structures.
 
 @defspec define variable expression
 @defspecx define (variable . formals) body @dots{}
-[R5RS]
+[R7RS+]
 @c EN
 This form has different meanings in the toplevel (without no
 local bindings) or inside a local scope.
@@ -2732,10 +3060,111 @@ It is equivalent to the following form.
 @c EN
 If the form appears inside a local scope (internal define),
 this introduce a local binding of the variable.
-
-@c explanation of internal define here
 @c JP
 このフォームがローカルスコープの中に現われた場合、ローカル変数の束縛となります。
+(内部define)。
+@c COMMON
+
+@c EN
+Internal defines can appear in the beginning of body of @code{lambda}
+or other forms that introduces local bindings.  They are equivalent
+to a @code{letrec*} form, as shown below.
+@c JP
+内部defineは@code{lambda}やその他のローカル束縛を作る構文の、本体部分の先頭に置けます。
+これらは、下に示すように@code{letrec*}フォームと等価です。
+@c COMMON
+
+@example
+(lambda (a b)
+  (define (cube x) (* x x x))
+  (define (square x) (* x x))
+  (+ (cube a) (square b)))
+
+ @equiv{}
+
+(lambda (a b)
+  (letrec* ([cube (lambda (x) (* x x x))]
+            [square (lambda (x) (* x x))])
+    (+ (cube a) (square b))))
+@end example
+
+@c EN
+Since internal defines are essentially a @code{letrec*} form,
+you can write mutually recursive local functions, and you can
+use preceding bindings introduced in the same scope to calculate
+the value to be defined.  However, you can't use a binding that is introduced
+after an internal define form to calculate its value; if you do so,
+Gauche may not report an error immediately, but you may get strange
+errors later on.
+@c JP
+内部defineは実質的に@code{letrec*}フォームなので、
+相互再帰する内部関数を書けますし、また同じスコープで先に導入された定義を
+使って定義される値を計算することもできます。しかし、
+内部defineフォームの後に定義される値を使うことはできません。
+そういったプログラムを書いてもGaucheは直ちにエラーを報告しませんが、
+あとでおかしな結果が出ることがあります。
+@c COMMON
+
+@example
+(lambda (a)
+  (define x (* a 2))
+@c EN
+  (define y (+ x 1))  ; ok to use x to calculate y
+@c JP
+  (define y (+ x 1))  ; yの値を計算するのにxを使ってよい
+@c COMMON
+  (* a y))
+
+(lambda (a)
+@c EN
+  ;; You can refer to even? in odd?, since the value of even?
+  ;; isn't used at the time odd? is defined; it is only used
+  ;; when odd? is called.
+@c JP
+  ;; odd?の中からeven?を参照するのはok。odd?が定義される時点ではeven?
+  ;; の値は使われず、odd?が呼ばれた時に初めて使われるから。
+@c COMMON
+  (define (odd? x) (or (= x 1) (not (even? (- x 1)))))
+  (define (even? x) (or (= x 0) (not (odd? (- x 1)))))
+  (odd? a))
+
+(lambda (a)
+@c EN
+  ;; This is not ok, for defining y needs to use the value
+  ;; of x.  However, you may not get an error immediately.
+@c JP
+  ;; これはダメ。yを定義する時点でxの値を使わないとならないので。
+  ;; ただし、すぐにはエラーとならないかもしれない。
+@c COMMON
+  (define y (+ x 1))
+  (define x (* a 2))
+  (* a y))
+@end example
+
+@c EN
+Inside the body of binding constructs, internal defines must appear
+before any expression of the same level.   The following code isn't allowed, for
+an expression @code{(print a)} precedes the @code{define} form.
+@c JP
+束縛を作るフォームのボディー内で、内部defineは同じレベルにあるすべての式より前に
+現れなければなりません。例えば次のコードは、@code{define}フォームの
+前に式@code{(print a)}があるので不正です。
+@c COMMON
+
+@example
+(lambda (a)
+  (print a)
+  (define (cube x) (* x x x))  ; error!
+  (cube a))
+@end example
+
+@c EN
+It is also invalid to put no expressions but internal defines
+inside the body of binding constructs, although Gauche don't report
+an error.
+@c JP
+束縛を作るフォームのボディー中に、式を置かず内部defineだけを書いておくのも不正ですが、
+Gaucheは特にエラーを出しません。
 @c COMMON
 
 @c EN
@@ -2760,15 +3189,16 @@ parenthesis are not there.  Thus these two forms are equivalent.
 @end defspec
 
 @defmac define-values (var @dots{}) expr
+@defmacx define-values (var var1 @dots{} . var2) expr
+@defmacx define-values var expr
+[R7RS]
 @c EN
-@var{Expr} is evaluated, and it should return as many values as
-@var{var}s.  Then each value of the results are
-bound to each variable in @var{var} @dots{}.
-@xref{Let-values}.
+@var{Expr} is evaluated, and each value of the result
+is bound to each @var{var}s.  In the first form, it is an error
+unless @var{expr} yields the same number of values as @var{var}s.
 @c JP
-まず@var{expr}が評価されます。それは与えられた@var{var}と同数の値を
-返さなければなりません。続いて各値が@var{var}に順に束縛されます。
-@ref{Let-values}も参照してください。
+まず@var{expr}が評価され、続いて各値が@var{var}に順に束縛されます。
+最初の形式では、@var{expr}
 @c COMMON
 @example
 (define-values (lo hi) (min&max 3 -1 15 2))
@@ -2776,12 +3206,69 @@ bound to each variable in @var{var} @dots{}.
 lo @result{} -1
 hi @result{} 15
 @end example
+
+@c EN
+In the second form, @var{expr} may yield as many values as
+@var{var} @var{var1} @dots{} or more; the excess values are
+made into a list and bound to @var{var2}.
+@c JP
+二番目の形式では、@var{expr}は@var{var} @var{var1} @dots{}に対応する数か
+それ以上の値を生成しなければなりません。余った値はリストになって@var{var2}に
+束縛されます。
+@c COMMON
+
+@example
+(define-values (a b . c) (values 1 2 3 4))
+
+a @result{} 1
+b @result{} 2
+c @result{} (3 4)
+@end example
+
+@c EN
+In the last form, all the values yielded by @var{expr} are gathered
+to a list and bound to @var{var}.
+@c JP
+最後の形式では、@var{expr}の生成する全ての値がリストにまとめられ、@var{var}に
+束縛されます。
+@c COMMON
+
+@example
+(define-values qr (quotient&remainder 23 5))
+
+qr @result{} (4 3)
+@end example
+
+@c EN
+You can use @code{define-values} wherever @code{define} is allowed;
+that is, you can mix @code{define-values} in internal defines.
+@c JP
+@code{define-values}は@code{define}が許されるところならどこでも使えます。
+つまり、内部defineに@code{define-values}を混ぜて使えるということです。
+@c COMMON
+
+@example
+(define (foo . args)
+  (define-values (lo hi) (apply min&max args))
+  (define len (length args))
+  (list len lo hi))
+
+(foo 1 4 9 3 0 7)
+ @result{} (6 0 9)
+@end example
+
+@c EN
+@xref{Let-values}.
+@c JP
+@ref{Let-values}も参照してください。
+@c COMMON
 @end defmac
 
 @defspec define-constant variable expression
 @defspecx define-constant (variable . formals) body @dots{}
 @c EN
-Like @code{define}, but that the compiler assumes
+This form is only effective in toplevel.
+Like top-level @code{define}, but that the compiler assumes
 the value of @var{variable} won't change and generates
 optimized code.
 
@@ -2789,19 +3276,30 @@ An error is signaled when you use @code{set!} to change the value
 of @var{variable}.   It is allowed to redefine @var{variable},
 but a warning is printed.
 @c JP
-@code{define}と同じように動作しますが、
+このフォームはトップレベルでしか使えません。
+トップレベルの@code{define}と同じように動作しますが、
 コンパイラは@var{variable}の値が今後変更されないものとして
 最適化されたコードを生成します。
 
 @var{variable}の値を@code{set!}で変更しようとするとエラーとなります。
 @var{variable}を再定義することは許されますが、警告が表示されます。
 @c COMMON
+
+@c EN
+There's no ``internal @code{define-constant}'', since the compiler
+can figure out whether a local binding is mutated,
+and optimize code accordingly, without a help of declarations.
+@c JP
+``内部@code{define-constant}'' にあたるものはありません。宣言が無くても
+コンパイラはどのローカル束縛が変更されないかを検出して最適化できるからです。
+@c COMMON
 @end defspec
 
 @defspec define-in-module module variable expression
 @defspecx define-in-module module (variable . formals) body @dots{}
 @c EN
-This form creates a global binding of @var{variable} in
+This form must appear in the toplevel.
+It creates a global binding of @var{variable} in
 @var{module}, which must be either a symbol of the module name or
 a module object.  If @var{module} is a symbol, the named module
 must exist.
@@ -2810,7 +3308,8 @@ must exist.
 
 The second form is merely a syntactic sugar of:
 @c JP
-この形式は@var{variable}のグローバルな束縛を@var{module}中に作成します。
+この形式はトップレベルでしか使えません。
+@var{variable}のグローバルな束縛を@var{module}中に作成します。
 @var{module}はモジュール名を表すシンボルか、モジュールオブジェクトで
 なければなりません。@var{module}がシンボルの場合、その名前を持つ
 モジュールが既に存在している必要があります。
@@ -2835,37 +3334,69 @@ the current module, you can use @code{global-variable-bound?}
 @c COMMON
 
 @c ----------------------------------------------------------------------
-@node Inclusions, Modules, Definitions, Core syntax
+@node Inclusions, Feature conditional, Definitions, Core syntax
 @section Inclusions
 @c NODE インクルード
 
 @defspec include filename @dots{}
 @defspecx include-ci filename @dots{}
 [R7RS]
+@c EN
 Reads @var{filename} @dots{} at compile-time, and insert their
 contents as if the forms are placed in the includer's source file,
 surrounded by @code{begin}.  The @code{include} form reads files
 as is, while @code{include-ci} reads files in case-insensitive
 way, as if @code{#!fold-case} is specified in the beginning of the
 file (@xref{Case-sensitivity}).
+@c JP
+@var{filename} @dots{}で指定されるファイルをコンパイル時に読み、
+その内容が@code{begin}で囲まれてインクルードフォームの位置に替わりに
+置かれているかのように解釈します。
+@code{include}フォームはファイルの内容をそのまま読みますが、
+@code{include-ci}フォームは、あたかもファイル先頭に@code{#!fold-case}が
+指定されたかのように、シンボルの大文字小文字を区別しないモードで読みます
+(@ref{Case-sensitivity}参照)。
+@c COMMON
 
+@c EN
 The coding magic comment in each file is honored while reading
 that file (@xref{Multibyte scripts}).
+@c JP
+読み込まれるファイルに文字エンコーディングを指定するコメントがあればそれは
+そのファイルを読んでいる間有効になります(@ref{Multibyte scripts}参照)。
+@c COMMON
 
-If @var{filename} is a relative path, the file is first searched
-relative to the file @code{include} form appears.  If @code{include}
-form isn't appear in a file (e.g. from REPL, or invoked via
-@code{eval}), the file is searched relative to the process's current
-working directory.
+@c EN
+If @var{filename} is absolute, the file is just searched.  If it
+begins with @file{./} or @file{../}, the file is searched relative
+to the process's current working directory.  Otherwise, the file
+is first searched relative to the file contaning the @code{include}
+form, then the directories in @code{*load-path*} are tried.
+@c JP
+@var{filename}が絶対パスならば、そのパスに正確に合致するファイルが探されます。
+@var{filename}が@code{./}か@code{../}で始まっていれば、
+ファイルはコンパイル時のプロセスのカレントワーキングディレクトリからの
+相対で探されます。そうでない場合、ファイルはまず@code{include}フォームが
+置かれていたファイルからの相対で探され、見つからなければ
+@code{*load-path*}にあるディレクトリからの相対パスが順に試されます。
+@c COMMON
 
+@c EN
 Example: Suppose a file @file{a.scm} contains the following code:
+@c JP
+例: ファイル@file{a.scm}には次のコードが書かれているとします。
+@c COMMON
 
 @example
 (define x 0)
 (define y 1)
 @end example
 
+@c EN
 You can include this file into another source, like this:
+@c JP
+このファイルを別ソースファイルからインクルードすることができます:
+@c COMMON
 
 @example
 (define (foo)
@@ -2873,7 +3404,11 @@ You can include this file into another source, like this:
   (list x y))
 @end example
 
+@c EN
 It works as if the source is written as follows:
+@c JP
+この場合、元のソースファイルはあたかも次のように書かれていたかのように解釈されます。
+@c COMMON
 
 @example
 (define (foo)
@@ -2884,25 +3419,61 @@ It works as if the source is written as follows:
 @end example
 @end defspec
 
+@c EN
 Gauche has other means to incorporate source code from
 another files.  Here's the comparison.
+@c JP
+Gaucheには、他のファイルからソースを読んでくる方法がいくつかあります。
+以下にインクルードとの比較を説明します。
+@c COMMON
 
 @table @asis
+@c EN
 @item @code{require} (@code{use} and @code{extend} calls @code{require} internally)
+@c JP
+@item @code{require} (@code{use}と@code{extend}も内部で@code{require}を呼んでいます)
+@c COMMON
 @itemize
 @item
-Works only in toplevel context, while @code{include} can be
-anywhere.
+@c EN
+Both @code{require} and @code{include} work at compile-time.
+@c JP
+@code{require}も@code{include}もコンパイル時に解釈されます。
+@c COMMON
 @item
-Reads the file only once (second and later @code{require} on the
+@c EN
+@code{Require}
+works only in toplevel context, while @code{include} can be
+anywhere.
+@c JP
+@code{require}はトップレベルでのみ動作します。
+それに対し、@code{include}はどこにでも置けます。
+@c COMMON
+@item
+@c EN
+@code{Require} reads the file only once (second and later @code{require} on the
 same file becomes no-op), while @code{include} reads the file
 every place it appears.
+@c JP
+@code{require}は
+ファイルを一度だけ読みます(つまり、2度め以降の同じファイルに対する@code{require}は
+単なる無動作(no-op)になります)。これに対し、@code{include}は現れる場所ごとに
+ファイルを読み込みます。
+@c COMMON
 @item
+@c EN
 The file is searched from @code{*load-path*}.  The location
 of the file @code{require} form appears doesn't matter.
 (You can add directories relative to the requiring file
 using the @code{:relative} flag in @code{add-load-path}, though).
+@c JP
+ファイルは@code{*load-path*}から探され、@code{require}フォームが
+使われたファイルの位置は関係ありません (但し、@code{add-load-path}の
+@code{:relative}フラグを使うことで、
+@code{require}フォームを使っているファイルの位置をロードパスに加えることはできます。)
+@c COMMON
 @item
+@c EN
 Even if the current module is changed by @code{select-module}
 inside the required file, it is only effective while the
 required file is read.  On the other hand, @code{include}
@@ -2912,31 +3483,70 @@ persists after @code{include} form (Note: Encoding magic comment
 and @code{#!fold-case}/@code{#!no-fold-case} are dealt with by
 the reader, so those effect is contained in the file even with
 @code{include}).
+@c JP
+@code{require}されたファイル中でカレントモジュールが
+@code{select-module}で変更されたとしても、その有効範囲はそのファイル内に留まります。
+一方@code{include}は、@code{include}フォームが出現した場所にS式が
+挿入されたように解釈されるので、@code{select-module}の効果は
+それが挿入された箇所から@code{include}しているファイルの最後までということになります。
+(文字エンコーディング指定コメントおよび、@code{#!fold-case}/@code{#!no-fold-case}
+による大文字小文字指定はリーダによって処理されるので、
+効果は@code{include}されるファイルの中に留まります。)
+@c COMMON
 @end itemize
 
 @item @code{load}
 @itemize
 @item
+@c EN
+Works at runtime, while @code{include} works at compile-time.
+@c JP
+@code{include}がコンパイル時に解釈されるのに対し、こちらは実行時に解釈されます。
+@c COMMON
+@item
+@c EN
 Works only in toplevel context, while @code{include} can be
 anywhere.
+@c JP
+トップレベルでのみ動作します。それに対し、@code{include}はどこにでも置けます。
+@c COMMON
 @item
-Works at runtime, while @code{include} works at compile-time.
+@c EN
+The file is searched from @code{*load-path*}.
+@c JP
+ファイルは@code{*load-path*}から探されます。
+@c COMMON
 @item
-The file is searched from @code{*load-path*} by default,
-or the paths specified to the argument.
-@item
+@c EN
 As the case with @code{require}, change of the current module
 won't persist after @code{load}.
+@c JP
+@code{require}と同様、ロードされるファイル中でカレントモジュールを変えても、
+その効果は@code{load}終了時までです。
+@c COMMON
 @end itemize
 
 @end table
 
+@c EN
 Usually, @code{require} (or @code{use} and @code{extend}) are
 better way to incorporate sources in other files.  The @code{include}
 form is mainly for the tricks that can't be acheved with
 @code{require}.  For example, you have a third-party R5RS code
 and you want to wrap it with Gauche module system.  Using @code{include},
-you don't need to change the third party's code:
+you place the following small source file along the third-party code,
+and you can load the code with @code{(use third-party-module)} without
+changing the original code at all.
+@c JP
+通常、他のファイルに書かれたソースファイルを取り込むのに適した方法は
+@code{require} (もしくは@code{use}や@code{extend}) です。
+@code{include}フォームは、@code{require}では実現が難しいトリックのために使います。
+例えば、第三者がR5RS向けに書いたコードを、Gaucheのモジュールシステムでラップしたい場合、
+@code{include}を使う
+次のような内容の小さなファイルをそのコードのファイルと同じディレクトリに置いておけば、
+第三者のコードを一切変えることなく、@code{(use third-party-module)} で
+コードをロードできます。
+@c COMMON
 
 @example
 (define-module third-party-module
@@ -2945,7 +3555,362 @@ you don't need to change the third party's code:
 @end example
 
 @c ----------------------------------------------------------------------
-@node Modules,  , Inclusions, Core syntax
+@node Feature conditional, Modules, Inclusions, Core syntax
+@section Feature conditional
+@c NODE 機能条件式
+
+@c EN
+@subheading The @code{cond-expand} macro
+@c JP
+@subheading @code{cond-expand}マクロ
+@c COMMON
+
+@c EN
+Sometimes you need to have a different piece of code
+depending on available features provided by the
+implemantation and/or platform.  For example,
+you may want to switch behavior depending on whether
+networking is available, or to embed an
+implementation specific procedures in otherwise-portable code.
+@c JP
+しばしば、実装やプラットフォームがどういった機能を提供しているかに
+応じてコードを切り替えたいことがあります。例えば、ネットワークが使えるか
+どうかで振る舞いを変えるとか、ほぼポータブルなコードの一部だけに
+特定の実装に依存するコードを入れたいとかいう場合です。
+@c COMMON
+
+@c EN
+In C, you use preprocessor directives such as @code{#ifdef}.
+In Common Lisp, you use reader macro @code{#+} and @code{#-}.
+In Scheme, you have @code{cond-expand}:
+@c JP
+C言語なら、@code{#ifdef}のようなプリプロセッサディレクティブを、
+Common Lispなら、@code{#+}と@code{#-}のようなリーダマクロを使うところです。
+Schemeでは、こういう時には@code{cond-expand}を使います。
+@c COMMON
+
+@defmac cond-expand (feature-requirement command-or-definition @dots{}) @dots{}
+[SRFI-0][R7RS]
+@c EN
+This macro expands to @var{command-or-definition} @dots{} if
+@var{feature-requirement} is supported by the current platform.
+
+@var{feature-requirement} must be in the following syntax:
+@c JP
+プラットフォームが@var{feature-requirement}に示される機能をサポートしていれば、
+このマクロは@var{command-or-definition} @dots{} へと展開されます。
+
+@var{feature-requirement} は以下のような構文でなければなりません。
+@c COMMON
+@example
+@var{feature-requirement}
+  : @var{feature-identifier}
+  | (and @var{feature-requirement} @dots{})
+  | (or  @var{feature-requirement} @dots{})
+  | (not @var{feature-requirement})
+  | (library @var{library-name})
+@end example
+
+@c EN
+The macro tests each @var{feature-requirement} in order, and
+if one is satisfied, the macro itself expands to the
+corresponding @var{command-or-definition} @dots{}.
+@c JP
+このマクロは @var{feature-requirement} を順にテストし、そのひとつが
+満たされたら、対応する @var{command-or-definition} @dots{} に展開されます。
+@c COMMON
+
+@c EN
+The last clause may have @code{else} in the position of
+@var{feature-requirement}, to make the clause expanded
+if none of the previous feature requirement is fulfilled.
+@c JP
+最後の節の@var{feature-requirement}の部分にはシンボル@code{else}を
+置くこともできます。他の節の@var{feature-requirement}が満たされなかった場合に
+その節が展開されます。
+@c COMMON
+
+@c EN
+@var{feature-identifier} is a symbol that indicates a feature.
+If such a feature is supported in the current platform, it satisfies the
+@var{feature-requirement}.  You can do boolean combination
+of @var{feature-requirement}s to compose more complex conditions.
+@c JP
+@var{feature-identifier} は機能を示すシンボルです。その機能が現在のプラットフォームで
+サポートされているなら、それは、@var{feature-requirement} を満たします。
+より複雑な条件を構成するために、@var{feature-requirement} のブール代数による
+組み合わせを用いることが出来ます。
+@c COMMON
+
+@c EN
+The form @code{(library @var{library-name})} is added in R7RS,
+and it is fulfilled when the named library is available.  Since
+this is R7RS construct, you have to use R7RS-style library name---
+list of symbols/integers, e.g. @code{(gauche net)} instead of
+@code{gauche.net}.
+@c JP
+@code{(library @var{library-name})}という形式はR7RSで追加されたもので、
+指定されるライブラリが使える場合に条件が満たされます。
+これはR7RSの形式なので、ライブラリ名はリスト形式で指定します
+(@code{gauche.net}のかわりに@code{(gauche net)}等)。
+@c COMMON
+
+@c EN
+Here's a typical example: Suppose you want to have implementation-specific
+part for Gauche, Chicken Scheme and ChibiScheme.  Most modern Scheme
+impelementations defines a feature-identifier to identify itself.
+You can write the conditional part as follows:
+@c JP
+例えば、Gauche、Chicken Scheme、ChibiSchemeに依存するコードを
+入れたいとしましょう。現代の多くのScheme実装は、自分自身を示す
+feature-identifierを定義しているので、条件付きのコードは次のとおり書けます。
+@c COMMON
+
+@example
+(cond-expand
+ [gauche  (gauche-specific-code)]
+ [(or chicken chibi) (chicken-chibi-specific-code)]
+ [else    (fallback-code)]
+ )
+@end example
+
+@c EN
+It is important that the conditions of @code{cond-expand} is
+purely examined at the macro-expansion time, and
+unfulfilled clauses are discarded.
+Thus, for example, you can include macro calls or language extensions
+that may not be recognized on some implementations.  You can also
+conditionally define global bindings.
+@c JP
+@code{cond-expand}の条件はマクロ展開時に全て処理され、
+不採用だった節のコードは捨てられる、という事実は重要です。
+このおかげで、例えば実装によって認識されないマクロ呼び出しや言語拡張を
+@var{command-or-definition}に含めることができます。
+また、グローバルな束縛を条件によって定義したりしなかったりすることができます。
+@c COMMON
+
+@c EN
+Compare that to @code{cond}, which examines conditions at runtime.
+If you include unsupported macro call in one of the conditions, it
+may raise an error at macro expansion time, even if that clause
+will never be executed on the platform.  Also, it is not possible
+to conditionally define global bindings using @code{cond}.
+@c JP
+これを@code{cond}と比較してみましょう。@code{cond}は条件を実行時に調べます。
+もし条件節の中に、あるプラットフォームではサポートされないマクロ呼び出しを
+書いた場合、たとえその節が現実には決して実行されないものであるとしても、
+マクロ展開時にエラーになってしまうかもしれません。
+また、@code{cond}を使って条件的にグローバルな束縛を定義することはできません。
+@c COMMON
+
+@c EN
+There's a caveat, though.  Suppose you want to save the result of macro
+expansion, and run the expanded result later on other platforms.
+The result code is based on the features of the platform the macro
+expansion takes place, which may not agree with the features
+of the platform the code will run.  (This issue always arises
+in cross-compiling situation in general.)
+
+@c Gauche has @emph{ahead-of-time compilation} feature, which is only
+@c used internally now, but will eventually be made for public use.
+@c JP
+ただし、マクロ展開した結果をどうにかして保存しておいて、
+別のプラットフォームでそれを走らせる、ということをする場合は注意が必要です。
+条件選択はマクロ展開をするプラットフォームの機能に応じて行われ、
+それはコードを実行するプラットフォームの機能とは一致しないかもしれません
+(これはもちろん、クロスコンパイルで常に問題となることです。)
+@c COMMON
+
+@c EN
+See below for the list of feature identifiers defined in Gauche.
+@c JP
+Gaucheで使えるfeature identifier一覧は下を見てください。
+@c COMMON
+@end defmac
+
+@c EN
+@subheading Gauche-specific feature identifiers
+@c JP
+@subheading Gauche特有のfeature identifier
+@c COMMON
+
+@table @code
+@item gauche
+@itemx gauche-X.X.X
+@c EN
+Indicates you're running on Gauche.  It is useful to put Gauche-specific
+code in a portable program.
+@code{X.X.X} is the gauche's version
+(e.g. @code{gauche-0.9.4}), in case you want to have code
+for specific Gauche version.  (Such feature identifier is suggested by
+R7RS; but it might not be useful if we don't have means to compare versions.
+Something to consider in future versions.)
+@c JP
+プログラムをGaucheで実行していることを示します。ポータブルなプログラムの中に
+Gauche特有のコードを埋め込むのに便利です。
+@code{X.X.X}はGaucheのバージョンで(例: @code{gauche-0.9.4})、
+特定のGaucheのバージョンのみに依存したコードを入れるのに使えます。
+(処理系のバージョンつきの機能識別子はR7RSで示唆されているものですが、
+バージョンを比較する機能がないとあまり有用ではないでしょう。
+将来はそのような機能が追加されるかもしれません。)
+@c COMMON
+
+@item gauche.os.windows
+@itemx gauche.os.cygwin
+@c EN
+Defined on Windows-native platform and Cygwin/Windows platform, respectively.
+If neither is defined you can assume it's a unix variant.
+(Cygwin is supposedly
+unix variant, but corners are different enough to deserve it's own
+feature identifier.)
+@c JP
+それぞれ、WindowネイティブプラットフォームとCygwin/Windowsプラットフォームを
+示します。どちらも定義されていなければ、Unix系と考えて構いません。
+(CygwinもUnix系と言えなくはありませんが、他のUnix系に比べて
+色々違いがあるので、機能識別子を用意してあります。)
+@c COMMON
+
+@item gauche.ces.utf8
+@itemx gauche.ces.eucjp
+@itemx gauche.ces.sjis
+@itemx gauche.ces.none
+@c EN
+Either one of these is defined based on Gauche's native character
+encoding scheme.  @xref{Multibyte strings}, for the details.
+@c JP
+これらのうちのいずれか一つが、Gaucheの内部エンコーディングに合わせて
+定義されます。詳しくは@ref{Multibyte strings}を参照してください。
+@c COMMON
+
+@item gauche.net.tls
+@c EN
+Defined if the runtime supports TLS in networking.
+@c JP
+TLS/SSLサポートがあれば定義されます。
+@c COMMON
+
+@item gauche.net.ipv6
+@c EN
+Defined if the runtime supports IPv6.
+Note that this only indicates Gauche has been built with IPv6 support;
+the OS may not allow IPv6 features, in that case you'll get system error
+when you try to use IPv6.
+@c JP
+IPv6サポートが組み込まれていれば定義されます。
+ただし、これがGaucheがIPv6サポート込みでビルドされたことを示すだけです。
+OSがIPv6サポートをオフにしている場合、IPv6機能を使おうとするとシステムエラーが
+投げられます。
+@c COMMON
+
+@item gauche.sys.threads
+@itemx gauche.sys.pthreads
+@itemx gauhce.sys.wthreads
+@c EN
+If the runtime supports multithreading, @code{gauche.sys.threads} is
+defined (@xref{Threads}).  Multithreading is based on either POSIX pthreads
+or Windows threads.  The former defines @code{gauche.sys.pthreads},
+and the latter defines @code{gauche.sys.wthreads}.
+@c JP
+マルチスレッドがサポートされていれば@code{gauche.sys.threads}が定義されます
+(@ref{Threads}参照)。また、マルチスレッドは内部ではプラットフォームによって
+POSIXスレッドかWindowsスレッドを利用しますが、前者の場合は
+@code{gauche.sys.pthreads}が、後者では@code{gauche.sys.wthreads}が
+併せて定義されます。
+@c COMMON
+
+@item gauche.sys.sigwait
+@itemx gauche.sys.setenv
+@itemx gauche.sys.unsetenv
+@itemx gauche.sys.clearenv
+@itemx gauche.sys.getloadavg
+@itemx gauche.sys.getrlimit
+@itemx gauche.sys.lchown
+@itemx gauche.sys.getpgid
+@itemx gauche.sys.nanosleep
+@itemx gauhce.sys.crypt
+@itemx gauche.sys.symlink
+@itemx gauche.sys.readlink
+@itemx gauche.sys.select
+@itemx gauche.sys.fcntl
+@itemx gauche.sys.syslog
+@itemx gauche.sys.setlogmask
+@itemx gauche.sys.openpty
+@itemx gauche.sys.forkpty
+@c EN
+Those are defined based on the availability of these system features
+of the platform.
+@c JP
+これらシステムの機能が使えるのなら対応する機能識別子が定義されます。
+@c COMMON
+@end table
+
+
+@c EN
+@subheading R7RS feature identifiers
+@c JP
+@subheading R7RSで定義されたfeature identifiers
+@c COMMON
+
+@table @code
+@item r7rs
+@c EN
+Indicates the implementation complies r7rs.
+@c JP
+実装がr7rs準拠であることを示します。
+@c COMMON
+
+@item exact-closed
+@c EN
+Exact arithmetic operations are closed; that is, dividing
+an exact number by a non-zero exact number always yields an exact
+number.
+@c JP
+数値計算が正確な値について閉じている、つまり、正確な数を
+ゼロ以外の正確な数で割った結果が常に正確な数になることを示します。
+@c COMMON
+
+@item ieee-float
+@c EN
+Using IEEE floating-point number internally.
+@c JP
+内部的にIEEE浮動小数点数を使っていることを示します。
+@c COMMN
+
+@item full-unicode
+@c EN
+Full unicode support.
+@c JP
+Unicodeの全ての範囲をサポートしていることを示します。
+@c COMMON
+
+@item ratios
+@c EN
+Rational number support
+@c JP
+有理数のサポートがあることを示します。
+@c COMMON
+
+@item posix
+@itemx windows
+@c EN
+Either one is defined, according to the platform.
+@c JP
+プラットフォームによってどちらかが定義されます。
+@c COMMON
+
+@item big-endian
+@itemx little-endian
+@c EN
+Either one is defined, according to the platform.
+@c JP
+プラットフォームによってどちらかが定義されます。
+@c COMMON
+@end table
+
+
+
+@c ----------------------------------------------------------------------
+@node Modules,  , Feature conditional, Core syntax
 @section Modules
 @c NODE モジュール
 
@@ -2957,6 +3922,14 @@ Gauche is using for its modules.
 この章では、GaucheのモジュールのセマンティクスとAPIを述べます。
 Gaucheで使われているモジュールの書法については@ref{Writing Gauche modules}も
 併せて参照して下さい。
+@c COMMON
+
+@c EN
+For R7RS programs, they are called ``libraries'' and have different
+syntax than Gauche modules.  @xref{R7RS library form}, for the details.
+@c JP
+R7RSプログラムでは、モジュールに相当するものは「ライブラリ」と呼ばれ、
+Gaucheとは異なる構文で定義します。詳しくは@ref{R7RS library form}を参照してください。
 @c COMMON
 
 @menu
@@ -3205,12 +4178,14 @@ create modules with arbitrary names at run-time.
 @c EN
 However, most libraries use modules to create their own
 namespace, so that they can control which bindings to be
-visible from library users.
+visible from library users.   (This ``library'' is a general
+term, broader than R7RS ``library'').
 
 @c JP
 しかしほとんどのライブラリは、固有の名前空間を生成するために
 モジュールを用います。これにより、どの束縛をライブラリ使用者に
-見せるかを制御できます。
+見せるかを制御できます。(ここでの「ライブラリ」は、R7RSのライブラリだけでなく
+より広い意味で使っています。)
 
 @c EN
 Usually a library is provided in the form of one or more Scheme
@@ -3342,6 +4317,7 @@ Gaucheではモジュールはコンパイル時に静的に決定されます�
 @c NODE モジュールの使用
 
 @defspec export spec @dots{}
+[R7RS]
 @c EN
 Makes bindings specified by each @var{spec} available
 to modules that imports the current module.
@@ -3370,6 +4346,20 @@ exportされた束縛は、カレントモジュールをimportしたモジュ�
 @item (rename @var{name} @var{exported-name})
 名前@var{name}を持つ束縛が、@var{exported-name}という別名でexportされます。
 @end table
+@c COMMON
+
+@c EN
+Note: In Gauche, @code{export} is just a special form
+you can put in the middle of the program, whereas
+R7RS defines @code{export} as a library declaration,
+that can only appear immediately below @code{define-library} form.
+@xref{R7RS library form}, for the details.
+@c JP
+註: Gaucheの@code{export}は単なるスペシャルフォームで
+プログラムの途中に書くこともできますが、
+R7RSの@code{export}はライブラリ宣言の一部で
+@code{define-library}フォームの直下にしか書けません。
+詳しくは@ref{R7RS library form}を参照してください。
 @c COMMON
 @end defspec
 
@@ -3502,6 +4492,14 @@ list the name with prefix.
 それは出現順に処理されます。すなわち、@code{:prefix}が
 最初に現れた場合、その後に来る@code{:only}や@code{:except}
 はプレフィックスつきの名前を使って指定しなければなりません。
+@c COMMON
+
+@c EN
+Note: R7RS has @code{import} form, which has slightly differnent
+syntax and semantics.  @xref{Three forms of import}, for the details.
+@c JP
+註: R7RSにも@code{import}フォームがありますが、若干構文と意味が異なります。
+@ref{Three forms of import}を参照してください。
 @c COMMON
 @end defspec
 
@@ -3837,6 +4835,15 @@ and are garbage collected when nobody keeps reference to it.
 ような場合です。無名のモジュールはシステムの内部辞書に登録されないので、
 モジュールへの参照が無くなればガベージコレクトされます。
 @c COMMON
+
+@c EN
+R7RS provides another way to create a transient module
+with @code{environment} procedure.  @xref{R7RS eval} for the
+details.
+@c JP
+R7RSでは、@code{environment}手続きによって一時的なモジュールを
+作ることもできます。@ref{R7RS eval}を参照してください。
+@c COMMON
 @end defun
 
 @defun all-modules
@@ -4039,6 +5046,48 @@ all the bindings of @code{gauche} module is imported.
 @code{gauche}モジュール内の全ての束縛がインポートされています。
 @c COMMON
 @end deftp
+
+@deftp {Builtin Module} gauche.keyword
+@mdindex gauche.keyword
+@c EN
+When Gauche is running with @code{GAUCHE_KEYWORD_IS_SYMBOL} mode
+keywords (symbols beginning with @code{:}) is automatically bound
+to itself in this module. 
+(@xref{Keywords}, for the details.)
+
+If you use the default module inheritance,
+you don't need to use this module, since
+the keyword module is included in the inheritance chain.
+If you don't inherit @code{gauche} module, however, importing this
+module gives you access to the keywords without quotes.
+For example, R7RS programs
+and libraries would require @code{(import (gauche keyword))},
+or you have to quote all keywords.
+@c JP
+Gaucheが@code{GAUCHE_KEYWORD_IS_SYMBOL}モードで実行されている時は、
+キーワード (@code{:}で始まるシンボル) が自動的にこのモジュールの中で
+自分自身に束縛されます。(詳しくは@ref{Keywords}を参照してください。)
+
+デフォルトのモジュール継承を使っている場合、キーワードモジュールは
+継承チェインの中に含まれているので、このモジュールを陽に使用する必要はありません。
+@code{gauche}を継承しないモジュールを書いていて、キーワードをクオートせずに
+使いたい場合にこのモジュールをインポートしてください。
+例えばR7RSプログラムやライブラリは、@code{(import (gauche keyword))}
+しない限り、キーワードにクオートが必要です。
+@c COMMON
+
+@example
+;; R7RS program
+(import (scheme base)
+        (gauche base)    ; to use Gauche builtins
+        (gauche keyword))
+
+;; Without importing gauche.keyword,
+;; you need to write ':directory below.
+(sys-exec "ls" '("ls" "-l") :directory "/")
+@end example
+@end deftp
+
 
 @c Local variables:
 @c mode: texinfo

@@ -1,7 +1,7 @@
 ;;;
 ;;; text.unicode - Various Unicode-specific operations
 ;;;
-;;;   Copyright (c) 2011-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2011-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -34,11 +34,13 @@
 (define-module text.unicode
   (use gauche.uvector)
   (use gauche.sequence)
+  (use gauche.generator)
   (use util.match)
-  (use util.queue)
+  (use data.queue)
   (use srfi-42)
   (export ucs4->utf8  utf8-length  utf8->ucs4
           ucs4->utf16 utf16-length utf16->ucs4
+          utf8->string string->utf8
 
           make-word-breaker
           make-word-reader
@@ -50,9 +52,13 @@
           string-upcase string-downcase string-titlecase string-foldcase
           codepoints-upcase codepoints-downcase codepoints-titlecase
           codepoints-foldcase
+
+          string-ci=? string-ci<? string-ci<=? string-ci>? string-ci>=?
           )
   )
 (select-module text.unicode)
+
+(autoload gauche.charconv ces-convert)
 
 ;; This module implements some higher-level Unicode operations.
 ;; Most of them do not depend on the internal encodings---some
@@ -159,7 +165,7 @@
 
 ;; generate a state transition procedure of k-th octet of n-octet utf8 sequence
 (define-macro (decode-utf8-gen-1 strictness)
-  (define (name prefix) (string->symbol #`",|prefix|-,|strictness|"))
+  (define (name prefix) (string->symbol #"~|prefix|-~|strictness|"))
   `(define (,(name "u1") b val)
      (if (eof-object? b)
        (values b #f)
@@ -174,7 +180,7 @@
 
 (define-macro (decode-utf8-gen-n n limit strictness)
   (define (rec n k)
-    (let1 name (string->symbol #`"u,|n|-,|k|-,|strictness|")
+    (let1 name (string->symbol #"u~|n|-~|k|-~|strictness|")
       (if (= k (- n 1))
         ;; last byte
         `((define (,name b val)
@@ -193,7 +199,7 @@
                           [else         ,(out-of-range strictness)])))]
              [else ,(bad-octet strictness)])))
         ;; intermediate byte
-        (let1 next-name (string->symbol #`"u,|n|-,(+ k 1)-,|strictness|")
+        (let1 next-name (string->symbol #"u~|n|-~(+ k 1)-~|strictness|")
           `((define (,name b val)
               (cond [(eof-object? b) ,(end-input strictness)]
                     [(<= #x80 b #xbf) (values (+ (ash val 6) (logand b #x3f))
@@ -204,7 +210,7 @@
     (case strictness
       [(strict)     `(values 'bad #f)]
       [(permissive) `(values v #f)]
-      [(ignore)     `(values 0 ,(string->symbol #`"u1-,|strictness|"))]))
+      [(ignore)     `(values 0 ,(string->symbol #"u1-~|strictness|"))]))
   (define (bad-octet strictness)
     (case strictness
       [(strict permissive) `(values 'bad #f)]
@@ -350,6 +356,30 @@
   (set! utf16->ucs4 %utf16->ucs4)
   )
 
+;; R7RS procedures
+
+;; This module may be precompiled by different platforms, so we dispatch
+;; at runtime.
+;; At this moment, we don't worry much about performance when the native
+;; encoding isn't utf8.
+(define (utf8->string bvec :optional (start 0) (end -1))
+  (check-arg u8vector? bvec)
+  (if (eq? (gauche-character-encoding) 'utf-8)
+    (rlet1 s (u8vector->string bvec start end)
+      (when (string-incomplete? s)
+        (error "invalid utf-8 sequence in u8vector:" bvec)))
+    (ces-convert (u8vector->string bvec start end) 'utf-8)))
+
+(define (string->utf8 str :optional (start 0) (end -1))
+  (check-arg string? str)
+  (if (eq? (gauche-character-encoding) 'utf-8)
+    (string->u8vector str start end)
+    (let ([start (or start 0)]
+          [end (if (and (number? end) (>= end 0)) end (string-length str))])
+      (string->u8vector (ces-convert (substring str start end)
+                                     (gauche-character-encoding)
+                                     'utf-8)))))
+
 ;;;
 ;;;
 ;;; Grapheme cluster break and word break
@@ -384,13 +414,13 @@
      (cond [(< ch #x20000)
             (let* ([k::u_char (aref break_table (>> ch 8))])
               (if (== k 255)
-                (result GB_Other)
+                (return GB_Other)
                 (let* ([b::u_char (aref break_subtable k (logand ch #xff))])
-                  (result (>> b 4)))))]
+                  (return (>> b 4)))))]
            [(or (== #xE0001 ch)
-                (and (<= #xE0020 ch) (<= ch #xE007F))) (result GB_Control)]
-           [(and (<= #xE0100 ch) (<= ch #xE01EF)) (result GB_Extend)]
-           [else (result GB_Other)])))
+                (and (<= #xE0020 ch) (<= ch #xE007F))) (return GB_Control)]
+           [(and (<= #xE0100 ch) (<= ch #xE01EF)) (return GB_Extend)]
+           [else (return GB_Other)])))
 
  (define-cproc wb-property (scode) ::<int>
    (let* ([ch::int])
@@ -398,23 +428,18 @@
      (cond [(< ch #x20000)
             (let* ([k::u_char (aref break_table (>> ch 8))])
               (if (== k 255)
-                (result WB_Other)
+                (return WB_Other)
                 (let* ([b::u_char (aref break_subtable k (logand ch #xff))])
-                  (result (logand b #x0f)))))]
+                  (return (logand b #x0f)))))]
            [(or (== #xE0001 ch)
-                (and (<= #xE0020 ch) (<= ch #xE007F))) (result WB_Format)]
-           [(and (<= #xE0100 ch) (<= ch #xE01EF)) (result WB_Extend)]
-           [else (result WB_Other)])))
+                (and (<= #xE0020 ch) (<= ch #xE007F))) (return WB_Format)]
+           [(and (<= #xE0100 ch) (<= ch #xE01EF)) (return WB_Extend)]
+           [else (return WB_Other)])))
  )
 
 ;;=========================================================================
 ;; Utiltiies
 ;;
-
-;; These should be eventually in the coming gauche.generator module.
-(define (generator->list gen) (port-map identity gen))
-(define (gen-map f gen)
-  (^[] (let1 v (gen) (if (eof-object? v) v (f v)))))
 
 ;; Given breaker generator, returns a generator that returns a cluster
 ;; (grapheme cluster or word) at a time.
@@ -447,7 +472,7 @@
      (^[str]
        (with-input-from-string str
          (cut generator->list
-              (cluster-reader-maker (gen-map char->ucs read-char)
+              (cluster-reader-maker (generator-map char->ucs read-char)
                                     (^[cs] (map-to <string> ucs->char cs))))))]
     ))
 
@@ -900,17 +925,16 @@
              (?: charp
                  (SCM_MAKE_CHAR (+ ch (-> pcm ,to_x_simple)))
                  (SCM_MAKE_INT  (+ ch (-> pcm ,to_x_simple)))))
-       (result 1)]
+       (return 1)]
       [else
        (for ((set! i 0) (< i SCM_CHAR_FULL_CASE_MAPPING_SIZE) (post++ i))
             (when (== (aref (-> pcm ,to_x_full) i) -1)
-              (result i)
-              (break))
+              (return i))
             (set! (SCM_VECTOR_ELEMENT buf i)
                   (?: charp
                       (SCM_MAKE_CHAR (aref (-> pcm ,to_x_full) i))
                       (SCM_MAKE_INT  (aref (-> pcm ,to_x_full) i)))))
-       (when (== i SCM_CHAR_FULL_CASE_MAPPING_SIZE) (result i))])])
+       (return i)])])
 
  (define-cproc %char-xcase-extended (scode buf::<vector>
                                      kind::<int> charp::<boolean>)
@@ -951,6 +975,20 @@
   (let1 buf (make-vector SCM_CHAR_FULL_CASE_MAPPING_SIZE)
     (generator-for-each (^[ch] (%tr ch buf CHAR_UPCASE sink char?)) generator)))
 
+;; Greek capital sigma U+03a3 and final sigma U+03c2.
+;; We can't use character literal #\u03a3 etc., for they're not valid
+;; when internal encoding is 'none'.  We intend to make utf-8 support
+;; mandatory in future, and this limitation will be lifted.
+;; For now, they'll be #f when the internal encoding is 'none'.
+(define-constant .capital-sigma.
+  (cond-expand
+   [gauche.ces.none #f]
+   [else (ucs->char #x03a3)]))
+(define-constant .final-sigma.
+  (cond-expand
+   [gauche.ces.none #f]
+   [else (ucs->char #x03c2)]))
+
 ;; Greek capital sigma U+03a3 needs context-sensitive conversion.
 (define (%downcase generator sink char?)
   (let ([breaker (make-word-breaker generator)]
@@ -959,10 +997,10 @@
       (let loop ([ch ch] [prev-break? break?])
         (unless (eof-object? ch)
           (receive (next break?) (breaker)
-            (if (and (memv ch '(#\u03a3 #x03a3)) ; capital sigma
+            (if (and (memv ch `(,.capital-sigma. #x03a3))
                      (not prev-break?)
                      break?)
-              (sink `(,(if char? #\u03c2 #x03c2)) ch) ; final sigma
+              (sink `(,(if char? .final-sigma. #x03c2)) ch)
               (%tr ch buf CHAR_DOWNCASE sink char?))
             (loop next break?)))))))
 
@@ -974,28 +1012,25 @@
         (unless (eof-object? ch)
           (receive (next break?) (breaker)
             (cond [prev-break? (%tr ch buf CHAR_TITLECASE sink char?)]
-                  [(and (memv ch '(#\u03a3 #x03a3)) ; capital sigma
+                  [(and (memv ch `(,.capital-sigma. #x03a3))
                         (not prev-break?)
                         break?)
-                   (sink `(,(if char? #\u03c2 #x03c2)) ch)]
+                   (sink `(,(if char? .final-sigma. #x03c2)) ch)]
                   [else (%tr ch buf CHAR_DOWNCASE sink char?)])
             (loop next break?)))))))
 
 (define (%foldcase generator sink char?)
-  (let ([buf1 (make-vector SCM_CHAR_FULL_CASE_MAPPING_SIZE)]
+  (let ([breaker (make-word-breaker generator)]
+        [buf1 (make-vector SCM_CHAR_FULL_CASE_MAPPING_SIZE)]
         [buf2 (make-vector SCM_CHAR_FULL_CASE_MAPPING_SIZE)])
-    (generator-for-each
-     (^[ch]
-       (let1 c (%char-xcase-extended ch buf1 CHAR_UPCASE char?)
-         (sink (append-ec
-                (: i c)
-                (let1 c2 (%char-xcase-extended (vector-ref buf1 i)
-                                               buf2
-                                               CHAR_DOWNCASE
-                                               char?)
-                  (list-ec (: j c2) (vector-ref buf2 j))))
-               ch)))
-     generator)))
+    (receive (ch break?) (breaker)
+      (let loop ([ch ch] [prev-break? break?])
+        (unless (eof-object? ch)
+          (receive (next break?) (breaker)
+            (do-ec
+             (: i (%char-xcase-extended ch buf1 CHAR_UPCASE char?))
+             (%tr (vector-ref buf1 i) buf2 CHAR_DOWNCASE sink char?))
+            (loop next break?)))))))
 
 (define string-xcase
   (case (gauche-character-encoding)
@@ -1004,7 +1039,7 @@
                     (^[] (doer read-char (^[cs alt] (map display cs)) #t))))]
     [else
      (^[str doer] (with-string-io str
-                    (^[] (doer (gen-map char->ucs read-char)
+                    (^[] (doer (generator-map char->ucs read-char)
                                (^[cs alt]
                                  (let1 cs_ (map ucs->char cs)
                                    (if (every char? cs_)
@@ -1027,3 +1062,25 @@
 (define (codepoints-downcase seq)  (codepoints-xcase seq %downcase))
 (define (codepoints-titlecase seq) (codepoints-xcase seq %titlecase))
 (define (codepoints-foldcase seq)  (codepoints-xcase seq %foldcase))
+
+;;
+;; R7RS-compatible case-insensitive string comparison
+;;
+
+;; NB: Builtin string=? etc. can take more than two args, so the simplest
+;; definition would be:
+;;  (define (string-ci=? . args) (apply string=? (map string-foldcase args)))
+;; We compare pairwise instead, so that we don't need to foldcase
+;; more than necessary when we find the condition doesn't meet.
+
+(define (string-ci-cmp =? s0 s1 more)
+  (let loop ([s0 (string-foldcase s0)] [s1 (string-foldcase s1)] [more more])
+    (if (null? more)
+      (=? s0 s1)
+      (and (=? s0 s1) (loop s1 (string-foldcase (car more)) (cdr more))))))
+
+(define (string-ci=? s0 s1 . more)  (string-ci-cmp string=? s0 s1 more))
+(define (string-ci<? s0 s1 . more)  (string-ci-cmp string<? s0 s1 more))
+(define (string-ci<=? s0 s1 . more) (string-ci-cmp string<=? s0 s1 more))
+(define (string-ci>? s0 s1 . more)  (string-ci-cmp string>? s0 s1 more))
+(define (string-ci>=? s0 s1 . more) (string-ci-cmp string>=? s0 s1 more))

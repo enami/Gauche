@@ -1,7 +1,7 @@
 /*
  * string.c - string implementation
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -43,28 +43,30 @@ static void string_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx);
 SCM_DEFINE_BUILTIN_CLASS(Scm_StringClass, string_print, NULL, NULL, NULL,
                          SCM_CLASS_SEQUENCE_CPL);
 
-#define SCM__STRING_NEED_CHECK_SIZE  (SIZEOF_INT > 4)
+#define CHECK_SIZE(siz)                                         \
+    do {                                                        \
+        if ((siz) > SCM_STRING_MAX_SIZE) {                      \
+            Scm_Error("string size too big: %ld", (siz));       \
+        }                                                       \
+    } while (0)
 
 /* Internal primitive constructor.   LEN can be negative if the string
    is incomplete. */
 static ScmString *make_str(ScmSmallInt len, ScmSmallInt siz,
                            const char *p, int flags)
 {
-    ScmString *s = SCM_NEW(ScmString);
-    SCM_SET_CLASS(s, SCM_CLASS_STRING);
-
     if (len < 0) flags |= SCM_STRING_INCOMPLETE;
     if (flags & SCM_STRING_INCOMPLETE) len = siz;
 
-#if SCM__STRING_NEED_CHECK_SIZE
-    if (size > SCM_STRING_MAX_SIZE) {
-        Scm_Error("string size too big: %ld", size);
+    if (siz > SCM_STRING_MAX_SIZE) {
+        Scm_Error("string size too big: %ld", siz);
     }
-    if (len > SCM_STRING_MAX_LENGTH) {
-        Scm_Error("string length too big: %ld", len);
+    if (len > siz) {
+        Scm_Error("string length (%ld) exceeds size (%ld)", len, siz);
     }
-#endif /*SIZEOF_INT > 4*/
 
+    ScmString *s = SCM_NEW(ScmString);
+    SCM_SET_CLASS(s, SCM_CLASS_STRING);
     s->body = NULL;
     s->initialBody.flags = flags & SCM_STRING_FLAG_MASK;
     s->initialBody.length = len;
@@ -78,13 +80,12 @@ static ScmString *make_str(ScmSmallInt len, ScmSmallInt siz,
 /* for debug */
 void Scm_StringDump(FILE *out, ScmObj str)
 {
-    int i;
     const ScmStringBody *b = SCM_STRING_BODY(str);
     ScmSmallInt s = SCM_STRING_BODY_SIZE(b);
     const char *p = SCM_STRING_BODY_START(b);
 
     fprintf(out, "STR(len=%d,siz=%ld) \"", SCM_STRING_BODY_LENGTH(b), s);
-    for (i=0; i < DUMP_LENGTH && s > 0;) {
+    for (int i=0; i < DUMP_LENGTH && s > 0;) {
         int n = SCM_CHAR_NFOLLOWS(*p) + 1;
         for (; n > 0 && s > 0; p++, n--, s--, i++) {
             putc(*p, out);
@@ -95,6 +96,17 @@ void Scm_StringDump(FILE *out, ScmObj str)
     } else {
         fputs("\"\n", out);
     }
+}
+
+/* Like GC_strndup, but we don't require the source string to be
+   NUL-terminated (instead, we trust the caller that the size
+   argument is in valid range.) */
+char *Scm_StrdupPartial(const char *src, size_t size)
+{
+    char *dst = SCM_NEW_ATOMIC_ARRAY(char, size+1);
+    memcpy(dst, src, size);
+    dst[size] = '\0';
+    return dst;
 }
 
 /*
@@ -131,12 +143,11 @@ static inline ScmSmallInt count_size_and_length(const char *str,
 static inline ScmSmallInt count_length(const char *str, ScmSmallInt size)
 {
     ScmSmallInt count = 0;
-
     while (size-- > 0) {
-        ScmChar ch;
         unsigned char c = (unsigned char)*str;
         int i = SCM_CHAR_NFOLLOWS(c);
         if (i < 0 || i > size) return -1;
+        ScmChar ch;
         SCM_CHAR_GET(str, ch);
         if (ch == SCM_CHAR_INVALID) return -1;
         count++;
@@ -153,11 +164,9 @@ int Scm_MBLen(const char *str, const char *stop)
 {
     ScmSmallInt size = (stop == NULL)? strlen(str) : (stop - str);
     ScmSmallInt len = count_length(str, size);
-#if SCM__STRING_NEED_CHECK_SIZE
-    if (len > SCM_STRING_MAX_LEN) {
+    if (len > SCM_STRING_MAX_LENGTH) {
         Scm_Error("Scm_MBLen: length too big: %ld", len);
     }
-#endif
     return (int)len; /* we keep the result int for the backward compatibility */
 }
 
@@ -169,8 +178,6 @@ int Scm_MBLen(const char *str, const char *stop)
 ScmObj Scm_MakeString(const char *str, ScmSmallInt size, ScmSmallInt len,
                       int flags)
 {
-    ScmString *s;
-
     flags &= ~SCM_STRING_TERMINATED;
 
     if (size < 0) {
@@ -179,13 +186,12 @@ ScmObj Scm_MakeString(const char *str, ScmSmallInt size, ScmSmallInt len,
     } else {
         if (len < 0) len = count_length(str, size);
     }
+    /* Range of size and len will be checked in make_str */
 
+    ScmString *s;
     if (flags & SCM_STRING_COPYING) {
-        char *nstr = SCM_NEW_ATOMIC2(char *, size + 1);
-        memcpy(nstr, str, size);
-        nstr[size] = '\0';          /* be kind to C */
-        flags |= SCM_STRING_TERMINATED;
-        s = make_str(len, size, nstr, flags);
+        flags |= SCM_STRING_TERMINATED; /* SCM_STRDUP_PARTIAL terminates the result str */
+        s = make_str(len, size, SCM_STRDUP_PARTIAL(str, size), flags);
     } else {
         s = make_str(len, size, str, flags);
     }
@@ -194,12 +200,12 @@ ScmObj Scm_MakeString(const char *str, ScmSmallInt size, ScmSmallInt len,
 
 ScmObj Scm_MakeFillString(ScmSmallInt len, ScmChar fill)
 {
-    ScmSmallInt csize = SCM_CHAR_NBYTES(fill), i;
-    char *ptr, *p;
-
     if (len < 0) Scm_Error("length out of range: %d", len);
-    ptr = SCM_NEW_ATOMIC2(char *, csize*len+1);
-    for (i=0, p=ptr; i<len; i++, p+=csize) {
+    ScmSmallInt csize = SCM_CHAR_NBYTES(fill);
+    CHECK_SIZE(csize*len);
+    char *ptr = SCM_NEW_ATOMIC2(char *, csize*len+1);
+    char *p = ptr;
+    for (int i=0; i<len; i++, p+=csize) {
         SCM_CHAR_PUT(p, fill);
     }
     ptr[csize*len] = '\0';
@@ -208,21 +214,21 @@ ScmObj Scm_MakeFillString(ScmSmallInt len, ScmChar fill)
 
 ScmObj Scm_ListToString(ScmObj chars)
 {
-    ScmObj cp;
     ScmSmallInt size = 0, len = 0;
-    ScmChar ch;
-    char *buf, *bufp;
 
+    ScmObj cp;
     SCM_FOR_EACH(cp, chars) {
         if (!SCM_CHARP(SCM_CAR(cp)))
             Scm_Error("character required, but got %S", SCM_CAR(cp));
-        ch = SCM_CHAR_VALUE(SCM_CAR(cp));
+        ScmChar ch = SCM_CHAR_VALUE(SCM_CAR(cp));
         size += SCM_CHAR_NBYTES(ch);
         len++;
+        CHECK_SIZE(size);
     }
-    bufp = buf = SCM_NEW_ATOMIC2(char *, size+1);
+    char *buf = SCM_NEW_ATOMIC2(char *, size+1);
+    char *bufp = buf;
     SCM_FOR_EACH(cp, chars) {
-        ch = SCM_CHAR_VALUE(SCM_CAR(cp));
+        ScmChar ch = SCM_CHAR_VALUE(SCM_CAR(cp));
         SCM_CHAR_PUT(bufp, ch);
         bufp += SCM_CHAR_NBYTES(ch);
     }
@@ -234,15 +240,8 @@ ScmObj Scm_ListToString(ScmObj chars)
    mutable string (we always copy) */
 char *Scm_GetString(ScmString *str)
 {
-    ScmSmallInt size;
-    char *p;
     const ScmStringBody *b = SCM_STRING_BODY(str);
-
-    size = SCM_STRING_BODY_SIZE(b);
-    p = SCM_NEW_ATOMIC2(char *, size+1);
-    memcpy(p, SCM_STRING_BODY_START(b), size);
-    p[size] = '\0';
-    return p;
+    return SCM_STRDUP_PARTIAL(SCM_STRING_BODY_START(b), SCM_STRING_BODY_SIZE(b));
 }
 
 /* Common routine for Scm_GetStringConst and Scm_GetStringContent */
@@ -253,9 +252,7 @@ static const char *get_string_from_body(const ScmStringBody *b)
         /* we can use string data as C-string */
         return SCM_STRING_BODY_START(b);
     } else {
-        char *p = SCM_NEW_ATOMIC2(char *, size+1);
-        memcpy(p, SCM_STRING_BODY_START(b), size);
-        p[size] = '\0';
+        char *p = SCM_STRDUP_PARTIAL(SCM_STRING_BODY_START(b), size);
         /* kludge! This breaks 'const' qualification, but we know
            this is an idempotent operation from the outside.  Note that
            this is safe even multiple threads execute this part
@@ -334,7 +331,6 @@ ScmObj Scm_StringIncompleteToComplete(ScmString *x,
                                       int handling,
                                       ScmChar substitute)
 {
-    const ScmStringBody *b;
     ScmObj r = SCM_FALSE;
 
     switch (handling) {
@@ -347,7 +343,7 @@ ScmObj Scm_StringIncompleteToComplete(ScmString *x,
         return SCM_UNDEFINED; /* dummy */
     }
 
-    b = SCM_STRING_BODY(x);
+    const ScmStringBody *b = SCM_STRING_BODY(x);
     if (!SCM_STRING_BODY_INCOMPLETE_P(b)) {
         /* we do simple copy */
         r = Scm_CopyString(x);
@@ -360,13 +356,13 @@ ScmObj Scm_StringIncompleteToComplete(ScmString *x,
         } else if (handling == SCM_ILLEGAL_CHAR_REJECT) {
             r = SCM_FALSE;
         } else {
-            ScmDString ds;
             const char *p = s;
-            ScmChar ch;
 
+            ScmDString ds;
             Scm_DStringInit(&ds);
 
             while (p < s+siz) {
+                ScmChar ch;
                 if (p + SCM_CHAR_NFOLLOWS(*p) >= s + siz) {
                     ch = SCM_CHAR_INVALID;
                 } else {
@@ -412,18 +408,16 @@ int Scm_StringEqual(ScmString *x, ScmString *y)
 
 int Scm_StringCmp(ScmString *x, ScmString *y)
 {
-    ScmSmallInt sizx, sizy, siz;
-    int r;
     const ScmStringBody *xb = SCM_STRING_BODY(x);
     const ScmStringBody *yb = SCM_STRING_BODY(y);
     if ((SCM_STRING_BODY_FLAGS(xb)^SCM_STRING_BODY_FLAGS(yb))&SCM_STRING_INCOMPLETE) {
         Scm_Error("cannot compare incomplete vs complete string: %S, %S",
                   SCM_OBJ(x), SCM_OBJ(y));
     }
-    sizx = SCM_STRING_BODY_SIZE(xb);
-    sizy = SCM_STRING_BODY_SIZE(yb);
-    siz = (sizx < sizy)? sizx : sizy;
-    r = memcmp(SCM_STRING_BODY_START(xb), SCM_STRING_BODY_START(yb), siz);
+    ScmSmallInt sizx = SCM_STRING_BODY_SIZE(xb);
+    ScmSmallInt sizy = SCM_STRING_BODY_SIZE(yb);
+    ScmSmallInt siz = (sizx < sizy)? sizx : sizy;
+    int r = memcmp(SCM_STRING_BODY_START(xb), SCM_STRING_BODY_START(yb), siz);
     if (r == 0) {
         if (sizx == sizy) return 0;
         if (sizx < sizy)  return -1;
@@ -439,10 +433,9 @@ int Scm_StringCmp(ScmString *x, ScmString *y)
 static int sb_strcasecmp(const char *px, ScmSmallInt sizx,
                          const char *py, ScmSmallInt sizy)
 {
-    char cx, cy;
     for (; sizx > 0 && sizy > 0; sizx--, sizy--, px++, py++) {
-        cx = tolower((u_char)*px);
-        cy = tolower((u_char)*py);
+        char cx = tolower((u_char)*px);
+        char cy = tolower((u_char)*py);
         if (cx == cy) continue;
         return (cx - cy);
     }
@@ -455,12 +448,13 @@ static int sb_strcasecmp(const char *px, ScmSmallInt sizx,
 static int mb_strcasecmp(const char *px, ScmSmallInt lenx,
                          const char *py, ScmSmallInt leny)
 {
-    int cx, cy, ccx, ccy, ix, iy;
+    int ix, iy;
     for (; lenx > 0 && leny > 0; lenx--, leny--, px+=ix, py+=iy) {
+        int cx, cy;
         SCM_CHAR_GET(px, cx);
         SCM_CHAR_GET(py, cy);
-        ccx = SCM_CHAR_UPCASE(cx);
-        ccy = SCM_CHAR_UPCASE(cy);
+        int ccx = SCM_CHAR_UPCASE(cx);
+        int ccy = SCM_CHAR_UPCASE(cy);
         if (ccx != ccy) return (ccx - ccy);
         ix = SCM_CHAR_NBYTES(cx);
         iy = SCM_CHAR_NBYTES(cy);
@@ -472,8 +466,6 @@ static int mb_strcasecmp(const char *px, ScmSmallInt lenx,
 
 int Scm_StringCiCmp(ScmString *x, ScmString *y)
 {
-    ScmSmallInt sizx, lenx, sizy, leny;
-    const char *px, *py;
     const ScmStringBody *xb = SCM_STRING_BODY(x);
     const ScmStringBody *yb = SCM_STRING_BODY(y);
 
@@ -481,10 +473,12 @@ int Scm_StringCiCmp(ScmString *x, ScmString *y)
         Scm_Error("cannot compare incomplete strings in case-insensitive way: %S, %S",
                   SCM_OBJ(x), SCM_OBJ(y));
     }
-    sizx = SCM_STRING_BODY_SIZE(xb); lenx = SCM_STRING_BODY_LENGTH(xb);
-    sizy = SCM_STRING_BODY_SIZE(yb); leny = SCM_STRING_BODY_LENGTH(yb);
-    px = SCM_STRING_BODY_START(xb);
-    py = SCM_STRING_BODY_START(yb);
+    ScmSmallInt sizx = SCM_STRING_BODY_SIZE(xb);
+    ScmSmallInt lenx = SCM_STRING_BODY_LENGTH(xb);
+    ScmSmallInt sizy = SCM_STRING_BODY_SIZE(yb);
+    ScmSmallInt leny = SCM_STRING_BODY_LENGTH(yb);
+    const char *px = SCM_STRING_BODY_START(xb);
+    const char *py = SCM_STRING_BODY_START(yb);
 
     if (sizx == lenx && sizy == leny) {
         return sb_strcasecmp(px, sizx, py, sizy);
@@ -597,6 +591,7 @@ ScmObj Scm_StringAppend2(ScmString *x, ScmString *y)
     ScmSmallInt lenx = SCM_STRING_BODY_LENGTH(xb);
     ScmSmallInt sizey = SCM_STRING_BODY_SIZE(yb);
     ScmSmallInt leny = SCM_STRING_BODY_LENGTH(yb);
+    CHECK_SIZE(sizex+sizey);
     int flags = 0;
     char *p = SCM_NEW_ATOMIC2(char *,sizex + sizey + 1);
 
@@ -618,12 +613,12 @@ ScmObj Scm_StringAppendC(ScmString *x, const char *str,
     ScmSmallInt sizex = SCM_STRING_BODY_SIZE(xb);
     ScmSmallInt lenx = SCM_STRING_BODY_LENGTH(xb);
     int flags = 0;
-    char *p;
 
     if (sizey < 0) count_size_and_length(str, &sizey, &leny);
     else if (leny < 0) leny = count_length(str, sizey);
+    CHECK_SIZE(sizex+sizey);
 
-    p = SCM_NEW_ATOMIC2(char *, sizex + sizey + 1);
+    char *p = SCM_NEW_ATOMIC2(char *, sizex + sizey + 1);
     memcpy(p, xb->start, sizex);
     memcpy(p+sizex, str, sizey);
     p[sizex+sizey] = '\0';
@@ -638,17 +633,15 @@ ScmObj Scm_StringAppendC(ScmString *x, const char *str,
 ScmObj Scm_StringAppend(ScmObj strs)
 {
 #define BODY_ARRAY_SIZE 32
-    ScmObj cp;
     ScmSmallInt size = 0, len = 0;
-    int flags = 0, numstrs, i;
-    char *buf, *bufp;
+    int flags = 0;
     const ScmStringBody *bodies_s[BODY_ARRAY_SIZE], **bodies;
 
     /* It is trickier than it appears, since the strings may be modified
        by another thread during we're dealing with it.  So in the first
        pass to sum up the lengths of strings, we extract the string bodies
        and save it.  */
-    numstrs = Scm_Length(strs);
+    int numstrs = Scm_Length(strs);
     if (numstrs < 0) Scm_Error("improper list not allowed: %S", strs);
     if (numstrs > BODY_ARRAY_SIZE) {
         bodies = SCM_NEW_ARRAY(const ScmStringBody*, numstrs);
@@ -656,7 +649,8 @@ ScmObj Scm_StringAppend(ScmObj strs)
         bodies = bodies_s;
     }
 
-    i=0;
+    int i = 0;
+    ScmObj cp;
     SCM_FOR_EACH(cp, strs) {
         const ScmStringBody *b;
         if (!SCM_STRINGP(SCM_CAR(cp))) {
@@ -665,13 +659,15 @@ ScmObj Scm_StringAppend(ScmObj strs)
         b = SCM_STRING_BODY(SCM_CAR(cp));
         size += SCM_STRING_BODY_SIZE(b);
         len += SCM_STRING_BODY_LENGTH(b);
+        CHECK_SIZE(size);
         if (SCM_STRING_BODY_INCOMPLETE_P(b)) {
             flags |= SCM_STRING_INCOMPLETE;
         }
         bodies[i++] = b;
     }
 
-    bufp = buf = SCM_NEW_ATOMIC2(char *, size+1);
+    char *buf = SCM_NEW_ATOMIC2(char *, size+1);
+    char *bufp = buf;
     for (i=0; i<numstrs; i++) {
         const ScmStringBody *b = bodies[i];
         memcpy(bufp, SCM_STRING_BODY_START(b), SCM_STRING_BODY_SIZE(b));
@@ -687,15 +683,11 @@ ScmObj Scm_StringAppend(ScmObj strs)
 ScmObj Scm_StringJoin(ScmObj strs, ScmString *delim, int grammer)
 {
 #define BODY_ARRAY_SIZE 32
-    ScmObj cp;
     ScmSmallInt size = 0, len = 0;
-    int nstrs, ndelim, i, flags = 0;
-    ScmSmallInt dsize, dlen;    /* for delimiter string */
+    int flags = 0;
     const ScmStringBody *bodies_s[BODY_ARRAY_SIZE], **bodies;
-    const ScmStringBody *dbody;
-    char *buf, *bufp;
 
-    nstrs = Scm_Length(strs);
+    int nstrs = Scm_Length(strs);
     if (nstrs < 0) Scm_Error("improper list not allowed: %S", strs);
     if (nstrs == 0) {
         if (grammer == SCM_STRING_JOIN_STRICT_INFIX) {
@@ -710,14 +702,15 @@ ScmObj Scm_StringJoin(ScmObj strs, ScmString *delim, int grammer)
         bodies = bodies_s;
     }
 
-    dbody = SCM_STRING_BODY(delim);
-    dsize = SCM_STRING_BODY_SIZE(dbody);
-    dlen  = SCM_STRING_BODY_LENGTH(dbody);
+    const ScmStringBody *dbody = SCM_STRING_BODY(delim);
+    ScmSmallInt dsize = SCM_STRING_BODY_SIZE(dbody);
+    ScmSmallInt dlen  = SCM_STRING_BODY_LENGTH(dbody);
     if (SCM_STRING_BODY_INCOMPLETE_P(dbody)) {
         flags |= SCM_STRING_INCOMPLETE;
     }
 
-    i = 0;
+    int i = 0, ndelim;
+    ScmObj cp;
     SCM_FOR_EACH(cp, strs) {
         const ScmStringBody *b;
         if (!SCM_STRINGP(SCM_CAR(cp))) {
@@ -726,6 +719,7 @@ ScmObj Scm_StringJoin(ScmObj strs, ScmString *delim, int grammer)
         b = SCM_STRING_BODY(SCM_CAR(cp));
         size += SCM_STRING_BODY_SIZE(b);
         len  += SCM_STRING_BODY_LENGTH(b);
+        CHECK_SIZE(size);
         if (SCM_STRING_BODY_INCOMPLETE_P(b)) {
             flags |= SCM_STRING_INCOMPLETE;
         }
@@ -739,8 +733,10 @@ ScmObj Scm_StringJoin(ScmObj strs, ScmString *delim, int grammer)
     }
     size += dsize * ndelim;
     len += dlen * ndelim;
+    CHECK_SIZE(size);
 
-    bufp = buf = SCM_NEW_ATOMIC2(char *, size+1);
+    char *buf = SCM_NEW_ATOMIC2(char *, size+1);
+    char *bufp = buf;
     if (grammer == SCM_STRING_JOIN_PREFIX) {
         memcpy(bufp, SCM_STRING_BODY_START(dbody), dsize);
         bufp += dsize;
@@ -866,12 +862,12 @@ static ScmSmallInt boyer_moore(const char *ss1, ScmSmallInt siz1,
                                const char *ss2, ScmSmallInt siz2)
 {
     unsigned char shift[256];
-    ScmSmallInt i, j, k;
-    for (i=0; i<256; i++) { shift[i] = siz2; }
-    for (j=0; j<siz2-1; j++) {
+    for (ScmSmallInt i=0; i<256; i++) { shift[i] = siz2; }
+    for (ScmSmallInt j=0; j<siz2-1; j++) {
         shift[(unsigned char)ss2[j]] = siz2-j-1;
     }
-    for (i=siz2-1; i<siz1; i+=shift[(unsigned char)ss1[i]]) {
+    for (ScmSmallInt i=siz2-1; i<siz1; i+=shift[(unsigned char)ss1[i]]) {
+        ScmSmallInt j, k;
         for (j=siz2-1, k = i; j>=0 && ss1[k] == ss2[j]; j--, k--)
             ;
         if (j == -1) return k+1;
@@ -883,12 +879,12 @@ static ScmSmallInt boyer_moore_reverse(const char *ss1, ScmSmallInt siz1,
                                        const char *ss2, ScmSmallInt siz2)
 {
     unsigned char shift[256];
-    ScmSmallInt i, j, k;
-    for (i=0; i<256; i++) { shift[i] = siz2; }
-    for (j=siz2-1; j>0; j--) {
+    for (ScmSmallInt i=0; i<256; i++) { shift[i] = siz2; }
+    for (ScmSmallInt j=siz2-1; j>0; j--) {
         shift[(unsigned char)ss2[j]] = j;
     }
-    for (i=siz1-siz2+1; i>=0; i-=shift[(unsigned char)ss1[i]]) {
+    for (ScmSmallInt i=siz1-siz2+1; i>=0; i-=shift[(unsigned char)ss1[i]]) {
+        ScmSmallInt j, k;
         for (j=0, k = i; j<siz2 && ss1[k] == ss2[j]; j++, k++)
             ;
         if (j == siz2) return i;
@@ -950,8 +946,6 @@ static int string_search(const char *s1, ScmSmallInt siz1, ScmSmallInt len1,
                          ScmSmallInt *bi /* out */,
                          ScmSmallInt *ci /* out */)
 {
-    ScmSmallInt i;
-
     if (siz2 == 0) {
         *bi = *ci = 0;
         return FOUND_BOTH_INDEX;
@@ -966,6 +960,7 @@ static int string_search(const char *s1, ScmSmallInt siz1, ScmSmallInt len1,
             else return NOT_FOUND;
         }
         if (BYTEWISE_SEARCHABLE(siz2, len2)) {
+            ScmSmallInt i;
             /* Shortcut for single-byte strings */
             if (siz1 < siz2) return NOT_FOUND;
             if (siz1 < 256 || siz2 >= 256) {
@@ -988,7 +983,7 @@ static int string_search(const char *s1, ScmSmallInt siz1, ScmSmallInt len1,
     /* Multibyte case. */
     if (len1 >= len2) {
         const char *sp = s1;
-        for (i=0; i<=len1-len2; i++) {
+        for (ScmSmallInt i=0; i<=len1-len2; i++) {
             if (memcmp(sp, s2, siz2) == 0) {
                 *bi = (int)(sp - s1);
                 *ci = i;
@@ -1006,8 +1001,6 @@ static int string_search_reverse(const char *s1, ScmSmallInt siz1, ScmSmallInt l
                                  ScmSmallInt *bi /* out */,
                                  ScmSmallInt *ci /* out */)
 {
-    ScmSmallInt i;
-
     if (siz2 == 0) {
         *bi = siz1;
         *ci = len1;
@@ -1023,6 +1016,7 @@ static int string_search_reverse(const char *s1, ScmSmallInt siz1, ScmSmallInt l
             else return NOT_FOUND;
         }
         if (BYTEWISE_SEARCHABLE(siz2, len2)) {
+            ScmSmallInt i;
             /* short cut for single-byte strings */
             if (siz1 < siz2) return NOT_FOUND;
             if (siz1 < 256 || siz2 >= 256) {
@@ -1046,12 +1040,12 @@ static int string_search_reverse(const char *s1, ScmSmallInt siz1, ScmSmallInt l
     /* Multibyte case. */
     if (len1 >= len2) {
         const char *sp = s1 + siz1, *p;
-        for (i=0; i<len2; i++) {
+        for (ScmSmallInt i=0; i<len2; i++) {
             SCM_CHAR_BACKWARD(sp, s1, p);
             SCM_ASSERT(*p);
             sp = p;
         }
-        for (i=len1-len2; i>=0; i--) {
+        for (ScmSmallInt i=len1-len2; i>=0; i--) {
             if (memcmp(sp, s2, siz2) == 0) {
                 *bi = (int)(sp - s1);
                 *ci = i;
@@ -1065,7 +1059,7 @@ static int string_search_reverse(const char *s1, ScmSmallInt siz1, ScmSmallInt l
     return NOT_FOUND;
 }
 
-/* Scan s2 in s1, and calculates appropriate return value(s) according to       
+/* Scan s2 in s1, and calculates appropriate return value(s) according to
    retmode.
 
    SCM_STRING_SCAN_INDEX  : return the index of s1
@@ -1091,28 +1085,26 @@ static ScmObj string_scan(ScmString *ss1, const char *s2,
                           ScmObj *secondval) /* out */
 {
     ScmSmallInt bi, ci;
-    int incomplete;
     const ScmStringBody *sb = SCM_STRING_BODY(ss1);
     const char *s1 = SCM_STRING_BODY_START(sb);
     ScmSmallInt siz1 = SCM_STRING_BODY_SIZE(sb);
     ScmSmallInt len1 = SCM_STRING_BODY_LENGTH(sb);
-    int retcode;
 
     if (retmode < 0 || retmode > SCM_STRING_SCAN_BOTH) {
         Scm_Error("return mode out fo range: %d", retmode);
     }
 
-    incomplete =
+    int incomplete =
         (SCM_STRING_BODY_INCOMPLETE_P(sb) || incomplete2)
         ? SCM_STRING_INCOMPLETE : 0;
 
     /* prefiltering - if both string is complete, and s1 is sbstring
        and s2 is mbstring, we know there's no match.  */
-    retcode = 
+    int retcode =
         (!incomplete && (siz1 == len1) && (siz2 != len2))
         ? NOT_FOUND
         : searcher(s1, siz1, len1, s2, siz2, len2, &bi, &ci);
-    
+
     if (retcode == NOT_FOUND) {
         if (retmode > SCM_STRING_SCAN_AFTER) *secondval = SCM_FALSE;
         return SCM_FALSE;
@@ -1121,7 +1113,7 @@ static ScmObj string_scan(ScmString *ss1, const char *s2,
     if (retcode == FOUND_BYTE_INDEX && !incomplete) {
         ci = count_length(s1, bi);
     }
-    
+
     switch (retmode) {
     case SCM_STRING_SCAN_INDEX:
         return Scm_MakeInteger(ci);
@@ -1208,19 +1200,20 @@ ScmObj Scm_StringScanCharRight(ScmString *s1, ScmChar ch, int retmode)
    of matches unlimited.
    TODO: If CH is a utf-8 multi-byte char, Boyer-Moore skip table is
    calculated every time we call string_scan, which is a waste.  Some
-   mechanism to cache the skip table would be nice. 
+   mechanism to cache the skip table would be nice.
 */
 ScmObj Scm_StringSplitByCharWithLimit(ScmString *str, ScmChar ch, int limit)
 {
     char buf[SCM_CHAR_MAX_BYTES];
     int nb = SCM_CHAR_NBYTES(ch);
-    ScmObj head = SCM_NIL, tail = SCM_NIL, v1, v2;
+    ScmObj head = SCM_NIL, tail = SCM_NIL;
 
     if (limit == 0) return SCM_LIST1(SCM_OBJ(str)); /* trivial case */
-    
+
     SCM_CHAR_PUT(buf, ch);
 
     for (;;) {
+        ScmObj v1, v2;
         v1 = string_scan(str, buf, nb, 1, FALSE, SCM_STRING_SCAN_BOTH,
                          string_search, &v2);
         if (SCM_FALSEP(v1)) {
@@ -1252,11 +1245,11 @@ ScmObj Scm_StringToList(ScmString *str)
     ScmObj start = SCM_NIL, end = SCM_NIL;
     const char *bufp = SCM_STRING_BODY_START(b);
     ScmSmallInt len = SCM_STRING_BODY_LENGTH(b);
-    ScmChar ch;
 
     if (SCM_STRING_BODY_INCOMPLETE_P(b))
         Scm_Error("incomplete string not supported: %S", str);
     while (len-- > 0) {
+        ScmChar ch;
         SCM_CHAR_GET(bufp, ch);
         bufp += SCM_CHAR_NBYTES(ch);
         SCM_APPEND1(start, end, SCM_MAKE_CHAR(ch));
@@ -1269,7 +1262,6 @@ ScmObj Scm_StringToList(ScmString *str)
    specified (size >= 0).  FLAGS is passed to Scm_MakeString. */
 ScmObj Scm_CStringArrayToList(const char **array, int size, int flags)
 {
-    int i;
     ScmObj h = SCM_NIL, t = SCM_NIL;
     if (size < 0) {
         for (;*array; array++) {
@@ -1277,7 +1269,7 @@ ScmObj Scm_CStringArrayToList(const char **array, int size, int flags)
             SCM_APPEND1(h, t, s);
         }
     } else {
-        for (i=0; i<size; i++, array++) {
+        for (int i=0; i<size; i++, array++) {
             ScmObj s = Scm_MakeString(*array, -1, -1, flags);
             SCM_APPEND1(h, t, s);
         }
@@ -1306,11 +1298,11 @@ static int list_to_cstring_array_check(ScmObj lis, int errp)
    otherwise, signals an error. */
 const char **Scm_ListToConstCStringArray(ScmObj lis, int errp)
 {
-    ScmObj lp;
-    const char **array, **p;
     int len = list_to_cstring_array_check(lis, errp);
     if (len < 0) return NULL;
-    p = array = SCM_NEW_ARRAY(const char*, len+1);
+    const char **array = SCM_NEW_ARRAY(const char*, len+1);
+    const char **p = array;
+    ScmObj lp;
     SCM_FOR_EACH(lp, lis) {
         *p++ = Scm_GetStringConst(SCM_STRING(SCM_CAR(lp)));
     }
@@ -1326,13 +1318,13 @@ const char **Scm_ListToConstCStringArray(ScmObj lis, int errp)
    arrays.  Otherwise, SCM_ALLOC is used. */
 char **Scm_ListToCStringArray(ScmObj lis, int errp, void *(*alloc)(size_t))
 {
-    ScmObj lp;
     char **array, **p;
     int len = list_to_cstring_array_check(lis, errp);
     if (len < 0) return NULL;
 
     if (alloc) {
         p = array = (char **)alloc((len+1) * sizeof(char *));
+        ScmObj lp;
         SCM_FOR_EACH(lp, lis) {
             const char *s = Scm_GetStringConst(SCM_STRING(SCM_CAR(lp)));
             *p = (char *)alloc(strlen(s) + 1);
@@ -1341,6 +1333,7 @@ char **Scm_ListToCStringArray(ScmObj lis, int errp, void *(*alloc)(size_t))
         }
     } else {
         p = array = SCM_NEW_ARRAY(char*, len+1);
+        ScmObj lp;
         SCM_FOR_EACH(lp, lis) {
             *p++ = Scm_GetString(SCM_STRING(SCM_CAR(lp)));
         }
@@ -1354,7 +1347,7 @@ char **Scm_ListToCStringArray(ScmObj lis, int errp, void *(*alloc)(size_t))
  */
 static inline void string_putc(ScmChar ch, ScmPort *port, int bytemode)
 {
-    char buf[5];
+    char buf[6];
     switch (ch) {
     case '\\': SCM_PUTZ("\\\\", -1, port); break;
     case '"':  SCM_PUTZ("\\\"", -1, port); break;
@@ -1365,7 +1358,9 @@ static inline void string_putc(ScmChar ch, ScmPort *port, int bytemode)
     case '\0': SCM_PUTZ("\\0", -1, port); break;
     default:
         if (ch < ' ' || ch == 0x7f || (bytemode && ch >= 0x80)) {
-            snprintf(buf, 5, "\\x%02x", (unsigned char)ch);
+            /* TODO: Should we provide 'legacy-compatible writer mode,
+               which does not use ';' terminator? */
+            snprintf(buf, 6, "\\x%02x;", (unsigned char)ch);
             SCM_PUTZ(buf, -1, port);
         } else {
             SCM_PUTC(ch, port);
@@ -1376,7 +1371,7 @@ static inline void string_putc(ScmChar ch, ScmPort *port, int bytemode)
 static void string_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
 {
     ScmString *str = SCM_STRING(obj);
-    if (SCM_WRITE_MODE(ctx) == SCM_WRITE_DISPLAY) {
+    if (Scm_WriteContextMode(ctx) == SCM_WRITE_DISPLAY) {
         SCM_PUTS(str, port);
     } else {
         const ScmStringBody *b = SCM_STRING_BODY(str);
@@ -1392,12 +1387,12 @@ static void string_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
                 string_putc(*cp++, port, SCM_STRING_BODY_INCOMPLETE_P(b));
             }
         } else {
-            ScmChar ch;
             const char *cp = SCM_STRING_BODY_START(b);
             ScmSmallInt len = SCM_STRING_BODY_LENGTH(b);
 
             SCM_PUTC('"', port);
             while (len--) {
+                ScmChar ch;
                 SCM_CHAR_GET(cp, ch);
                 string_putc(ch, port, FALSE);
                 cp += SCM_CHAR_NBYTES(ch);
@@ -1422,7 +1417,6 @@ ScmObj Scm_MakeStringPointer(ScmString *src, ScmSmallInt index,
     ScmSmallInt len = SCM_STRING_BODY_LENGTH(srcb);
     ScmSmallInt effective_size;
     const char *sptr, *ptr, *eptr;
-    ScmStringPointer *sp;
 
     SCM_CHECK_START_END(start, end, len);
     while (index < 0) index += (end - start) + 1;
@@ -1442,7 +1436,7 @@ ScmObj Scm_MakeStringPointer(ScmString *src, ScmSmallInt index,
         }
         effective_size = (int)(eptr - ptr);
     }
-    sp = SCM_NEW(ScmStringPointer);
+    ScmStringPointer *sp = SCM_NEW(ScmStringPointer);
     SCM_SET_CLASS(sp, SCM_CLASS_STRING_POINTER);
     sp->length = (SCM_STRING_BODY_INCOMPLETE_P(srcb)? -1 : (end-start));
     sp->size = effective_size;
@@ -1460,7 +1454,7 @@ ScmObj Scm_StringPointerRef(ScmStringPointer *sp)
     ScmChar ch;
     if (sp->length < 0 || sp->size == sp->length) {
         if (sp->index >= sp->size) return SCM_EOF;
-        ch = *sp->current;
+        ch = *(const unsigned char*)sp->current;
     } else {
         if (sp->index >= sp->length) return SCM_EOF;
         SCM_CHAR_GET(sp->current, ch);
@@ -1474,7 +1468,7 @@ ScmObj Scm_StringPointerNext(ScmStringPointer *sp)
     if (sp->length < 0 || sp->size == sp->length) {
         if (sp->index >= sp->size) return SCM_EOF;
         sp->index++;
-        ch = *sp->current++;
+        ch = *(const unsigned char*)sp->current++;
     } else {
         if (sp->index >= sp->length) return SCM_EOF;
         SCM_CHAR_GET(sp->current, ch);
@@ -1490,7 +1484,7 @@ ScmObj Scm_StringPointerPrev(ScmStringPointer *sp)
     if (sp->index <= 0) return SCM_EOF;
     if (sp->length < 0 || sp->size == sp->length) {
         sp->index--;
-        ch = *--sp->current;
+        ch = *(const unsigned char*)--sp->current;
     } else {
         const char *prev;
         SCM_CHAR_BACKWARD(sp->current, sp->start, prev);
@@ -1601,31 +1595,24 @@ void Scm_DStringInit(ScmDString *dstr)
 
 int Scm_DStringSize(ScmDString *dstr)
 {
-    ScmDStringChain *chain;
     ScmSmallInt size;
     if (dstr->tail) {
         size = dstr->init.bytes;
         dstr->tail->chunk->bytes = (int)(dstr->current - dstr->tail->chunk->data);
-        for (chain = dstr->anchor; chain; chain = chain->next) {
+        for (ScmDStringChain *chain = dstr->anchor; chain; chain = chain->next) {
             size += chain->chunk->bytes;
         }
     } else {
         size = dstr->current - dstr->init.data;
     }
-#if SCM__STRING_NEED_CHECK_SIZE
     if (size > SCM_STRING_MAX_SIZE) {
         Scm_Error("Scm_DStringSize: size exceeded the range: %ld", size);
     }
-#endif    
     return (int)size;
 }
 
 void Scm__DStringRealloc(ScmDString *dstr, int minincr)
 {
-    ScmDStringChunk *newchunk;
-    ScmDStringChain *newchain;
-    ScmSmallInt newsize;
-
     /* sets the byte count of the last chunk */
     if (dstr->tail) {
         dstr->tail->chunk->bytes = (int)(dstr->current - dstr->tail->chunk->data);
@@ -1635,7 +1622,7 @@ void Scm__DStringRealloc(ScmDString *dstr, int minincr)
 
     /* determine the size of the new chunk.  the increase factor 3 is
        somewhat arbitrary, determined by rudimental benchmarking. */
-    newsize = dstr->lastChunkSize * 3;
+    ScmSmallInt newsize = dstr->lastChunkSize * 3;
     if (newsize > DSTRING_MAX_CHUNK_SIZE) {
         newsize = DSTRING_MAX_CHUNK_SIZE;
     }
@@ -1643,11 +1630,12 @@ void Scm__DStringRealloc(ScmDString *dstr, int minincr)
         newsize = minincr;
     }
 
-    newchunk = SCM_NEW_ATOMIC2(ScmDStringChunk*,
-                               sizeof(ScmDStringChunk)+newsize-SCM_DSTRING_INIT_CHUNK_SIZE);
+    ScmDStringChunk *newchunk = SCM_NEW_ATOMIC2(
+        ScmDStringChunk*,
+        sizeof(ScmDStringChunk)+newsize-SCM_DSTRING_INIT_CHUNK_SIZE);
     newchunk->bytes = 0;
 
-    newchain = SCM_NEW(ScmDStringChain);
+    ScmDStringChain *newchain = SCM_NEW(ScmDStringChain);
 
     newchain->next = NULL;
     newchain->chunk = newchunk;
@@ -1663,22 +1651,26 @@ void Scm__DStringRealloc(ScmDString *dstr, int minincr)
 }
 
 /* Retrieve accumulated string. */
-static const char *dstring_getz(ScmDString *dstr, int *plen, int *psiz)
+static const char *dstring_getz(ScmDString *dstr, int *psiz, int *plen, int noalloc)
 {
     ScmSmallInt size, len;
     char *buf;
     if (dstr->anchor == NULL) {
         /* we only have one chunk */
         size = dstr->current - dstr->init.data;
+        CHECK_SIZE(size);
         len = dstr->length;
-        buf = SCM_NEW_ATOMIC2(char*, size+1);
-        memcpy(buf, dstr->init.data, size);
-        buf[size] = '\0';
+        if (noalloc) {
+            buf = dstr->init.data;
+        } else {
+            buf = SCM_STRDUP_PARTIAL(dstr->init.data, size);
+        }
     } else {
         ScmDStringChain *chain = dstr->anchor;
         char *bptr;
 
         size = Scm_DStringSize(dstr);
+        CHECK_SIZE(size);
         len = dstr->length;
         bptr = buf = SCM_NEW_ATOMIC2(char*, size+1);
 
@@ -1691,23 +1683,15 @@ static const char *dstring_getz(ScmDString *dstr, int *plen, int *psiz)
         *bptr = '\0';
     }
     if (len < 0) len = count_length(buf, size);
-#if SCM__STRING_NEED_CHECK_SIZE
-    if (len > SCM_STRING_MAX_LEN) {
-        Scm_Error("ScmDString: total length too big: %ld", len);
-    }
-    if (size > SCM_STRING_MAX_SIZE) {
-        Scm_Error("ScmDString: total size too big: %ld", size);
-    }
-#endif
-    *plen = (int)len;
-    *psiz = (int)size;
+    if (plen) *plen = (int)len;
+    if (psiz) *psiz = (int)size;
     return buf;
 }
 
 ScmObj Scm_DStringGet(ScmDString *dstr, int flags)
 {
     int len, size;
-    const char *str = dstring_getz(dstr, &len, &size);
+    const char *str = dstring_getz(dstr, &size, &len, FALSE);
     return SCM_OBJ(make_str(len, size, str, flags|SCM_STRING_TERMINATED));
 }
 
@@ -1716,7 +1700,19 @@ ScmObj Scm_DStringGet(ScmDString *dstr, int flags)
 const char *Scm_DStringGetz(ScmDString *dstr)
 {
     int len, size;
-    return dstring_getz(dstr, &len, &size);
+    return dstring_getz(dstr, &size, &len, FALSE);
+}
+
+/* Returns the current content of DString, along with byte size and character
+   length. The returned pointer may not be NUL-terminated.
+
+   Unlike Scm_DStringGet[z], returned pointer can directly points into
+   the internal buffer of Scm_DString; especially, this never allocates
+   if DString only uses initial buffer.  The caller should be aware that
+   the returned content may be altered by further DString operation. */
+const char *Scm_DStringPeek(ScmDString *dstr, int *size, int *len)
+{
+    return dstring_getz(dstr, size, len, TRUE);
 }
 
 void Scm_DStringPutz(ScmDString *dstr, const char *str, int size)
@@ -1767,11 +1763,11 @@ void Scm_DStringDump(FILE *out, ScmDString *dstr)
 {
     fprintf(out, "DString %p\n", dstr);
     if (dstr->anchor) {
-        ScmDStringChain *chain; int i;
         fprintf(out, "  chunk0[%3d] = \"", dstr->init.bytes);
         SCM_IGNORE_RESULT(fwrite(dstr->init.data, 1, dstr->init.bytes, out));
         fprintf(out, "\"\n");
-        for (i=1, chain = dstr->anchor; chain; chain = chain->next, i++) {
+        ScmDStringChain *chain = dstr->anchor;
+        for (int i=1; chain; chain = chain->next, i++) {
             int size = (chain->next? chain->chunk->bytes : (int)(dstr->current - dstr->tail->chunk->data));
             fprintf(out, "  chunk%d[%3d] = \"", i, size);
             SCM_IGNORE_RESULT(fwrite(chain->chunk->data, 1, size, out));

@@ -61,6 +61,7 @@ INCLUDES = -I$(srcdir) -I. -I$(srcdir)/../gc/include -I../gc/include -I$(srcdir)
 OBJEXT   = @OBJEXT@
 EXEEXT   = @EXEEXT@
 LIBGAUCHE = @LIBGAUCHE@
+LIBGAUCHE_STATIC = @LIBGAUCHE_STATIC@
 SOEXT    = @SHLIB_DYLIB_SUFFIX@
 LINK_HELPER = @LINK_HELPER@
 RPATH_TMP  = @RPATH_TMP@
@@ -102,7 +103,9 @@ BUILD_CFLAGS = -O2
 # when building from tarball.)
 # We clear GAUCHE_LOAD_PATH to make sure we won't read nonstandard stuff.
 BUILD_GOSH  = GAUCHE_LOAD_PATH="" GAUCHE_DYNLOAD_PATH="" \
-	    gosh -l$(srcdir)/preload -I$(top_srcdir)/src -I$(top_srcdir)/lib
+              "@BUILD_GOSH@" -l$(srcdir)/preload \
+                             -I$(top_srcdir)/src -I$(top_srcdir)/lib \
+	                     -I$(top_builddir)/lib
 
 LIB_INSTALL_DIR  = @libdir@
 BIN_INSTALL_DIR  = @bindir@
@@ -130,18 +133,19 @@ INSTALL_HEADERS = gauche.h \
 	../gc/include/gc_pthread_redirects.h ../gc/include/gc_tiny_fl.h \
 	../gc/include/gc_typed.h ../gc/include/gc_version.h 
 INSTALL_SUBHEADERS = \
-	gauche/arch.h gauche/bignum.h gauche/bits.h gauche/bits_inline.h \
-	gauche/builtin-syms.h gauche/bytes_inline.h \
+	gauche/bignum.h gauche/bits.h gauche/bits_inline.h \
+	gauche/bytes_inline.h \
 	gauche/char_euc_jp.h gauche/char_none.h \
 	gauche/char_sjis.h gauche/char_utf_8.h gauche/charset.h \
 	gauche/class.h gauche/code.h gauche/collection.h \
-	gauche/config.h gauche/config_threads.h gauche/exception.h \
-	gauche/extend.h gauche/extern.h gauche/float.h gauche/gloc.h \
-	gauche/hash.h gauche/int64.h gauche/keyword.h gauche/load.h \
-	gauche/macro.h gauche/module.h gauche/number.h gauche/parameter.h \
+	gauche/config.h gauche/config_threads.h gauche/compare.h \
+	gauche/exception.h gauche/extend.h gauche/extern.h \
+	gauche/float.h gauche/gloc.h \
+	gauche/hash.h gauche/int64.h gauche/load.h \
+	gauche/module.h gauche/number.h gauche/parameter.h \
 	gauche/paths.h gauche/port.h gauche/prof.h gauche/pthread.h \
 	gauche/reader.h gauche/regexp.h gauche/scmconst.h \
-	gauche/string.h gauche/symbol.h gauche/system.h \
+	gauche/static.h gauche/string.h gauche/symbol.h gauche/system.h \
 	gauche/treemap.h gauche/uthread.h gauche/vector.h gauche/vm.h \
 	gauche/vminsn.h gauche/weak.h gauche/win-compat.h gauche/writer.h \
 	gauche/wthread.h
@@ -153,11 +157,15 @@ INSTALL_BINS = gosh$(EXEEXT)           \
                gauche-install$(EXEEXT) \
 	       gauche-package$(EXEEXT) \
 	       gauche-cesconv$(EXEEXT)
-INSTALL_SCMS = genstub precomp gencomp cesconv
+INSTALL_SCMS = genstub precomp gencomp cesconv build-standalone
 
 GENERATED_SCRIPTS = gauche-install gauche-package gauche-cesconv
 
-PRIVATE_HEADERS = gauche/arith.h gauche/arith_i386.h
+PRIVATE_HEADERS = gauche/priv/arith.h gauche/priv/arith_i386.h \
+	          gauche/priv/arith_x86_64.h \
+	          gauche/priv/builtin-syms.h gauche/priv/macroP.h \
+	          gauche/priv/moduleP.h gauche/priv/portP.h \
+	          gauche/priv/readerP.h gauche/priv/writerP.h
 
 # MinGW specific
 INSTALL_MINGWHEADERS = gauche/win-compat.h
@@ -172,7 +180,7 @@ gosh_noconsole_OBJECTS = winmain.$(OBJEXT)
 gosh_LDADD   = -l@LINKGAUCHE@
 gosh_LDFLAGS = @SHLIB_MAIN_LDFLAGS@
 
-test_extra_SOURCES = test-extra.c libextra.scm gauche/arch.h
+test_extra_SOURCES = test-extra.c libextra.scm
 test_extra_OBJECTS = test-extra.$(OBJEXT) libextra.$(OBJEXT)
 test_extra_LDADD   = -l@LINKGAUCHE@
 test_extra_LDFLAGS = @SHLIB_MAIN_LDFLAGS@
@@ -186,22 +194,24 @@ libgauche_OBJECTS = \
 	boolean.$(OBJEXT) char.$(OBJEXT) string.$(OBJEXT) list.$(OBJEXT) \
 	hash.$(OBJEXT) treemap.$(OBJEXT) bits.$(OBJEXT) \
 	port.$(OBJEXT) write.$(OBJEXT) read.$(OBJEXT) \
-	vector.$(OBJEXT) weak.$(OBJEXT) symbol.$(OBJEXT) keyword.$(OBJEXT) \
+	vector.$(OBJEXT) weak.$(OBJEXT) symbol.$(OBJEXT) \
 	gloc.$(OBJEXT) compare.$(OBJEXT) regexp.$(OBJEXT) signal.$(OBJEXT) \
 	parameter.$(OBJEXT) module.$(OBJEXT) proc.$(OBJEXT) \
 	number.$(OBJEXT) bignum.$(OBJEXT) load.$(OBJEXT) paths.$(OBJEXT) \
 	lazy.$(OBJEXT) repl.$(OBJEXT) autoloads.$(OBJEXT) system.$(OBJEXT) \
 	compile.$(OBJEXT) \
 	libalpha.$(OBJEXT) libbool.$(OBJEXT) libchar.$(OBJEXT) \
-	libdict.$(OBJEXT) libeval.$(OBJEXT) libexc.$(OBJEXT) \
+	libcode.$(OBJEXT) libcmp.$(OBJEXT) libdict.$(OBJEXT) libeval.$(OBJEXT) \
+	libexc.$(OBJEXT) libfmt.$(OBJEXT) \
 	libio.$(OBJEXT) liblazy.$(OBJEXT) liblist.$(OBJEXT) \
 	libmisc.$(OBJEXT) libmod.$(OBJEXT) libnum.$(OBJEXT) \
 	libobj.$(OBJEXT) libomega.$(OBJEXT) libproc.$(OBJEXT) \
-	librx.$(OBJEXT) libstr.$(OBJEXT) libsym.$(OBJEXT) \
+	librx.$(OBJEXT) libsrfis.$(OBJEXT) libstr.$(OBJEXT) libsym.$(OBJEXT) \
 	libsys.$(OBJEXT) libvec.$(OBJEXT)
 libgauche_LDFLAGS = $(SONAME_FLAG) @SHLIB_DYLIB_LDFLAGS@
 
-libgc_OBJECTS = `ls -1 $(top_builddir)/gc/.libs/*.$(OBJEXT) | grep -v '/cord' | grep -v '/staticrootslib'`
+libgc_OBJECTS = `ls -1 $(top_builddir)/gc/.libs/*.$(OBJEXT) | grep -v '/cord' | grep -v '/staticrootslib'` \
+                `ls -1 $(top_builddir)/gc/libatomic_ops/src/.libs/*.$(OBJEXT)`
 
 HEADERS = gauche.h $(INSTALL_SUBHEADERS) $(PRIVATE_HEADERS)
 
@@ -234,34 +244,53 @@ $(OBJECTS) : $(HEADERS)
 autoloads.c : autoloads.scm
 	$(BUILD_GOSH) autoloads.scm
 
-builtin-syms.c gauche/builtin-syms.h : builtin-syms.scm
+builtin-syms.c gauche/priv/builtin-syms.h : builtin-syms.scm
 	$(BUILD_GOSH) builtin-syms.scm
 
 vminsn.c gauche/vminsn.h ../lib/gauche/vm/insn.scm : vminsn.scm geninsn
 	$(BUILD_GOSH) geninsn $(srcdir)/vminsn.scm
 
+# NB: libsrfis.scm, lib/srfi/*.scm and doc/srfis.texi are all generated
+# by srfis.scm.  However, if we don't have srfi/0.scm but have libsrfis.scm,
+# we fail to regenerate srfi/0.scm since nothing depends on it.  So
+# we introduce fake dependency from libsrfis.scm to srfi/0.scm.
+$(top_builddir)/doc/srfis.texi $(top_builddir)/lib/srfi/0.scm : srfis.scm
+	$(BUILD_GOSH) $(srcdir)/srfis.scm $(top_builddir)
+
+libsrfis.scm : $(top_builddir)/lib/srfi/0.scm $(top_builddir)/doc/srfis.texi
+	@:
+
 compile.c  : compile.scm compile-0.scm $(PRECOMP_DEPENDENCY)
 libalpha.c : libalpha.scm $(PRECOMP_DEPENDENCY)
 libbool.c  : libbool.scm $(PRECOMP_DEPENDENCY)
 libchar.c  : libchar.scm $(PRECOMP_DEPENDENCY)
+libcode.c  : libcode.scm $(PRECOMP_DEPENDENCY)
+libcmp.c   : libcmp.scm $(PRECOMP_DEPENDENCY)
 libdict.c  : libdict.scm $(PRECOMP_DEPENDENCY)
 libeval.c  : libeval.scm $(PRECOMP_DEPENDENCY)
 libexc.c   : libexc.scm $(PRECOMP_DEPENDENCY)
+libfmt.c   : libfmt.scm $(PRECOMP_DEPENDENCY)
 libio.c    : libio.scm $(PRECOMP_DEPENDENCY)
 liblazy.c  : liblazy.scm $(PRECOMP_DEPENDENCY)
 liblist.c  : liblist.scm $(PRECOMP_DEPENDENCY)
 libmisc.c  : libmisc.scm $(PRECOMP_DEPENDENCY)
-libmod.c   : libmod.scm $(PRECOMP_DEPENDENCY)
 libnum.c   : libnum.scm $(PRECOMP_DEPENDENCY)
 libobj.c   : libobj.scm $(PRECOMP_DEPENDENCY)
 libomega.c : libomega.scm $(PRECOMP_DEPENDENCY)
 libproc.c  : libproc.scm $(PRECOMP_DEPENDENCY)
 librx.c    : librx.scm $(PRECOMP_DEPENDENCY)
+libsrfis.c : libsrfis.scm $(PRECOMP_DEPENDENCY)
 libstr.c   : libstr.scm $(PRECOMP_DEPENDENCY)
 libsym.c   : libsym.scm $(PRECOMP_DEPENDENCY)
 libsys.c   : libsys.scm $(PRECOMP_DEPENDENCY)
 libvec.c   : libvec.scm $(PRECOMP_DEPENDENCY)
 libextra.c : libextra.scm $(PRECOMP_DEPENDENCY)
+
+libmod.c   : libmod.scm $(PRECOMP_DEPENDENCY)
+	$(BUILD_GOSH) $(PRECOMP) --keep-private-macro=use $(srcdir)/libmod.scm
+
+
+
 
 # char_attr.c and ext/text/unicode_attr.h are automatically generated
 # by gen-unicode.scm, from Unicode character database.  They need to
@@ -284,6 +313,8 @@ char-data : gen-unicode.scm
 
 char.$(OBJEXT) : char.c char_attr.c
 
+core.$(OBJEXT) : core.c
+
 winmain.$(OBJEXT) : main.c $(HEADERS)
 
 symbol.$(OBJEXT) : builtin-syms.c
@@ -294,7 +325,7 @@ vm.$(OBJEXT) : vminsn.c vmstat.c vmcall.c
 
 load.$(OBJEXT) : dl_dlopen.c dl_dummy.c dl_win.c dl_darwin.c
 
-paths.$(OBJEXT) : getdir_win.c getdir_dummy.c getdir_darwin.c
+paths.$(OBJEXT) : getdir_win.c getdir_dummy.c getdir_darwin.c paths_arch.c
 
 $(LIBGAUCHE).$(SOEXT) : $(libgauche_OBJECTS) $(GCLIB)
 	$(LINK) $(libgauche_LDFLAGS) $(LIBGAUCHE).$(SOEXT) $(libgauche_OBJECTS) $(libgc_OBJECTS) $(LIBS)
@@ -308,12 +339,12 @@ $(host)-gauche-config: gauche-config.c
 	$(BUILD_CC) $(BUILD_CFLAGS) $(DEFS) -o $@ gauche-config.c
 
 # we need thread settings in sync with gc.
-gauche/config_threads.h : $(top_builddir)/gc/include/private/config.h
+gauche/config_threads.h : $(top_builddir)/gc/include/config.h
 	rm -f gauche/config_threads.h
 	echo "/* Generated automatically from gc config header; do not edit. */" > gauche/config_threads.h
-	grep '^#define GC_[0-9A-Z_]*THREADS' $(top_builddir)/gc/include/private/config.h >> gauche/config_threads.h || :
+	grep '^#define GC_[0-9A-Z_]*THREADS' $(top_builddir)/gc/include/config.h >> gauche/config_threads.h || :
 
-gauche-config.c gauche/arch.h ../lib/gauche/config.scm : genconfig
+gauche-config.c paths_arch.c ../lib/gauche/config.scm : genconfig
 	$(SHELL) ./genconfig
 
 gauche-install : gauche-install.in
@@ -333,6 +364,17 @@ gauche-cesconv : gauche-cesconv.in
 	echo "#!$(BIN_INSTALL_DIR)/gosh" > gauche-cesconv && \
 	cat $(srcdir)/gauche-cesconv.in >> gauche-cesconv 
 	@chmod -w+x gauche-cesconv
+
+# static link -----------------------------------------
+# can be called after everything was built
+
+static : $(LIBGAUCHE_STATIC).a
+
+$(LIBGAUCHE_STATIC).a : all staticinit.$(OBJEXT)
+	$(AR) cr $(LIBGAUCHE_STATIC).a $(libgauche_OBJECTS) $(libgc_OBJECTS) staticinit.$(OBJEXT) `cd $(top_builddir)/ext; $(MAKE) -s list-objects`
+
+staticinit.c : all gen-staticinit.scm
+	$(BUILD_GOSH) $(srcdir)/gen-staticinit.scm $(top_srcdir) $(top_builddir)
 
 # tests -----------------------------------------------
 TESTFILES  = `cat ../test/TESTS`
@@ -381,31 +423,33 @@ test-vmstack$(EXEEXT) : test-vmstack.$(OBJEXT) $(LIBGAUCHE).$(SOEXT)
 test-arith$(EXEEXT) : test-arith.$(OBJEXT) $(LIBGAUCHE).$(SOEXT)
 	$(LINK)	-o test-arith$(EXEEXT) test-arith.$(OBJEXT) $(gosh_LDADD) $(LIBS)
 
-test-arith.$(OBJEXT) : gauche/arith.h
+test-arith.$(OBJEXT) : gauche/priv/arith.h
 
 install-check :
 	@rm -rf test.log
-	@for f in `cat ../test/TESTS`; do \
-	  ${bindir}/gosh ../test/$$f; \
+	@for f in `cat ../test/TESTS ../test/TESTS2`; do \
+	  ${bindir}/gosh ../test/$$f install-check; \
 	done
 
 # clean ------------------------------------------------
 GENERATED = compile.c autoloads.c builtin-syms.c \
-	    gauche/builtin-syms.h vminsn.c gauche/vminsn.h \
+	    gauche/priv/builtin-syms.h vminsn.c gauche/vminsn.h \
             ../lib/gauche/vm/insn.scm \
-	    libalpha.c libbool.c libchar.c libdict.c libeval.c libexc.c \
-	    libio.c liblazy.c liblist.c libmisc.c libmod.c libnum.c \
-	    libobj.c libproc.c librx.c libstr.c libsym.c libsys.c \
-	    libvec.c libomega.c libextra.c
+	    libsrfis.scm ../doc/srfis.texi \
+	    libalpha.c libbool.c libchar.c libcode.c libcmp.c libdict.c \
+	    libeval.c libexc.c libfmt.c libio.c liblazy.c liblist.c libmisc.c \
+	    libmod.c libnum.c libobj.c libproc.c librx.c libstr.c \
+	    libsrfis.c libsym.c libsys.c libvec.c libomega.c libextra.c
 CONFIG_GENERATED = Makefile genconfig makeverslink gauche/config.h
 
 clean :
 	rm -rf core core.[0-9]* gosh$(EXEEXT) gauche-config$(EXEEXT) \
 	       test-vmstack$(EXEEXT) test-arith$(EXEEXT) test-extra$(EXEEXT) \
 	       $(GENERATED_SCRIPTS) gauche-config.c \
-	       $(LIBGAUCHE).$(SOEXT)* *.$(OBJEXT) *~ *.a *.t *.def *.exp *.exe \
-	       test.log test.dir so_locations gauche/*~ gauche/arch.h \
-	       gauche/config_threads.h gauche-config.in.c \
+	       $(LIBGAUCHE).$(SOEXT)* $(LIBGAUCHE_STATIC).a \
+               *.$(OBJEXT) *~ *.a *.t *.def *.exp *.exe \
+	       test.log test.dir so_locations gauche/*~ paths_arch.c \
+	       gauche/config_threads.h gauche-config.in.c staticinit.c \
 	       gauche-install.in.c gauche-package.in.c gauche-cesconv.in.c \
 	       $(host)-gauche-config.c $(host)-gauche-config
 
@@ -450,7 +494,6 @@ install-core : install-relink
 	@case `$(GAUCHE_CONFIG) --arch` in *-cygwin*|*-mingw*) \
 	  $(INSTALL) $(INSTALL_LIBS) $(DESTDIR)$(BIN_INSTALL_DIR);;\
 	esac
-	$(INSTALL) -m 444 $(srcdir)/gauche-init.scm $(DESTDIR)$(SCM_INSTALL_DIR)
 	$(POSTINSTALL)
 
 uninstall :

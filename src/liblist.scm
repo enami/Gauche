@@ -1,7 +1,7 @@
 ;;;
 ;;; liblist.scm - builtin list procedures
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -110,15 +110,15 @@
   (inliner NULLP) SCM_NULLP)
 (define-cproc list? (obj) ::<boolean> :fast-flonum :constant
   SCM_PROPER_LIST_P)
-(define-cproc list (:rest args) (inliner LIST) (result args))
+(define-cproc list (:rest args) (inliner LIST) (return args))
 
 (define-cproc length (list) ::<long> :constant (inliner LENGTH)
   (let* ([len::long (Scm_Length list)])
     (when (< len 0) (Scm_Error "bad list: %S" list))
-    (result len)))
+    (return len)))
 (define-cproc length<=? (list k::<fixnum>) ::<boolean> :constant
-  (result TRUE)
-  (dolist [_ list] (when (<= (post-- k) 0) (result FALSE) (break))))
+  (dolist [_ list] (when (<= (post-- k) 0) (return FALSE)))
+  (return TRUE))
 
 (define-cproc append (:rest lists) (inliner APPEND) Scm_Append)
 (define-cproc reverse (list::<list> :optional (tail ())) Scm_Reverse2)
@@ -146,9 +146,9 @@
 (select-module gauche.internal)
 ;; Actual member and assoc is defined blow.
 (define-cproc %member (obj list::<list>)
-  (result (Scm_Member obj list SCM_CMP_EQUAL)))
+  (return (Scm_Member obj list SCM_CMP_EQUAL)))
 (define-cproc %assoc (obj alist::<list>)
-  (result (Scm_Assoc obj alist SCM_CMP_EQUAL)))
+  (return (Scm_Assoc obj alist SCM_CMP_EQUAL)))
 
 ;;
 ;; Some extra procedures
@@ -157,7 +157,7 @@
 (select-module gauche)
 (define-cproc length+ (list) :constant ;; srfi-1
   (let* ([i::int (Scm_Length list)])
-    (if (< i 0) (result SCM_FALSE) (result (Scm_MakeInteger i)))))
+    (if (< i 0) (return SCM_FALSE) (return (Scm_MakeInteger i)))))
 
 (define-cproc proper-list? (obj)   ::<boolean> :constant SCM_PROPER_LIST_P)
 (define-cproc dotted-list? (obj)   ::<boolean> :constant SCM_DOTTED_LIST_P)
@@ -178,7 +178,7 @@
             (SCM_SET_CDR tail (SCM_CAR cp)))
           (break))
         (SCM_APPEND1 head tail (SCM_CAR cp))))
-    (result head)))
+    (return head)))
 
 (define-cproc append! (:rest list)
   (let* ([h '()] [t '()])
@@ -191,7 +191,7 @@
           (SCM_SET_CDR t (SCM_CAR cp)))
         (break))
       (SCM_APPEND h t (SCM_CAR cp)))
-    (result h)))
+    (return h)))
 
 (define-cproc reverse! (list :optional (tail ())) Scm_Reverse2X)
 
@@ -260,17 +260,17 @@
  )
 
 (define-cproc %delete (obj list::<list> :optional cmpmode)
-  (result (Scm_Delete obj list (getcmpmode cmpmode))))
+  (return (Scm_Delete obj list (getcmpmode cmpmode))))
 (define-cproc %delete! (obj list::<list> :optional cmpmode)
-  (result (Scm_DeleteX obj list (getcmpmode cmpmode))))
+  (return (Scm_DeleteX obj list (getcmpmode cmpmode))))
 (define-cproc %delete-duplicates (list::<list> :optional cmpmode)
-  (result (Scm_DeleteDuplicates list (getcmpmode cmpmode))))
+  (return (Scm_DeleteDuplicates list (getcmpmode cmpmode))))
 (define-cproc %delete-duplicates! (list::<list> :optional cmpmode)
-  (result (Scm_DeleteDuplicatesX list (getcmpmode cmpmode))))
+  (return (Scm_DeleteDuplicatesX list (getcmpmode cmpmode))))
 (define-cproc %alist-delete (elt list::<list> :optional cmpmode)
-  (result (Scm_AssocDelete elt list (getcmpmode cmpmode))))
+  (return (Scm_AssocDelete elt list (getcmpmode cmpmode))))
 (define-cproc %alist-delete! (elt list::<list> :optional cmpmode)
-  (result (Scm_AssocDeleteX elt list (getcmpmode cmpmode))))
+  (return (Scm_AssocDeleteX elt list (getcmpmode cmpmode))))
 
 (define-in-module gauche.internal (%zip-nary-args arglists . seed)
   (let loop ([as arglists]
@@ -398,7 +398,7 @@
             [else (loop (cdr lis))])))
   (let restart ([ans lis])
     (cond [(null-list? ans) ans]
-	  [(not (pred (car ans))) (restart (cdr ans))]
+          [(not (pred (car ans))) (restart (cdr ans))]
           [else (keep! ans (cdr ans)) ans])))
 
 (define (remove  pred l) (filter  (^x (not (pred x))) l))
@@ -451,6 +451,40 @@
           (apply kons (append! cars (list (rec cdrs))))
           knil)))))
 
+(define (count pred lis . more)
+  (if (null? more)
+    (let rec ([lis lis] [cnt 0])
+      (if (null-list? lis)
+        cnt
+        (rec (cdr lis) (if (pred (car lis)) (+ cnt 1) cnt))))
+    (let rec ([liss (cons lis more)] [cnt 0])
+      (receive (cars cdrs) ((with-module gauche.internal %zip-nary-args) liss)
+        (if cars
+          (rec cdrs (if (apply pred cars) (+ cnt 1) cnt))
+          cnt)))))
+
+(define (reduce f ridentity lis)
+  (if (null-list? lis)
+    ridentity
+    (fold f (car lis) (cdr lis))))
+
+(define (reduce-right f ridentity lis)
+  (if (null-list? lis)
+    ridentity
+    (let rec ([head (car lis)] [lis (cdr lis)])
+      (if (pair? lis)
+        (f head (rec (car lis) (cdr lis)))
+        head))))
+
+(define (append-reverse list tail)  (reverse list tail)) ;srfi-1 compat
+(define (append-reverse! list tail) (reverse! list tail));srfi-1 compat
+
+(define (concatenate  lists) (reduce-right append  '() lists))
+(define (concatenate! lists) (reduce-right append! '() lists))
+
+(define (append-map f lis . lists)  (concatenate  (apply map f lis lists)))
+(define (append-map! f lis . lists) (concatenate! (apply map f lis lists)))
+
 (define (map* fn tail-fn lis . more)
   (if (null? more)
     (let rec ([xs lis] [rs '()])
@@ -488,6 +522,17 @@
                      (values '() rest))]
           [(null? rest) (error "given list is too short:" lis)]
           [else (loop (- i 1) (cdr rest) rest)])))
+
+;; partition is here, for gauche.procedure has partition$ and we don't
+;; want it to depend on srfi-1.  partition! is left in srfi-1, for its
+;; optimized version is rather complicated.
+(define (partition pred lis)
+  (let rec ([lis lis] [xs '()] [ys '()])
+    (if (null-list? lis)
+      (values (reverse! xs) (reverse! ys))
+      (if (pred (car lis))
+        (rec (cdr lis) (cons (car lis) xs) ys)
+        (rec (cdr lis) xs (cons (car lis) ys))))))
 
 (define (take list k)
   (let loop ([lis list] [r '()] [j k])
@@ -649,19 +694,19 @@
   (cond [(assoc key alist eq) => cdr]
         [else default]))
 
-(define (assq-ref alist key . opts)
-  (assoc-ref alist key (get-optional opts #f) eq?))
-(define (assv-ref alist key . opts)
-  (assoc-ref alist key (get-optional opts #f) eqv?))
+(define (assq-ref alist key :optional (default #f))
+  (assoc-ref alist key default eq?))
+(define (assv-ref alist key :optional (default #f))
+  (assoc-ref alist key default eqv?))
 
 (define (rassoc-ref alist key :optional (default #f) (eq equal?))
   (cond [(rassoc key alist eq) => car]
         [else default]))
 
-(define (rassq-ref alist key . opts)
-  (rassoc-ref alist key (get-optional opts #f) eq?))
-(define (rassv-ref alist key . opts)
-  (rassoc-ref alist key (get-optional opts #f) eqv?))
+(define (rassq-ref alist key :optional (default #f))
+  (rassoc-ref alist key default eq?))
+(define (rassv-ref alist key :optional (default #f))
+  (rassoc-ref alist key default eqv?))
 
 ;; 'assoc-set!'
 (define (assoc-set! alist key val :optional (eq equal?))
@@ -684,10 +729,10 @@
 (define-cproc pair-attributes (pair::<pair>) Scm_PairAttr)
 
 (define-cproc pair-attribute-get (pair::<pair> key :optional fallback)
-  (result (Scm_PairAttrGet (SCM_PAIR pair) key fallback)))
+  (return (Scm_PairAttrGet (SCM_PAIR pair) key fallback)))
 
 (define-cproc pair-attribute-set! (pair::<pair> key value)
-  (result (Scm_PairAttrSet (SCM_PAIR pair) key value)))
+  (return (Scm_PairAttrSet (SCM_PAIR pair) key value)))
 
 (define-cproc extended-pair? (obj) ::<boolean> SCM_EXTENDED_PAIR_P)
 (define-cproc extended-cons (car cdr) Scm_ExtendedCons)

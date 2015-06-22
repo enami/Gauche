@@ -3,7 +3,7 @@
 ;;;
 
 (use srfi-1)
-(use util.list)
+(use file.util)
 (use gauche.cgen)
 (use gauche.parameter)
 (use gauche.sequence)
@@ -11,9 +11,13 @@
 (define *unit*
   (make <cgen-unit>
     :name "builtin-syms"
-    :preamble "/* Generated from builtin-syms.scm.  DO NOT EDIT */"
+    :preamble "/* Generated from builtin-syms.scm.  DO NOT EDIT\n\
+                  This file may be changed by minor version up, and\n\
+                  binaries including builtin-syms.h must be recompiled.\n\
+                  That is, binary compatibility isn't guaranteed if you\n\
+                  use SCM_SYM_*. */"
     :c-file "builtin-syms.c"
-    :h-file "gauche/builtin-syms.h"
+    :h-file "gauche/priv/builtin-syms.h"
     :init-prologue "static void init_builtin_syms(void)\n{"
     :init-epilogue "}"
     ))
@@ -47,6 +51,7 @@
     (cgen-body "};")
     (cgen-init "#undef INTERN")
 
+    (make-directory* "gauche/priv/")
     (cgen-emit-h (cgen-current-unit))
     (cgen-emit-c (cgen-current-unit))
     0))
@@ -126,7 +131,7 @@
     (*load-path-hooks*         SCM_SYM_LOAD_PATH_HOOKS)
     (*dynamic-load-path*       SCM_SYM_DYNAMIC_LOAD_PATH)
 
-    ;; reader, compiler, vm
+    ;; reader, writer, compiler, vm
     (source-info               SCM_SYM_SOURCE_INFO)
     (bind-info                 SCM_SYM_BIND_INFO)
     (arg-info                  SCM_SYM_ARG_INFO)
@@ -188,6 +193,15 @@
     (symlink                   SCM_SYM_SYMLINK)
     (socket                    SCM_SYM_SOCKET)
     (time-utc                  SCM_SYM_TIME_UTC)
+
+    ;; modules addition (move this up on 1.0 release)
+    (keyword                   SCM_SYM_KEYWORD)
+    ;; reader addition (move this up on 1.0 release)
+    (legacy                    SCM_SYM_LEGACY)
+    (permissive                SCM_SYM_PERMISSIVE)
+    (warn-legacy               SCM_SYM_WARN_LEGACY)
+    (strict-r7                 SCM_SYM_STRICT_R7)
+    (debug-funcall             SCM_SYM_DEBUG_FUNCALL)
     ))
 
 

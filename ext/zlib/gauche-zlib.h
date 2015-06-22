@@ -74,12 +74,12 @@ SCM_CLASS_DECL(Scm_InflatingPortClass);
 #define SCM_INFLATING_PORT_P(obj) SCM_ISA(obj, SCM_CLASS_INFLATING_PORT)
 
 extern ScmObj Scm_MakeDeflatingPort(ScmPort *source, int level,
-				    int window_bits, int memlevel,
-				    int strategy, ScmObj dict,
-				    int bufsiz, int ownerp);
+                                    int window_bits, int memlevel,
+                                    int strategy, ScmObj dict,
+                                    int bufsiz, int ownerp);
 extern ScmObj Scm_MakeInflatingPort(ScmPort *sink, int bufsiz,
-				    int window_bits, ScmObj dict,
-				    int ownerp);
+                                    int window_bits, ScmObj dict,
+                                    int ownerp);
 
 /*================================================================
  * Conditions
@@ -125,6 +125,8 @@ SCM_CLASS_DECL(Scm_ZlibVersionErrorClass);
 extern ScmObj Scm_MakeZlibError(ScmObj message, int error_code);
 extern void Scm_ZlibError(int error_code, const char *msg, ...);
 extern ScmObj Scm_InflateSync(ScmPort *port);
+
+extern void Scm_Init_zlib(void);
 
 /* Epilogue */
 SCM_DECL_END

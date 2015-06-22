@@ -1,7 +1,7 @@
 /*
  * termios.h - termios interface
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -86,5 +86,7 @@ ScmObj Scm_ForkptyAndExec(ScmString *file, ScmObj args, ScmObj iomap,
 #endif
 
 #endif /* !defined(GAUCHE_WINDOWS) */
+
+void Scm_Init_termios(void);
 
 #endif /* GAUCHE_TERMIOS_H */

@@ -1,7 +1,7 @@
 /*
  * gauche.h - Gauche scheme system header
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  * 
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -62,7 +62,6 @@
 #include <errno.h>
 #include <gauche/int64.h>
 #include <gauche/float.h>
-#include <gauche/arch.h>
 
 #ifdef TIME_WITH_SYS_TIME
 # include <sys/time.h>
@@ -126,6 +125,11 @@ SCM_DECL_BEGIN
 /* Define this to 0 to turn off lazy-pair feature. */
 #define GAUCHE_LAZY_PAIR 1
 
+/* Enable an option to make keywords and symbols disjoint.
+   (Transient: Will be gone once we completely migrate to
+   unified keyword-symbol system */
+#define GAUCHE_KEEP_DISJOINT_KEYWORD_OPTION 1
+
 /* Include appropriate threading interface.  Threading primitives are
    abstracted with SCM_INTERNAL_* macros and ScmInternal* typedefs.
    See gauche/uthread.h for the semantics of these primitives. */
@@ -154,6 +158,13 @@ SCM_DECL_BEGIN
 #else  /* !__GNUC__ */
 #define SCM_ALIGN8  /*empty*/
 #endif /* !__GNUC__ */
+
+/* 'No return' attribute */
+#ifdef __GNUC__
+#define SCM_NORETURN  __attribute__((__noreturn__))
+#else  /*__GNUC__*/
+#define SCM_NORETURN  /*empty*/
+#endif /*__GNUC__*/
 
 /*-------------------------------------------------------------
  * BASIC TYPES
@@ -226,8 +237,8 @@ typedef struct ScmClassRec ScmClass;
 
 /* Type coercer */
 
-#define	SCM_OBJ(obj)      ((ScmObj)(obj))
-#define	SCM_WORD(obj)     ((ScmWord)(obj))
+#define SCM_OBJ(obj)      ((ScmObj)(obj))
+#define SCM_WORD(obj)     ((ScmWord)(obj))
 
 /*
  * PRIMARY TAG IDENTIFICATION
@@ -277,7 +288,7 @@ typedef struct ScmClassRec ScmClass;
  */
 #define SCM_BOOLP(obj)       ((obj) == SCM_TRUE || (obj) == SCM_FALSE)
 #define SCM_BOOL_VALUE(obj)  (!SCM_FALSEP(obj))
-#define	SCM_MAKE_BOOL(obj)   ((obj)? SCM_TRUE:SCM_FALSE)
+#define SCM_MAKE_BOOL(obj)   ((obj)? SCM_TRUE:SCM_FALSE)
 
 #define SCM_EQ(x, y)         ((x) == (y))
 
@@ -327,10 +338,10 @@ typedef struct ScmFlonumRec {
  *  For character cases, I only care about ASCII chars (at least for now)
  */
 
-#define	SCM_CHAR(obj)           ((ScmChar)(obj))
-#define	SCM_CHARP(obj)          ((SCM_WORD(obj)&0xff) == 3)
-#define	SCM_CHAR_VALUE(obj)     SCM_CHAR(((unsigned long)SCM_WORD(obj)) >> 8)
-#define	SCM_MAKE_CHAR(ch)       SCM_OBJ((((unsigned long)(ch))<<8) + 3)
+#define SCM_CHAR(obj)           ((ScmChar)(obj))
+#define SCM_CHARP(obj)          ((SCM_WORD(obj)&0xff) == 3)
+#define SCM_CHAR_VALUE(obj)     SCM_CHAR(((unsigned long)SCM_WORD(obj)) >> 8)
+#define SCM_MAKE_CHAR(ch)       SCM_OBJ((((unsigned long)(ch))<<8) + 3)
 
 #define SCM_CHAR_INVALID        ((ScmChar)(-1)) /* indicate invalid char */
 #define SCM_CHAR_MAX            (0xffffff)
@@ -343,8 +354,8 @@ typedef struct ScmFlonumRec {
 #define SCM_CHAR_UPCASE(ch)     Scm_CharUpcase(ch)
 #define SCM_CHAR_DOWNCASE(ch)   Scm_CharDowncase(ch)
 
-SCM_EXTERN int Scm_DigitToInt(ScmChar ch, int radix);
-SCM_EXTERN ScmChar Scm_IntToDigit(int n, int radix);
+SCM_EXTERN int Scm_DigitToInt(ScmChar ch, int radix, int extended);
+SCM_EXTERN ScmChar Scm_IntToDigit(int n, int radix, int basechar1, int basechar2);
 SCM_EXTERN int Scm_CharToUcs(ScmChar ch);
 SCM_EXTERN ScmChar Scm_UcsToChar(int ucs);
 SCM_EXTERN ScmObj Scm_CharEncodingName(void);
@@ -461,6 +472,8 @@ typedef struct ScmInstanceRec {
 /* Fundamental allocators */
 #define SCM_MALLOC(size)          GC_MALLOC(size)
 #define SCM_MALLOC_ATOMIC(size)   GC_MALLOC_ATOMIC(size)
+#define SCM_STRDUP(s)             GC_STRDUP(s)
+#define SCM_STRDUP_PARTIAL(s, n)  Scm_StrdupPartial(s, n)
 
 #define SCM_NEW(type)         ((type*)(SCM_MALLOC(sizeof(type))))
 #define SCM_NEW_ARRAY(type, nelts) ((type*)(SCM_MALLOC(sizeof(type)*(nelts))))
@@ -494,7 +507,6 @@ typedef struct ScmTreeMapRec   ScmTreeMap;
 typedef struct ScmModuleRec    ScmModule;
 typedef struct ScmSymbolRec    ScmSymbol;
 typedef struct ScmGlocRec      ScmGloc;
-typedef struct ScmKeywordRec   ScmKeyword;
 typedef struct ScmProcedureRec ScmProcedure;
 typedef struct ScmClosureRec   ScmClosure;
 typedef struct ScmSubrRec      ScmSubr;
@@ -508,6 +520,9 @@ typedef struct ScmRegexpRec    ScmRegexp;
 typedef struct ScmRegMatchRec  ScmRegMatch;
 typedef struct ScmWriteContextRec ScmWriteContext;
 typedef struct ScmAutoloadRec  ScmAutoload;
+typedef struct ScmComparatorRec ScmComparator;
+typedef struct ScmDLObjRec     ScmDLObj;         /* see load.c */
+typedef struct ScmReadContextRec ScmReadContext; /* see read.c */
 
 typedef ScmObj ScmSubrProc(ScmObj *, int, void*);
 
@@ -543,17 +558,11 @@ typedef struct ScmEvalPacketRec {
     ScmModule *module;          /* 'Current module' after evaluation */
 } ScmEvalPacket;
 
-#if !defined(GAUCHE_API_PRE_0_9)
 SCM_EXTERN int Scm_Eval(ScmObj form, ScmObj env, ScmEvalPacket *packet);
 SCM_EXTERN int Scm_EvalCString(const char *form, ScmObj env,
                                ScmEvalPacket *packet);
 SCM_EXTERN int Scm_Apply(ScmObj proc, ScmObj args,
                          ScmEvalPacket *packet);
-#else  /*GAUCHE_API_PRE_0_9*/
-#define Scm_Eval(f, e)        Scm_EvalRec(f, e)
-#define Scm_EvalCString(f, e) Scm_EvalCStringRec(f, e)
-#define Scm_Apply(p, a)       Scm_ApplyRec(p, a)
-#endif /*GAUCHE_API_PRE_0_9*/
 
 /* Calls VM recursively to evaluate the Scheme code.  These
    ones does not capture exceptions. */
@@ -578,9 +587,9 @@ SCM_EXTERN ScmObj Scm_Values(ScmObj args);
 SCM_EXTERN ScmObj Scm_Values2(ScmObj val0, ScmObj val1);
 SCM_EXTERN ScmObj Scm_Values3(ScmObj val0, ScmObj val1, ScmObj val2);
 SCM_EXTERN ScmObj Scm_Values4(ScmObj val0, ScmObj val1, ScmObj val2,
-			      ScmObj val3);
+                              ScmObj val3);
 SCM_EXTERN ScmObj Scm_Values5(ScmObj val0, ScmObj val1, ScmObj val2,
-			      ScmObj val3, ScmObj val4);
+                              ScmObj val3, ScmObj val4);
 
 /* CPS API for evaluating Scheme fragments on VM. */
 SCM_EXTERN ScmObj Scm_VMApply(ScmObj proc, ScmObj args);
@@ -600,20 +609,13 @@ SCM_EXTERN ScmObj Scm_VMDynamicWind(ScmObj pre, ScmObj body, ScmObj post);
 SCM_EXTERN ScmObj Scm_VMDynamicWindC(ScmSubrProc *before,
                                      ScmSubrProc *body,
                                      ScmSubrProc *after,
-				     void *data);
+                                     void *data);
 
 SCM_EXTERN ScmObj Scm_VMWithErrorHandler(ScmObj handler, ScmObj thunk);
 SCM_EXTERN ScmObj Scm_VMWithGuardHandler(ScmObj handler, ScmObj thunk);
 SCM_EXTERN ScmObj Scm_VMWithExceptionHandler(ScmObj handler, ScmObj thunk);
 
 /* Miscellaneous stuff */
-SCM_EXTERN ScmObj Scm_MakeMacroTransformer(ScmSymbol *name,
-					   ScmObj proc);
-SCM_EXTERN ScmObj Scm_MakeMacroAutoload(ScmSymbol *name,
-                                        ScmAutoload *al);
-
-SCM_EXTERN ScmObj Scm_UnwrapSyntax(ScmObj form);
-
 SCM_EXTERN int    Scm_VMGetNumResults(ScmVM *vm);
 SCM_EXTERN ScmObj Scm_VMGetResult(ScmVM *vm);
 SCM_EXTERN ScmObj Scm_VMGetStackLite(ScmVM *vm);
@@ -803,8 +805,8 @@ SCM_EXTERN void Scm_InitStaticClassWithMeta(ScmClass *klass,
 
 /* OBSOLETE */
 SCM_EXTERN void Scm_InitBuiltinClass(ScmClass *c, const char *name,
-				     ScmClassStaticSlotSpec *slots,
-				     int withMeta,
+                                     ScmClassStaticSlotSpec *slots,
+                                     int withMeta,
                                      ScmModule *m);
 
 SCM_EXTERN ScmClass *Scm_ClassOf(ScmObj obj);
@@ -929,12 +931,14 @@ typedef struct ScmForeignPointerRec {
                                    constructed by Scm_MakeForeignPointer. */
     ScmObj attributes;          /* alist.  useful to store e.g. callbacks.
                                    use accessor procedures. */
+    ScmWord flags;              /* used internally.  We use ScmWord to keep
+                                   ScmForeignPointer fit in 4 words. */
 } ScmForeignPointer;
 
 #define SCM_FOREIGN_POINTER_P(obj)   SCM_ISA(obj, SCM_CLASS_FOREIGN_POINTER)
 #define SCM_FOREIGN_POINTER(obj)     ((ScmForeignPointer*)(obj))
 #define SCM_FOREIGN_POINTER_REF(type, obj) \
-    ((type)(SCM_FOREIGN_POINTER(obj)->ptr))
+    ((type)(Scm_ForeignPointerRef(SCM_FOREIGN_POINTER(obj))))
 
 typedef void (*ScmForeignCleanupProc)(ScmObj);
 
@@ -946,8 +950,11 @@ SCM_EXTERN ScmClass *Scm_MakeForeignPointerClass(ScmModule *module,
 SCM_EXTERN ScmObj Scm_MakeForeignPointer(ScmClass *klass, void *ptr);
 SCM_EXTERN ScmObj Scm_MakeForeignPointerWithAttr(ScmClass *klass, void *ptr,
                                                  ScmObj attr);
+SCM_EXTERN void  *Scm_ForeignPointerRef(ScmForeignPointer *fp);
+SCM_EXTERN int    Scm_ForeignPointerInvalidP(ScmForeignPointer *fp);
+SCM_EXTERN void   Scm_ForeignPointerInvalidate(ScmForeignPointer *fp);
 
-/* foreign pointer flags */
+/* foreign pointer class flags */
 enum {
     SCM_FOREIGN_POINTER_KEEP_IDENTITY = (1L<<0),
          /* If set, a foreign pointer class keeps a weak hash table that maps
@@ -1040,31 +1047,31 @@ SCM_CLASS_DECL(Scm_NullClass);
 
 /* Useful macros to manipulate lists. */
 
-#define	SCM_FOR_EACH(p, list) \
+#define SCM_FOR_EACH(p, list) \
     for((p) = (list); SCM_PAIRP(p); (p) = SCM_CDR(p))
 
-#define	SCM_APPEND1(start, last, obj)                           \
+#define SCM_APPEND1(start, last, obj)                           \
     do {                                                        \
-	if (SCM_NULLP(start)) {                                 \
-	    (start) = (last) = Scm_Cons((obj), SCM_NIL);        \
-	} else {                                                \
-	    SCM_SET_CDR((last), Scm_Cons((obj), SCM_NIL));      \
-	    (last) = SCM_CDR(last);                             \
-	}                                                       \
+        if (SCM_NULLP(start)) {                                 \
+            (start) = (last) = Scm_Cons((obj), SCM_NIL);        \
+        } else {                                                \
+            SCM_SET_CDR((last), Scm_Cons((obj), SCM_NIL));      \
+            (last) = SCM_CDR(last);                             \
+        }                                                       \
     } while (0)
 
-#define	SCM_APPEND(start, last, obj)                    \
+#define SCM_APPEND(start, last, obj)                    \
     do {                                                \
         ScmObj list_SCM_GLS = (obj);                    \
-	if (SCM_NULLP(start)) {                         \
-	    (start) = (list_SCM_GLS);                   \
+        if (SCM_NULLP(start)) {                         \
+            (start) = (list_SCM_GLS);                   \
             if (!SCM_NULLP(list_SCM_GLS)) {             \
                 (last) = Scm_LastPair(list_SCM_GLS);    \
             }                                           \
         } else {                                        \
-	    SCM_SET_CDR((last), (list_SCM_GLS));        \
-	    (last) = Scm_LastPair(last);                \
-	}                                               \
+            SCM_SET_CDR((last), (list_SCM_GLS));        \
+            (last) = Scm_LastPair(last);                \
+        }                                               \
     } while (0)
 
 #define SCM_LIST1(a)             Scm_Cons(a, SCM_NIL)
@@ -1092,7 +1099,7 @@ SCM_EXTERN ScmObj Scm_VaCons(va_list elts);
 SCM_EXTERN ScmObj Scm_ArrayToList(ScmObj *elts, int nelts);
 SCM_EXTERN ScmObj Scm_ArrayToListWithTail(ScmObj *elts, int nelts, ScmObj tail);
 SCM_EXTERN ScmObj *Scm_ListToArray(ScmObj list, int *nelts, ScmObj *store,
-				   int alloc);
+                                   int alloc);
 
 SCM_EXTERN ScmObj Scm_Car(ScmObj obj);
 SCM_EXTERN ScmObj Scm_Cdr(ScmObj obj);
@@ -1143,10 +1150,6 @@ SCM_EXTERN ScmObj Scm_PairAttrSet(ScmPair *pair, ScmObj key, ScmObj value);
 /*--------------------------------------------------------
  * CHARACTERS
  */
-
-SCM_EXTERN ScmChar Scm_ReadXdigitsFromString(const char *, int, const char **);
-SCM_EXTERN ScmChar Scm_ReadXdigitsFromPort(ScmPort *port, int ndigits,
-                                           char *buf, int *nread);
 
 /* Illegal character handling mode.  Used in some APIs that handles
    character conversion, such as input ports and string-incomplete->complete.
@@ -1236,12 +1239,6 @@ typedef enum {
 #include <gauche/gloc.h>
 
 /*--------------------------------------------------------
- * KEYWORD
- */
-
-#include <gauche/keyword.h>
-
-/*--------------------------------------------------------
  * NUMBER
  */
 
@@ -1285,7 +1282,7 @@ struct ScmProcedureRec {
    after argument folding).
 
    This special treatment is to avoid unnecessary consing of argumets;
-   if we know the callee immeidately unfolds the rest argument, it's no 
+   if we know the callee immediately unfolds the rest argument, it's no 
    use to fold excessive arguments anyway.
  */
 
@@ -1306,7 +1303,7 @@ struct ScmProcedureRec {
    
    #f: No inliner associated to this procedure.  (For historical
       reasons, the code that access to this slot expects this slot can be
-      NULL and treats it as SCM_FALSE)
+      NULL and treats it as SCM_FALSE in that case)
 
    <integer>: Only appears in some built-in procedures, and specifies
       the VM instruction number.  This should be considered as a special
@@ -1415,19 +1412,19 @@ struct ScmSubrRec {
 #define SCM_DEFINE_SUBRX(cvar, req, opt, cst, inf, flags, func, inliner, data) \
     SCM__DEFINE_SUBR_INT(cvar, req, opt, cst, inf, flags, func, inliner, data)
 
-/* old interface.  will be gone. */
+/* TRANSIENT: old interface.  will be gone. */
 #define SCM_DEFINE_SUBRI(cvar, req, opt, inf, func, inliner, data) \
-    SCM__DEFINE_SUBR_INT(cvar, req, opt, inf, SCM_SUBR_IMMEDIATE_ARG, \
+    SCM__DEFINE_SUBR_INT(cvar, req, opt, 0, inf, SCM_SUBR_IMMEDIATE_ARG, \
                          func, inliner, data)
 
 SCM_EXTERN ScmObj Scm_MakeSubr(ScmSubrProc *func,
-			       void *data,
-			       int required, int optional,
-			       ScmObj info);
+                               void *data,
+                               int required, int optional,
+                               ScmObj info);
 SCM_EXTERN ScmObj Scm_NullProc(void);
 
 SCM_EXTERN ScmObj Scm_SetterSet(ScmProcedure *proc, ScmProcedure *setter,
-				int lock);
+                                int lock);
 SCM_EXTERN ScmObj Scm_Setter(ScmObj proc);
 SCM_EXTERN int    Scm_HasSetter(ScmObj proc);
 
@@ -1457,10 +1454,10 @@ SCM_CLASS_DECL(Scm_GenericClass);
     }
 
 SCM_EXTERN void Scm_InitBuiltinGeneric(ScmGeneric *gf, const char *name,
-				       ScmModule *mod);
+                                       ScmModule *mod);
 SCM_EXTERN ScmObj Scm_MakeBaseGeneric(ScmObj name,
-				      ScmObj (*fallback)(ScmObj *, int, ScmGeneric*),
-				      void *data);
+                                      ScmObj (*fallback)(ScmObj *, int, ScmGeneric*),
+                                      void *data);
 SCM_EXTERN ScmObj Scm_NoNextMethod(ScmObj *argv, int argc, ScmGeneric *gf);
 SCM_EXTERN ScmObj Scm_NoOperation(ScmObj *argv, int argc, ScmGeneric *gf);
 SCM_EXTERN ScmObj Scm_InvalidApply(ScmObj *argv, int argc, ScmGeneric *gf);
@@ -1549,40 +1546,29 @@ SCM_EXTERN ScmObj Scm_Map(ScmObj proc, ScmObj arg1, ScmObj args);
  * MACROS AND SYNTAX
  */
 
-/* Syntax is a built-in procedure to compile given form. */
-struct ScmSyntaxRec {
-    SCM_HEADER;
-    ScmSymbol *name;            /* for debugging */
-    ScmObj     handler;         /* syntax handler.  (Sexpr, Env) -> IForm */
-};
+/* The actual definitions of ScmSyntax and ScmMacro are private.*/
 
 #define SCM_SYNTAX(obj)             ((ScmSyntax*)(obj))
 #define SCM_SYNTAXP(obj)            SCM_XTYPEP(obj, SCM_CLASS_SYNTAX)
-
 SCM_CLASS_DECL(Scm_SyntaxClass);
 #define SCM_CLASS_SYNTAX            (&Scm_SyntaxClass)
 
 SCM_EXTERN ScmObj Scm_MakeSyntax(ScmSymbol *name, ScmObj handler);
 
-/* Macro */
-struct ScmMacroRec {
-    SCM_HEADER;
-    ScmSymbol *name;            /* for debug */
-    ScmTransformerProc transformer; /* (Self, Sexpr, Env) -> Sexpr */
-    void *data;
-};
-
 #define SCM_MACRO(obj)             ((ScmMacro*)(obj))
 #define SCM_MACROP(obj)            SCM_XTYPEP(obj, SCM_CLASS_MACRO)
-
 SCM_CLASS_DECL(Scm_MacroClass);
 #define SCM_CLASS_MACRO            (&Scm_MacroClass)
 
-SCM_EXTERN ScmObj Scm_MakeMacro(ScmSymbol *name,
-                                ScmTransformerProc transformer,
-                                void *data);
+SCM_EXTERN ScmObj Scm_MakeMacro(ScmSymbol *name, ScmObj transformer);
+SCM_EXTERN ScmObj Scm_MacroTransformer(ScmMacro *mac);
 
-SCM_EXTERN ScmObj Scm_VMMacroExpand(ScmObj expr, ScmObj env, int oncep);
+SCM_EXTERN ScmObj Scm_MakeMacroTransformer(ScmSymbol *name,
+                                           ScmObj proc);
+SCM_EXTERN ScmObj Scm_MakeMacroAutoload(ScmSymbol *name,
+                                        ScmAutoload *al);
+
+SCM_EXTERN ScmObj Scm_UnwrapSyntax(ScmObj form);
 
 /*--------------------------------------------------------
  * PROMISE
@@ -1645,7 +1631,21 @@ SCM_EXTERN void Scm_PortError(ScmPort *port, int reason, const char *msg, ...);
 SCM_EXTERN void Scm_Warn(const char *msg, ...);
 SCM_EXTERN void Scm_FWarn(ScmString *fmt, ScmObj args);
 
+/* TRANSIENT: Scm_Raise2 is to keep ABI compatibility.  Will be gone
+   in 1.0.  */
+#if    GAUCHE_API_0_95
+SCM_EXTERN ScmObj Scm_Raise(ScmObj exception, u_long flags);
+#define Scm_Raise2(e, f)  Scm_Raise(e, f)
+#else  /*!GAUCHE_API_0_95*/
 SCM_EXTERN ScmObj Scm_Raise(ScmObj exception);
+SCM_EXTERN ScmObj Scm_Raise2(ScmObj exception, u_long flags);
+#endif /*!GAUCHE_API_0_95*/
+
+/* flags for Scm_Raise */
+enum {
+    SCM_RAISE_NON_CONTINUABLE = (1L<<0)
+};
+
 SCM_EXTERN ScmObj Scm_RaiseCondition(ScmObj conditionType, ...);
 
 /* A marker to insert between key-value pair and formatting string
@@ -1666,7 +1666,14 @@ SCM_EXTERN void Scm_ShowStackTrace(ScmPort *out, ScmObj stacklite,
                                    int maxdepth, int skip, int offset,
                                    int format);
 
-SCM_EXTERN void Scm_ReportError(ScmObj e);
+/* TRANSIENT: Scm_ReportErrr2 is to keep ABI compatibility.  Will be gone
+   in 1.0.  */
+#if    GAUCHE_API_0_95
+SCM_EXTERN ScmObj Scm_ReportError(ScmObj e, ScmObj out);
+#else  /*!GAUCHE_API_0_95*/
+SCM_EXTERN ScmObj Scm_ReportError(ScmObj e);
+SCM_EXTERN ScmObj Scm_ReportError2(ScmObj e, ScmObj out);
+#endif /*!GAUCHE_API_0_95*/
 
 /*--------------------------------------------------------
  * REGEXP
@@ -1775,10 +1782,11 @@ SCM_EXTERN void   Scm_ProfilerReset(void);
 /* Program start and termination */
 
 SCM_EXTERN void Scm_Init(const char *signature);
+SCM_EXTERN int  Scm_InitializedP(void);
 SCM_EXTERN void Scm_Cleanup(void);
-SCM_EXTERN void Scm_Exit(int code);
-SCM_EXTERN void Scm_Abort(const char *msg);
-SCM_EXTERN void Scm_Panic(const char *msg, ...);
+SCM_EXTERN void Scm_Exit(int code) SCM_NORETURN;
+SCM_EXTERN void Scm_Abort(const char *msg) SCM_NORETURN;
+SCM_EXTERN void Scm_Panic(const char *msg, ...) SCM_NORETURN;
 SCM_EXTERN ScmObj Scm_InitCommandLine(int argc, const char *argv[]);
 
 SCM_EXTERN void Scm_SimpleMain(int argc, const char *argv[],
@@ -1810,10 +1818,8 @@ SCM_EXTERN ScmObj Scm_SiteArchitectureDirectory(void);
 SCM_EXTERN ScmObj Scm__RuntimeDirectory(void); /* private */
 
 /* Compare and Sort */
-SCM_EXTERN int Scm_Compare(ScmObj x, ScmObj y);
-SCM_EXTERN void Scm_SortArray(ScmObj *elts, int nelts, ScmObj cmpfn);
-SCM_EXTERN ScmObj Scm_SortList(ScmObj objs, ScmObj fn);
-SCM_EXTERN ScmObj Scm_SortListX(ScmObj objs, ScmObj fn);
+
+#include <gauche/compare.h>
 
 /* Assertion */
 

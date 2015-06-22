@@ -1,7 +1,7 @@
 /*
  * gauche/port.h - Port API
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -78,7 +78,7 @@ typedef struct ScmPortBufferRec {
     char *current;      /* current buffer position */
     char *end;          /* the end of the current valid data */
     int  size;          /* buffer size */
-    int  mode;          /* buffering mode (ScmPortBufferMode) */
+    int  mode;          /* buffering mode (ScmPortBufferMode) & SIGPIPE flag */
     int  (*filler)(ScmPort *p, int min);
     int  (*flusher)(ScmPort *p, int cnt, int forcep);
     void (*closer)(ScmPort *p);
@@ -147,7 +147,7 @@ struct ScmPortRec {
     ScmVM *lockOwner;           /* for port mutex; owner of the lock */
     int lockCount;              /* for port mutex; # of recursive locks */
 
-    ScmObj data;                /* used internally */
+    ScmObj recursiveContext;    /* used internally */
 
     /* Input counters.  these doesn't take account of ungetting and
        seeking: Ungetting doesn't affect those counters (you can think
@@ -171,6 +171,13 @@ struct ScmPortRec {
         ScmDString ostr;        /* output string port */
         ScmPortVTable vt;       /* virtual port */
     } src;
+
+    /* Port attibutes.
+     * NB: Before we release 0.9.4, we might merge this into port->data and/or
+     * port->name.
+     */
+    ScmObj attrs;               /* port attibutes.  use Scm_PortAttr* API to
+                                   access. */
 };
 
 /* Port direction.  Bidirectional port is not supported yet. */
@@ -181,10 +188,18 @@ enum ScmPortDirection {
 
 /* Port buffering mode */
 enum ScmPortBufferMode {
-    SCM_PORT_BUFFER_FULL,       /* full buffering */
-    SCM_PORT_BUFFER_LINE,       /* flush the buffer for each line */
-    SCM_PORT_BUFFER_NONE        /* flush the buffer for every output */
+    SCM_PORT_BUFFER_FULL = 0,       /* full buffering */
+    SCM_PORT_BUFFER_LINE = 1,       /* flush the buffer for each line */
+    SCM_PORT_BUFFER_NONE = 2,       /* flush the buffer for every output */
+
+    SCM_PORT_BUFFER_MODE_MASK = 0x07 /* for future extension */
 };
+
+/* If this flag is set in `mode' member of ScmPortBuffer, SIGPIPE causes
+   the process to terminate.  By default this flag is off except stdin and
+   stdout ports; it is to emulate default Unix behavior.  On Windows platform
+   this flag is ignored, for we don't have SIGPIPE.  */
+#define SCM_PORT_BUFFER_SIGPIPE_SENSITIVE  (1L<<8)
 
 /* Port types.  The type is also represented by a port's class, but
    C routine can dispatch quicker using these flags.  User code
@@ -204,10 +219,12 @@ enum ScmFdReadyResult {
 };
 
 /* Other flags used internally */
+/* NB: The first two flags only matter when port->recursiveContext is set,
+   and they're transient by nature.  See write.c for the details. */
 enum ScmPortFlags {
-    SCM_PORT_WRITESS = (1L<<0), /* write/ss on by default? */
-    SCM_PORT_WALKING = (1L<<1), /* this port is a special port only used in
-                                   the 'walk' phase of write/ss. */
+    SCM_PORT_WRITESS = (1L<<0), /* we're write/ss mode.  */
+    SCM_PORT_WALKING = (1L<<1), /* indicates we're currently in 'walk' pass
+                                   of two-pass writing. */
     SCM_PORT_PRIVATE = (1L<<2), /* this port is for 'private' use within
                                    a thread, so never need to be locked. */
     SCM_PORT_CASE_FOLD = (1L<<3) /* read from or write to this port should
@@ -241,14 +258,14 @@ enum ScmPortICPolicy {
 #define SCM_PORT_FLAGS(obj)     (SCM_PORT(obj)->flags)
 #define SCM_PORT_ICPOLICY(obj)  (SCM_PORT(obj)->icpolicy)
 
-#define SCM_PORT_CASE_FOLD(obj) (SCM_PORT_FLAGS(obj)&SCM_PORT_CASE_FOLD)
+#define SCM_PORT_CASE_FOLDING(obj) (SCM_PORT_FLAGS(obj)&SCM_PORT_CASE_FOLD)
 
 #define SCM_PORT_CLOSED_P(obj)  (SCM_PORT(obj)->closed)
 #define SCM_PORT_OWNER_P(obj)   (SCM_PORT(obj)->ownerp)
 #define SCM_PORT_ERROR_OCCURRED_P(obj) (SCM_PORT(obj)->error)
 
-#define SCM_PORT_BUFFER_DATA(obj)  (SCM_PORT(obj)->buf.data)
-#define SCM_PORT_VIRTUAL_DATA(obj) (SCM_PORT(obj)->vt.data)
+#define SCM_PORT_BUFFER_DATA(obj)  (SCM_PORT(obj)->src.buf.data)
+#define SCM_PORT_VIRTUAL_DATA(obj) (SCM_PORT(obj)->src.vt.data)
 
 #define SCM_IPORTP(obj)  (SCM_PORTP(obj)&&(SCM_PORT_DIR(obj)&SCM_PORT_INPUT))
 #define SCM_OPORTP(obj)  (SCM_PORTP(obj)&&(SCM_PORT_DIR(obj)&SCM_PORT_OUTPUT))
@@ -265,17 +282,34 @@ enum ScmPortICPolicy {
 #define SCM_GETC(c, p)     (c = Scm_Getc(SCM_PORT(p)))
 
 SCM_CLASS_DECL(Scm_PortClass);
-#define SCM_CLASS_PORT      (&Scm_PortClass)
+#define SCM_CLASS_PORT                (&Scm_PortClass)
 
 SCM_CLASS_DECL(Scm_CodingAwarePortClass);
-#define SCM_CLASS_CODING_AWARE_PORT (&Scm_CodingAwarePortClass)
+#define SCM_CLASS_CODING_AWARE_PORT   (&Scm_CodingAwarePortClass)
 
 SCM_CLASS_DECL(Scm_LimitedLengthPortClass);
 #define SCM_CLASS_LIMITED_LENGTH_PORT (&Scm_LimitedLengthPortClass)
 
+SCM_CLASS_DECL(Scm_WriterPortClass);
+#define SCM_CLASS_WRITER_PORT         (&Scm_WriterPortClass)
 
-SCM_EXTERN ScmObj Scm_GetBufferingMode(ScmPort *port);
-SCM_EXTERN int    Scm_BufferingMode(ScmObj flag, int direction, int fallback);
+
+/* Conversion between Scheme keyword and ScmPortBufferMode enums */
+SCM_EXTERN ScmObj Scm_GetPortBufferingModeAsKeyword(ScmPort *port);
+SCM_EXTERN int    Scm_BufferingModeAsKeyword(ScmObj flag,
+                                             int direction,
+                                             int fallback);
+
+SCM_EXTERN ScmObj Scm_GetBufferingMode(ScmPort *port); /* obsoleted */
+SCM_EXTERN int    Scm_BufferingMode(ScmObj flag,       /* obsoleted */
+                                    int direction,
+                                    int fallback);
+
+SCM_EXTERN int    Scm_GetPortBufferingMode(ScmPort *port);
+SCM_EXTERN void   Scm_SetPortBufferingMode(ScmPort *port, int mode);
+SCM_EXTERN int    Scm_GetPortBufferSigpipeSensitive(ScmPort *port);
+SCM_EXTERN void   Scm_SetPortBufferSigpipeSensitive(ScmPort *port, int sensitive);SCM_EXTERN int    Scm_GetPortCaseFolding(ScmPort *port);
+SCM_EXTERN void   Scm_SetPortCaseFolding(ScmPort *port, int flag);
 
 SCM_EXTERN void   Scm_FlushAllPorts(int exitting);
 
@@ -296,6 +330,19 @@ SCM_EXTERN void   Scm_ClosePort(ScmPort *port);
 SCM_EXTERN ScmObj Scm_VMWithPortLocking(ScmPort *port,
                                         ScmObj closure);
 
+SCM_EXTERN ScmObj Scm_PortAttrGet(ScmPort *port, ScmObj key,
+                                  ScmObj fallback);
+SCM_EXTERN ScmObj Scm_PortAttrGetUnsafe(ScmPort *port, ScmObj key,
+                                        ScmObj fallback);
+SCM_EXTERN ScmObj Scm_PortAttrSet(ScmPort *port, ScmObj key, ScmObj val);
+SCM_EXTERN ScmObj Scm_PortAttrSetUnsafe(ScmPort *port, ScmObj key, ScmObj val);
+SCM_EXTERN ScmObj Scm_PortAttrCreate(ScmPort *port, ScmObj key, ScmObj get, ScmObj set);
+SCM_EXTERN ScmObj Scm_PortAttrCreateUnsafe(ScmPort *port, ScmObj key, ScmObj get, ScmObj set);
+SCM_EXTERN ScmObj Scm_PortAttrDelete(ScmPort *port, ScmObj key);
+SCM_EXTERN ScmObj Scm_PortAttrDeleteUnsafe(ScmPort *port, ScmObj key);
+SCM_EXTERN ScmObj Scm_PortAttrs(ScmPort *port);
+SCM_EXTERN ScmObj Scm_PortAttrsUnsafe(ScmPort *port);
+
 SCM_EXTERN void   Scm_Putb(ScmByte b, ScmPort *port);
 SCM_EXTERN void   Scm_Putc(ScmChar c, ScmPort *port);
 SCM_EXTERN void   Scm_Puts(ScmString *s, ScmPort *port);
@@ -315,6 +362,8 @@ SCM_EXTERN int    Scm_Getc(ScmPort *port);
 SCM_EXTERN int    Scm_Getz(char *buf, int buflen, ScmPort *port);
 SCM_EXTERN ScmChar Scm_Peekc(ScmPort *port);
 SCM_EXTERN int    Scm_Peekb(ScmPort *port);
+SCM_EXTERN ScmObj Scm_UngottenChars(ScmPort *port);
+SCM_EXTERN ScmObj Scm_UngottenBytes(ScmPort *port);
 
 SCM_EXTERN void   Scm_UngetcUnsafe(ScmChar ch, ScmPort *port);
 SCM_EXTERN void   Scm_UngetbUnsafe(int b, ScmPort *port);
@@ -323,6 +372,8 @@ SCM_EXTERN int    Scm_GetcUnsafe(ScmPort *port);
 SCM_EXTERN int    Scm_GetzUnsafe(char *buf, int buflen, ScmPort *port);
 SCM_EXTERN ScmChar Scm_PeekcUnsafe(ScmPort *port);
 SCM_EXTERN int    Scm_PeekbUnsafe(ScmPort *port);
+SCM_EXTERN ScmObj Scm_UngottenCharsUnsafe(ScmPort *port);
+SCM_EXTERN ScmObj Scm_UngottenBytesUnsafe(ScmPort *port);
 
 SCM_EXTERN ScmObj Scm_ReadLine(ScmPort *port);
 SCM_EXTERN ScmObj Scm_ReadLineUnsafe(ScmPort *port);
@@ -333,7 +384,7 @@ SCM_EXTERN ScmObj Scm_ReadLineUnsafe(ScmPort *port);
 #define SCM_PORT_CURERR (1<<2)
 
 SCM_EXTERN ScmObj Scm_WithPort(ScmPort *port[], ScmObj thunk,
-			       int mask, int closep);
+                               int mask, int closep);
 #endif
 
 /*================================================================
@@ -366,21 +417,9 @@ SCM_EXTERN ScmObj Scm_SetCurrentErrorPort(ScmPort *port);
 SCM_EXTERN ScmObj Scm_MakeInputStringPort(ScmString *str, int privatep);
 SCM_EXTERN ScmObj Scm_MakeOutputStringPort(int privatep);
 
-#if !defined(GAUCHE_API_PRE_0_9)
 SCM_EXTERN ScmObj Scm_GetOutputString(ScmPort *port, int flags);
 SCM_EXTERN ScmObj Scm_GetOutputStringUnsafe(ScmPort *port, int flags);
 SCM_EXTERN ScmObj Scm_GetRemainingInputString(ScmPort *port, int flags);
-
-#else  /* GAUCHE_API_PRE_0_9 */
-#define Scm_GetOutputString(p) Scm__GetOutputStringCompat(p)
-#define Scm_GetOutputStringUnsafe(p) Scm__GetOutputStringUnsafeCompat(p)
-#define Scm_GetRemainingInputString(p) Scm__GetRemainingInputStringCompat(p)
-
-/* For backward compatibility */
-SCM_EXTERN ScmObj Scm__GetOutputStringCompat(ScmPort *port);
-SCM_EXTERN ScmObj Scm__GetOutputStringUnsafeCompat(ScmPort *port);
-SCM_EXTERN ScmObj Scm__GetRemainingInputStringCompat(ScmPort *port);
-#endif /* GAUCHE_API_PRE_0_9 */
 
 /*================================================================
  * Other type of ports
@@ -388,117 +427,18 @@ SCM_EXTERN ScmObj Scm__GetRemainingInputStringCompat(ScmPort *port);
 
 SCM_EXTERN ScmObj Scm_MakeVirtualPort(ScmClass *klass,
                                       int direction,
-				      const ScmPortVTable *vtable);
+                                      const ScmPortVTable *vtable);
 SCM_EXTERN ScmObj Scm_MakeBufferedPort(ScmClass *klass,
                                        ScmObj name, int direction,
                                        int ownerp,
                                        ScmPortBuffer *bufrec);
 SCM_EXTERN ScmObj Scm_MakePortWithFd(ScmObj name,
-				     int direction,
-				     int fd,
-				     int bufmode,
-				     int ownerp);
-
+                                     int direction,
+                                     int fd,
+                                     int bufmode,
+                                     int ownerp);
 SCM_EXTERN ScmObj Scm_MakeCodingAwarePort(ScmPort *iport);
-
-SCM_EXTERN void Scm__InstallCodingAwarePortHook(ScmPort *(*)(ScmPort*, const char*));
-
-/* Windows-specific initialization */
-#if defined(GAUCHE_WINDOWS)
-void Scm__SetupPortsForWindows(int has_console);
-#endif /*defined(GAUCHE_WINDOWS)*/
-
-/*================================================================
- * Locking the ports
- *
- *  Since most of the public APIs locks the ports, you don't usually
- *  need to lock the ports by yourself.   The following macros
- *  shouldn't be used casually.
- *
- *  Port locking overhead is critical to the I/O performance.
- *  The following macros are designed carefully so that it minimizes
- *  the call to the system-level lock primitives, under the assumption
- *  that port access never conflicts in the performance critical code.
- *  (It doesn't make much sense for multiple threads to write to the
- *  same port, since the outputs are mixed in unpredictable way---except
- *  a casual debug print to stderr, but I don't believe performance
- *  critical part does that.)
- *
- *  The port's lock state is kept in a single pointer, port->lockOwner.
- *  It points to the owner of the port, or NULL if the port is unlocked.
- *  Unlocking the port is a single atomic opertaion, port->lockOwner = NULL,
- *  hence PORT_UNLOCK doesn't need mutex to do that.
- *
- *  To lock the port, the thread needs to grab a system-level lock
- *  (spinlock if available, mutex otherwise) to check the lockOwner
- *  pointer.  If the port is locked, the thread yields CPU and
- *  try again later.
- *
- *  It is possible that lockOwner slot changes its value to NULL during
- *  a thread is trying to lock the port, since PORT_UNLOCK doesn't obtain
- *  the system-level lock.  If it happens, the thread trying to lock
- *  the port would wait extra timeslice.  Not a big deal.
- *
- *  Note that we cannot use a condition variable to let the locking thread
- *  wait on it.  If we use CV, unlocking becomes two-step opertaion
- *  (set lockOwner to NULL, and call cond_signal), so it is no longer
- *  atomic.  We would need to get system-level lock in PORT_UNLOCK as well.
- */
-
-/* Lock a port P.  Can perform recursive lock. */
-#define PORT_LOCK(p, vm)                                        \
-    do {                                                        \
-      if (p->lockOwner != vm) {                                 \
-          for (;;) {                                            \
-              ScmVM* owner__;                                   \
-              (void)SCM_INTERNAL_FASTLOCK_LOCK(p->lock);        \
-              owner__ = p->lockOwner;                           \
-              if (owner__ == NULL                               \
-                  || (owner__->state == SCM_VM_TERMINATED)) {   \
-                  p->lockOwner = vm;                            \
-                  p->lockCount = 1;                             \
-              }                                                 \
-              (void)SCM_INTERNAL_FASTLOCK_UNLOCK(p->lock);      \
-              if (p->lockOwner == vm) break;                    \
-              Scm_YieldCPU();                                   \
-          }                                                     \
-      } else {                                                  \
-          p->lockCount++;                                       \
-      }                                                         \
-    } while (0)
-
-/* Unlock a port P.  Assumes the calling thread has the lock */
-#define PORT_UNLOCK(p)                                  \
-    do {                                                \
-        if (--p->lockCount <= 0) p->lockOwner = NULL;   \
-    } while (0)
-
-/* Should be used while P is locked by calling thread.
-   Evaluate C statement CALL, making sure the port is unlocked in case
-   CALL raises an error.
-   TODO: we may be able to utilize SCM_PORT_PRIVATE flag to avoid
-   SCM_UNWIND_PROTECT overhead. */
-#define PORT_SAFE_CALL(p, call)                 \
-    do {                                        \
-       SCM_UNWIND_PROTECT {                     \
-           call;                                \
-       } SCM_WHEN_ERROR {                       \
-           PORT_UNLOCK(p);                      \
-           SCM_NEXT_HANDLER;                    \
-       } SCM_END_PROTECT;                       \
-    } while (0)
-
-#define PORT_LOCKED(p, vm) (((p)->lockOwner == (vm)))
-
-/* Should be used in the constructor of private ports.
-   Mark the port locked by vm, so that it can be used exclusively by
-   the vm. */
-
-#define PORT_PRELOCK(p, vm)                     \
-   do {                                         \
-     p->lockOwner = vm;                         \
-     p->lockCount = 1;                          \
-   } while (0)
+SCM_EXTERN ScmObj Scm_MakeWriterPort(ScmPort *port, ScmObj context);
 
 #endif /*GAUCHE_PORT_H*/
 

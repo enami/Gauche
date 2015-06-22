@@ -12,7 +12,7 @@ Gaucheの動作を正確に理解する助けになると思います。
 
 @menu
 * Standard conformance::
-* Multibyte Strings::
+* Multibyte strings::
 * Multibyte scripts::
 * Case-sensitivity::
 * Integrated Object System::
@@ -20,30 +20,58 @@ Gaucheの動作を正確に理解する助けになると思います。
 * Compilation::
 @end menu
 
-@node Standard conformance, Multibyte Strings, Concepts, Concepts
+@node Standard conformance, Multibyte strings, Concepts, Concepts
 @section Standard conformance
 @c NODE 標準への準拠
 
 @c EN
-Gauche conforms "Revised^5 Report of Algorithmic Language Scheme,"
-including optional syntax and procedures, except the following features.
+Gauche conforms "Revised^7 Report of Algorithmic Language Scheme,"
+(R7RS)
+including optional syntax and procedures, with a few exceptions
+explained below.
 @c JP
-Gaucheは、以下に挙げる点を除き、オプショナルな構文や手続きも含め
-"Revised^5 Report of Algorithmic Language Scheme" に準拠しています。
+Gaucheは、次に説明する少しの例外を除き、オプショナルな構文や手続きも含め
+"Revised^7 Report of Algorithmic Language Scheme" (R7RS) に準拠しています。
 @c COMMON
 
 @itemize @bullet
 @item
 @c EN
-By default, Gauche reads symbols in case-sensitive way.
-You can switch the reader's case sensitivity by a command-line
-option or special reader directive
-(@xref{Case-sensitivity}, for details).
+Gauche has a keyword object, expressed as a name prefixed by a colon
+(e.g. @code{:key}).  It evaluates to itself, and used extensively when
+passing so-called keyword arguments (@xref{Making Procedures}).
+
+R7RS requires names starting with colon to be read as a symbol.
+In the current version of Gauche, keywords aren't symbols; they are
+of disjoint types.  R7RS code that's using symbols starting with colon
+needs to be adjusted.  (Most conveniently, using vertical-bar would make
+the code both work in R7RS and Gauche, e.g. @code{|:foo|}.  The reader
+directive @code{#!r7rs} also makes @code{:foo} to be read as a symbol,
+instead of a keyword.)
+
+We'll make keywords subtype of symbols in near future,
+to fully conform R7RS while maintaining the backward compatibility
+as much as possible.  @xref{Keywords}, for what you need to know
+about writing portable code using keywords.
 @c JP
-デフォルトで、Gaucheはシンボルの名前の大文字小文字を区別します。
-コマンドラインオプションや特別なリーダ指示子によって、
-大文字小文字を区別するかどうかを切替えることができます(@ref{Case-sensitivity}参照)。
+Gaucheには、コロンで始まる名前(例:@code{:key})を持つ、キーワードオブジェクトがあります。
+キーワードはそれ自身に評価され、キーワード引数を渡すときにいつも使われます
+(@ref{Making Procedures}参照)。
+
+R7RSではコロンで始まる名前はシンボルとして読まれることになっています。
+現在のGaucheでは、キーワードはシンボルではなく、それぞれ独立した型に属します。
+コロンで始まるシンボルを使っているR7RSコードは修正が必要になるかもしれません
+(一番簡単な方法は、コロンで始まるシンボルを@code{|:foo|}のように縦棒でエスケープすること
+です。これはR7RSでもGaucheでもシンボルとして読まれます。
+また、リーダーディレクティブ@code{#!r7rs}によっても、@code{:foo}をキーワードでなく
+シンボルとして読ませることができます。)
+
+近いうちに、キーワードをシンボルのサブタイプとすることで、
+できるだけ後方互換性を保ちながらR7RSに準拠したふるまいにする予定です。
+キーワードを使ってポータブルなコードを書くために知っておくべきことについては、
+@ref{Keywords}を参照してください。
 @c COMMON
+
 @item
 @c EN
 Continuations created in a certain situation
@@ -58,31 +86,28 @@ C routine) have limited extent (@xref{Continuations}, for details).
 @c EN
 Full numeric tower (integer, rational, real and complex numbers) are supported,
 but rationals are only exact, and complex numbers are always inexact.
-The reader can recognize '@code{#}' as insignificant digits.
 @c JP
 完全なNumeric tower(整数、有理数、実数、複素数)がサポートされますが、
 有理数は正確な表現のみで、また複素数は不正確な表現のみを持ちます。
-リーダは、精度に影響を与えない桁を'@code{#}'で表す数字表記を認識します。
-@c COMMON
-@item
-@c EN
-Procedures @code{transcript-on} and @code{transcript-off}
-are not supported.
-@c JP
-手続き@code{transcript-on}、@code{transcript-off}
-はサポートされていません。
 @c COMMON
 @end itemize
 
 @c EN
-(Note: A new Scheme standard R6RS has been ratified on September 2007.
-Although we don't have a plan to change Gauche to conform R6RS in near future,
-we'll gradually add modules that are compatible to R6RS).
+Note that, since Gauche predates R7RS, most existing Gauche source
+code doesn't follow the R7RS program/library structure.  Gauche can
+read both traditional Gauche modules/scripts and R7RS programs/libraries
+seamlessly.
+@xref{Library modules - R7RS integration}, for the details of how R7RS
+is integrated into Gauche.
 @c JP
-(註：2007年9月に、新たなSchemeの標準であるR6RSが制定されました。
-GaucheをR6RS準拠にする予定は近い将来にはありませんが、
-R6RSと互換なモジュールを徐々に追加してゆく予定です。)
+GaucheはR7RS以前から開発されているため、既存のGaucheソースコードの多くはR7RSの
+プログラムやライブラリの構造に従っていないことに注意してください。
+Gaucheは、伝統的なGaucheのモジュール形式やスクリプトも、R7RS形式のプログラムや
+ライブラリも、両方解釈することができます。
+R7RSがどのようにGaucheに統合されているかについては、
+@ref{Library modules - R7RS integration}を参照してください。
 @c COMMON
+
 
 @c EN
 Gauche also supports the following SRFIs (Scheme Request for Implementation).
@@ -91,405 +116,11 @@ Gaucheはまた、以下のSRFIをサポートしています。
 @c COMMON
 
 @table @asis
-@c EN
-@item SRFI-0, Feature-based conditional expansion construct.
-As an autoloaded macro.   @xref{Feature conditional}.
-@c JP
-@item SRFI-0, 機能ベースの条件展開
-オートロードされるマクロとしてサポートされます。@ref{Feature conditional}参照。
-@c COMMON
-
-@c EN
-@item SRFI-1, List library.
-Supported by the module @code{srfi-1}.  @xref{List library}.
-(Some of SRFI-1 procedures are built-in).
-@c JP
-@item SRFI-1, リストライブラリ
-モジュール@code{srfi-1}でサポートされます。@ref{List library}参照。
-SRFI-1の手続きのうちいくつかは組み込みになっています。
-@c COMMON
-
-@c EN
-@item SRFI-2, AND-LET*: an AND with local bindings, a guarded LET* special form.
-Supported natively.  @xref{Binding constructs}.
-@c JP
-@item SRFI-2, AND-LET*: 局所束縛をともなう AND、ガード付 LET* 特殊フォーム
-組み込みです。@ref{Binding constructs}参照。
-@c COMMON
-
-@c EN
-@item SRFI-4, Homogeneous numeric vector datatypes.
-The module @code{gauche.uvector} provides a superset of
-@code{srfi-4} procedures, including arithmetic operations and
-generic interface on the SRFI-4 vectors.  @xref{Uniform vectors}.
-@c JP
-@item SRFI-4, 一様な数値ベクタ型
-モジュール@code{gauche.uvector}が
-@code{srfi-4}の上位互換手続きを提供します。
-同モジュールにはSRFI-4の手続きに加え、
-算術演算やジェネリックなインタフェースが定義されています。@ref{Uniform vectors}参照。
-@c COMMON
-
-@c EN
-@item SRFI-5, A compatible let form with signatures and rest arguments
-Supported by the module @code{srfi-5}.
-@xref{A compatible let form with signatures and rest arguments}.
-@c JP
-@item SRFI-5, シグネチャとrest引数に互換性のあるlet形式
-モジュール@code{srfi-5}でサポートされます。
-@ref{A compatible let form with signatures and rest arguments}参照。
-@c COMMON
-
-@c EN
-@item SRFI-6, Basic String Ports.
-SRFI-6 procedures are built-in.  @xref{String ports}.
-@c JP
-@item SRFI-6, 基本文字列ポート
-SRFI-6の手続きは組み込みになっています。@ref{String ports}参照。
-@c COMMON
-
-@c EN
-@item SRFI-7, Feature-based program configuration language
-Supported as an autoloaded macro.
-@xref{Feature-based program configuration language}.
-@c JP
-@item SRFI-7, 機能ベースプログラム設定言語
-オートロードされるマクロとしてサポートされています。
-@ref{Feature-based program configuration language}参照。
-@c COMMON
-
-@c EN
-@item SRFI-8, receive: Binding to multiple values.
-Syntax @code{receive} is built-in.  @xref{Binding constructs}.
-@c JP
-@item SRFI-8, receive: 多値束縛
-構文@code{receive}は組み込みになっています。@ref{Binding constructs}参照。
-@c COMMON
-
-@c EN
-@item SRFI-9, Defining record types.
-Supported by the module @code{gauche.record}.  @xref{Record types}.
-@c JP
-@item SRFI-9, レコード型の定義
-モジュール@code{gauche.record}でサポートされます。@ref{Record types}参照。
-@c COMMON
-
-@c EN
-@item SRFI-10, Sharp-comma external form.
-Built-in.  @xref{Read-time constructor}.
-@c JP
-@item SRFI-10, Sharp-comma外部フォーム
-組み込みです。@ref{Read-time constructor}参照。
-@c COMMON
-
-@c EN
-@item SRFI-11, Syntax for receiving multiple values.
-Supported by the module @code{srfi-11}.  @xref{Let-values}.
-@c JP
-@item SRFI-11, 多値を受け取るための構文
-モジュール@code{srfi-11}でサポートされます。@ref{Let-values}参照。
-@c COMMON
-
-@c EN
-@item SRFI-13, String library
-Supported by the module @code{srfi-13}.  @xref{String library}.
-(Some of SRFI-13 procedures are built-in).
-@c JP
-@item SRFI-13, 文字列ライブラリ
-モジュール@code{srfi-13}でサポートされます。@ref{String library}参照。
-(SRFI-13の手続きのいくつかは組み込みになっています。)
-@c COMMON
-
-@c EN
-@item SRFI-14, Character-set library
-Character-set object and a few SRFI-14 procedures are built-in.
-@xref{Character set}.
-Complete set of SRFI-14 is supported by the module @code{srfi-14}.
-@xref{Character-set library}.
-@c JP
-@item SRFI-14, 文字集合のライブラリ
-文字集合と基本的なSRFI-14手続きは組み込みになっています。
-@ref{Character set}参照。SRFI-14の完全なサポートはモジュール@code{srfi-14}
-で提供されています。@ref{Character-set library}参照。
-@c COMMON
-
-@c EN
-@item SRFI-16, Syntax for procedures of variable arity (case-lambda)
-Built-in.  @xref{Making Procedures}.
-@c JP
-@item SRFI-16, 可変長引数手続き構文 (case-lambda)
-組み込みです。@ref{Making Procedures}参照。
-@c COMMON
-
-@c EN
-@item SRFI-17, Generalized set!
-Built-in.  @xref{Assignments}.
-@c JP
-@item SRFI-17, 一般化された set!
-組み込みです。@ref{Assignments}参照。
-@c COMMON
-
-@c EN
-@item SRFI-18, Multithreading support
-Some SRFI-18 features are built-in, and the rest is in @code{gauche.threads}
-module.  @xref{Threads}.
-@c JP
-@item SRFI-18, マルチスレッドのサポート
-いくつかのSRFI-18の機能は組み込みであり、、残りのAPIは
-@code{gauche.threads}モジュールで提供されます。@ref{Threads}参照。
-@c COMMON
-
-@c EN
-@item SRFI-19, Time Data Types and Procedures.
-Time data type is Gauche built-in (@xref{Time}).
-Complete set of SRFI-19 is supported by the module @code{srfi-19}.
-@xref{Time data types and procedures}.
-@c JP
-@item SRFI-19, 時間データの型と手続き
-時間のデータ型はGauche組み込みです(@ref{Time}参照)。
-SRFI-19の完全なサポートはモジュール@code{srfi-19}で提供されています。
-@ref{Time data types and procedures}参照。
-@c COMMON
-
-@c EN
-@item SRFI-22, Running Scheme scripts on Unix
-Supported.  @xref{Writing Scheme scripts}.
-@c JP
-@item SRFI-22, UNIX 上の Scheme スクリプトの実行
-サポートされています。@ref{Writing Scheme scripts}参照。
-@c COMMON
-
-@c EN
-@item SRFI-23, Error reporting mechanism.
-Built-in.   @xref{Signaling exceptions}.
-@c JP
-@item SRFI-23, エラー報告機構
-組み込みです。@ref{Signaling exceptions}参照。
-@c COMMON
-
-@c EN
-@item SRFI-25, Multi-dimensional array primitives.
-Supported by the module @code{gauche.array}, which defines
-superset of SRFI-25.  @xref{Arrays}.
-@c JP
-@item SRFI-25, 多次元配列のプリミティブ
-モジュール@code{gauche.array}が、SRFI-25の上位互換と
-なっています。@ref{Arrays}参照。
-@c COMMON
-
-@c EN
-@item SRFI-26, Notation for specializing parameters without currying.
-As an autoloaded macro.  @xref{Making Procedures}.
-@c JP
-@item SRFI-26, カリー化をともなわないパラメータの特殊化記法
-オートロードされるマクロとして定義されています。@ref{Making Procedures}参照。
-@c COMMON
-
-@c EN
-@item SRFI-27, Sources of Random Bits.
-Supported by the module @code{srfi-27}.  @xref{Sources of random bits}.
-@c JP
-@item SRFI-27, ランダムビットのソース
-モジュール@code{srfi-27}でサポートされます。@ref{Sources of random bits}参照。
-@c COMMON
-
-@c EN
-@item SRFI-28, Basic format strings.
-Gauche's built-in @code{format} procedure is a superset of
-SRFI-28 @code{format}.  @xref{Output}.
-@c JP
-@item SRFI-28, 基本フォーマット文字列
-Gauche組み込みの@code{format}がSRFI-28のものの上位互換に
-なっています。@ref{Output}参照。
-@c COMMON
-
-@c EN
-@item SRFI-29, Localization
-Supported by the module @code{srfi-29}.
-@xref{Localization}.
-@c JP
-@item SRFI-29, 地域化
-モジュール@code{srfi-29}でサポートされます。
-@ref{Localization}参照。
-@c COMMON
-
-@c EN
-@item SRFI-30, Nested multi-line comments.
-Supported by the native reader.  @xref{Lexical structure}.
-@c JP
-@item SRFI-30, ネストした複数行コメント
-ネイティブのリーダでサポートされています。@ref{Lexical structure}参照。
-@c COMMON
-
-@c EN
-@item SRFI-31, A special form rec for recursive evaluation
-Defined as an autoloaded macro.  @xref{Binding constructs}.
-@c JP
-@item SRFI-31, 再帰評価用の特殊フォーム rec
-オートロードされるマクロとして定義されています。@ref{Binding constructs}参照。
-@c COMMON
-
-@c EN
-@item SRFI-34, Exception Handling for Programs
-Built-in.  @xref{Exceptions}.
-(However, Gauche implements srfi-18's semantics of @code{raise} literally,
-which differs slightly from srfi-34's.  This may be changed in future.)
-@c JP
-@item SRFI-34, プログラムの例外処理
-組み込みです。@ref{Exceptions}参照。
-(但し、Gaucheは@code{raise}に関してはsrfi-18のセマンティクスを文字通り
-実装していて、それはsrfi-34と若干異なります。将来はsrfi-34に合わせるかもしれません。)
-@c COMMON
-
-@c EN
-@item SRFI-35, Conditions
-Built-in.  @xref{Conditions}.
-@c JP
-@item SRFI-35, コンディション
-組み込みです。@ref{Conditions}参照。
-@c COMMON
-
-@c EN
-@item SRFI-36, I/O Conditions
-Partly supported.  @xref{Conditions}.
-@c JP
-@item SRFI-36, I/O コンディション
-部分的にサポートされています.  @ref{Conditions}参照。
-@c COMMON
-
-@c EN
-@item SRFI-37, args-fold: a program argument processor
-Supported by the module @code{srfi-37}.
-@xref{A program argument processor}.
-@c JP
-@item SRFI-37, args-fold: プログラム引数処理
-モジュール@code{srfi-37}でサポートされます。
-@ref{A program argument processor}参照。
-@c COMMON
-
-@c EN
-@item SRFI-38, External Representation for Data With Shared Structure
-Built-in.  See @ref{Reading data} and @ref{Output}.
-@c JP
-@item SRFI-38, 共有されるデータの外部表現
-組み込みです。@ref{Reading data}と@ref{Output}参照。
-@c COMMON
-
-@c EN
-@item SRFI-39, Parameter objects
-Supported by the module @code{gauche.parameter}.
-@xref{Parameters}.
-@c JP
-@item SRFI-39, パラメータオブジェクト
-モジュール@code{gauche.parameter}でサポートされます。
-@ref{Parameters}参照。
-@c COMMON
-
-@c EN
-@item SRFI-40, A Library of Streams
-Supported by the module @code{util.stream}.
-@xref{Stream library}.
-@c JP
-@item SRFI-40, ストリームライブラリ
-モジュール@code{util.stream}でサポートされています。
-@xref{Stream library}.
-@c COMMON
-
-@c EN
-@item SRFI-42, Eager comprehensions
-Supported by the module @code{srfi-42}.
-@xref{Eager comprehensions}.
-@c JP
-@item SRFI-42, 先行評価的内包表記
-モジュール@code{srfi-42}でサポートされます。
-@ref{Eager comprehensions}参照。
-@c COMMON
-
-@c EN
-@item SRFI-43, Vector library
-Supported by the module @code{srfi-43}.
-@xref{Vector library}.
-@c JP
-@item SRFI-43, ベクタライブラリ
-モジュール@code{srfi-43}でサポートされます。
-@ref{Vector library}参照。
-@c COMMON
-
-@c EN
-@item SRFI-45, Primitives for Expressing Iterative Lazy Algorithms
-Built-in.
-@xref{Lazy evaluation}.
-@c JP
-@item SRFI-45, 反復的 Lazy アルゴリズムのための基本関数
-組み込みです。
-@xref{Lazy evaluation}.
-@c COMMON
-
-@c EN
-@item SRFI-55, require-extension
-Supported as an autoloaded macro.
-@xref{Requiring extensions}.
-@c JP
-@item SRFI-55, requireの拡張
-オートロードマクロとしてサポートされます。
-@ref{Requiring extensions}参照。
-@c COMMON
-
-@c EN
-@item SRFI-60, Integers as bits
-Most procedures are built-in: @xref{Bitwise operations}.
-The complete support is in @code{srfi-60} module: @xref{Integers as bits}.
-@c JP
-@item SRFI-60, 整数に対するビット操作
-ほとんどの手続きは組み込みになっています。@ref{Bitwise operations}参照。
-完全なサポートは@code{srfi-60}モジュールで提供されます。
-@ref{Integers as bits}参照。
-@c COMMON
-
-@c EN
-@item SRFI-61, A more general @code{cond} clause
-Supported natively.  @xref{Conditionals}.
-@c JP
-@item SRFI-61, より汎用的な@code{cond}節
-組み込みです。@ref{Conditionals}参照。
-@c COMMON
-
-@c EN
-@item SRFI-62, S-expression comments
-Supported by the native reader.  @xref{Lexical structure}.
-@c JP
-@item SRFI-62, S式コメント
-ネイティブのリーダでサポートされています。@ref{Lexical structure}参照。
-@c COMMON
-
-@c EN
-@item SRFI-87, @code{=>} in case clauses
-Supported natively.  @xref{Conditionals}.
-@c JP
-@item SRFI-87, case節での@code{=>}
-組込みです。@ref{Conditionals}参照。
-@c COMMON
-
-@c EN
-@item SRFI-98, An interface to access environment variables
-Supported by the module @code{srfi-98}.  @xref{Accessing environment variables}.
-@c JP
-@item SRFI-98, 環境変数にアクセスするためのインタフェース
-モジュール@code{srfi-98}でサポートされます。@ref{Accessing environment variables}参照。
-@c COMMON
-
-@c EN
-@item SRFI-99, ERR5RS Records
-Supported by the module @code{gauche.record}.  @xref{Record types}.
-@c JP
-@item SRFI-99, ERR5RS レコード
-モジュール@code{gauche.record}でサポートされます。@ref{Record types}参照。
-@c COMMON
-
+@c xinclude srfis.texi
 @end table
 
-@node Multibyte Strings, Multibyte scripts, Standard conformance, Concepts
-@section Multibyte Strings
+@node Multibyte strings, Multibyte scripts, Standard conformance, Concepts
+@section Multibyte strings
 @c NODE マルチバイト文字列
 
 @c EN
@@ -565,7 +196,8 @@ using index access at all.
 
 @c EN
 You can choose @emph{internal} encoding scheme at the time of compiling
-Gauche.   At runtime, a procedure @code{gauche-character-encoding}
+Gauche.
+At runtime, a procedure @code{gauche-character-encoding}
 can be used to query the internal encoding.  At compile time,
 you can use a feature identifier to check the internal encoding.
 (@xref{Platform-dependent features}.)
@@ -647,7 +279,7 @@ explained in the next section.
 次の章で説明します。
 @c COMMON
 
-@node Multibyte scripts, Case-sensitivity, Multibyte Strings, Concepts
+@node Multibyte scripts, Case-sensitivity, Multibyte strings, Concepts
 @section Multibyte scripts
 @c NODE マルチバイトスクリプト
 
@@ -659,20 +291,6 @@ literal regular expressions, and so on.
 リテラル文字列や文字以外にも、コメント、シンボル名、
 リテラル正規表現など様々な箇所で、@code{us-ascii}以外の文字を
 使うことができます。
-@c COMMON
-
-@c EN
-So far, Gauche treats any characters other than @code{us-ascii}
-as symbol constituent characters.  Unicode defines more than dozen
-"space" characters, though, and they will be treated as whitespace
-characters in future.  So it's better to avoid those characters
-(except in the strings, regexps and characters) for the time being.
-@c JP
-いまのところ、Gaucheは@code{us-ascii}以外の文字を全て、シンボルを
-構成する文字として扱います。但し、Unicodeは十数個の「空白」文字を定義
-しており、将来はそれらの文字がプログラム上も空白として扱われるように
-なるでしょう。従って現在のところはそれらの文字の使用は
-(文字列、正規表現、文字以外の箇所では)避けておくのが良いでしょう。
 @c COMMON
 
 @c EN
@@ -755,86 +373,67 @@ this feature.
 
 @c EN
 Historically, most Lisp-family languages are case-insensitive
-for symbols.  Scheme is no exception and R5RS defines symbols are
-read in case-insensitive way.  (Note that symbols are case-sensitive
-internally even in R5RS Scheme; case-insensitivity is about readers.)
+for symbols.  Scheme departed from this tradition since R6RS, and
+the symbols are read in case-sensitive way.
+(Note that symbols have been case-sensitive internally even in R5RS Scheme;
+case-insensitivity is about readers.)
 @c JP
-Lisp系の言語は歴史的にシンボルの大文字小文字を区別していませんでした。
-Schemeもその流れを汲んでおり、R5RSでもシンボルは読み込まれる時に大文字小文字の
-区別をしないと定義されています。(但し、R5RSの範囲内でも処理系内部では
+Lisp系の言語は歴史的にシンボルの大文字小文字を区別していません。
+しかしSchemeはR6RSからその伝統より離脱し、シンボルを読む際に大文字小文字を区別
+するようになりました。(但し、R5RSの範囲内でも処理系内部では
 大文字小文字を区別することになってます。
 ここで問題としているのは読み込み時の動作です。)
 @c COMMON
 
 @c EN
-However, nowadays programming is hardly completed in one language.
-When you have to interact with other languages that distinguish uppercase
-and lowercase characters, it is desirable that Scheme distinguishes them
-as well.
+Gauche reads and writes symbols in case-sensitive manner by default, too.
+However, to support legacy code, you can set the reader to case-insensitive
+mode, in the following ways:
 @c JP
-しかし現在では、プログラミングが一つの言語で完結することは滅多にありません。
-他の言語とインタフェースを取る場合、Scheme側でも大文字小文字を区別するように
-しておいた方が便利です。
+Gaucheの入出力ルーチンも、デフォルトではシンボルの大文字小文字を区別します。
+ただし、古いコードとの互換性のために、リーダを大文字小文字を区別しないモードにすることが
+できます。
 @c COMMON
 
+@table @asis
 @c EN
-So Gauche has two modes in reading and writing symbols.
-@emph{By default, Gauche reads and writes symbols in case-sensitive manner}.
-This behavior doesn't conform R5RS.
-@c JP
-そこでGaucheでは、シンボルの読み込みと書き出しに2つのモードを用意しました。
-@emph{デフォルトのモードでは、Gaucheのリーダとライタはシンボルの大文字小文字を区別します}。
-このふるまいは厳密にはR5RSに準拠しません。
-@c COMMON
-
-@example
-; @r{In case-sensitive mode (default)}
-(eq? 'a 'A) @result{} #f  ; #t @r{in R5RS}
-(symbol->string 'ABC) @result{} "ABC"
-(symbol->string 'abc) @result{} "abc"
-(display (string->symbol "ABC")) @result{} @r{writes} ABC
-(display (string->symbol "abc")) @result{} @r{writes} abc
-@end example
-
-@c EN
-You can make Gauche case-insensitive by giving @code{-fcase-fold}
-command-line option to the @code{gosh} interpreter (@xref{Invoking Gosh}).
-In this mode, the reader folds uppercase characters in symbols to lowercase
-ones.  If a symbol name contains uppercase characters, it is written
-out using |-escape (@xref{Symbols}).
-@c JP
-@code{gosh}インタプリタの起動時に@code{-fcase-fold}コマンドライン引数を
-与えると、Gaucheは大文字小文字を区別しないモードで動作します (@ref{Invoking Gosh}参照)。
-このモードでは、リーダはシンボルの読み込みの際に大文字を小文字に変換します。
-大文字を含んでいるシンボルに関しては、`|' 文字でエスケープされて書き出されます
-(@ref{Symbols}参照)。
-@c COMMON
-
-@example
-; @r{In case-insensitive mode (with -fcase-fold option)}
-(eq? 'a 'A) @result{} #t
-(symbol->string 'ABC) @result{} "abc"
-(symbol->string 'abc) @result{} "abc"
-(display (string->symbol "ABC")) @result{} @r{writes} |ABC|
-(display (string->symbol "abc")) @result{} @r{writes} abc
-@end example
-
-@c EN
-Alternatively, if the reader sees a token @code{#!fold-case},
+@item Use @code{#!fold-case} reader directive
+When Gauche sees a token @code{#!fold-case} during reading a program,
 the reader switches to case-insensitive mode.  A token
 @code{#!no-fold-case} has an opposite effect---to make the
 reader case-sensitive.  These tokens affect the port
 from which they are read, and are in effect until EOF
 or another instance of these tokens are read.
 See @ref{Lexical structure} for more details on @code{#!} syntax.
+This is the way defined in R6RS and R7RS.
 @c JP
-また、リーダはトークン@code{#!fold-case}を読むと大文字小文字を
+@item @code{#!fold-case}リーダディレクティブを使う
+Gaucheはプログラムを読み込む時に、トークン@code{#!fold-case}を見ると大文字小文字を
 区別しないモードに切り替わります。トークン@code{#!no-fold-case}は
 その逆の効果、すなわち大文字小文字を区別するモードへと切り替えます。
 これらのトークンは、それが読まれたポートからの以降の読み込みに影響を
 与えます。切り替えるトークンが再び読まれるか、EOFに出会うまで影響は継続します。
 @code{#!}構文についてより詳しくは@ref{Lexical structure}を参照してください。
+この動作はR6RS及びR7RSで規定されています。
 @c COMMON
+
+@c EN
+@item Use @code{-fcase-fold} command-line argument
+Alternatively, you can give a command-line argument @code{-fcase-fold}
+to the @code{gosh} command (@xref{Invoking Gosh}).
+In this mode, the reader folds uppercase characters in symbols to lowercase
+ones.  If a symbol name contains uppercase characters, it is written
+out using |-escape (@xref{Symbols}).
+@c JP
+@item @code{-fcase-fold}コマンドライン引数を使う
+また、@code{gosh}インタプリタの起動時に@code{-fcase-fold}コマンドライン引数を
+与えると、Gaucheは大文字小文字を区別しないモードで動作します (@ref{Invoking Gosh}参照)。
+このモードでは、リーダはシンボルの読み込みの際に大文字を小文字に変換します。
+大文字を含んでいるシンボルに関しては、`|' 文字でエスケープされて書き出されます
+(@ref{Symbols}参照)。
+@c COMMON
+@end table
+
 
 @node Integrated Object System, Module system, Case-sensitivity, Concepts
 @section Integrated Object System
@@ -849,6 +448,7 @@ GaucheはCLOSに類似した、STklosスタイルのオブジェクトシステ�
 あなたが何らかのオブジェクト指向(OO)言語を使ったことがあれば、
 基本的な使い方は簡単にわかるでしょう。
 @c COMMON
+
 @example
 @c EN
 ;; @r{Defines a class point, that has x and y coordinate}
@@ -1217,7 +817,7 @@ On the other hand, since @code{require} and @code{use} is recognized
 by the compiler, the specified file is loaded even if the form
 is in the conditional expression.   If you really need to load
 a file on certain condition, use @code{load} or do dispatch in macro
-(i.e. at compile time).
+(e.g. @code{cond-expand} form (@xref{Feature conditional}).)
 @c JP
 @item require はコンパイル時に評価される
 上記の裏返しですが、@code{require}と@code{use}はコンパイル時に
@@ -1225,6 +825,7 @@ a file on certain condition, use @code{load} or do dispatch in macro
 置いておいても、指定されたファイルは条件にかかわらず読み込まれてしまいます。
 どうしてももし条件によって読み込むかどうかを変えたい場合は、@code{load}を使うか、
 条件判断自体をマクロで行うようにしてください。
+(例えば、@code{cond-expand}フォーム等を使って。(@ref{Feature conditional}参照))
 @c COMMON
 @end table
 

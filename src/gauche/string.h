@@ -1,7 +1,7 @@
 /*
  * string.h - Public API for Scheme strings
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -62,12 +62,13 @@
  * ScmString is alive, even if its content is mutated and the initial
  * content isn't used.   Another reason to avoid string mutations.
  */
-/* NB: For the backward compatibility, the string size is 'int' - we can
-   have up to 2G long string.  Theoretically we can make it bigger; but
-   having such large string in flat array is a bad idea.  For the long term,
-   we should have a simple string that has the flat multibyte characters,
-   and a compound ones that has cord-like structure.  We'll defer having
-   >2G strings by then.
+/* NB: For the backward compatibility, the string size is 'int'.  We limit
+   the length of strings up to min(INT_MAX, SCM_SMALL_INT_MAX).
+   Theoretically we can make it bigger; but having such large string in
+   flat array is a bad idea.  For the long term, we should have a simple
+   string that has the flat multibyte characters,
+   and a compound ones that has cord-like structure.
+   We'll defer having >2G strings by then.
 */
 typedef struct ScmStringBodyRec {
     unsigned int flags;
@@ -76,8 +77,13 @@ typedef struct ScmStringBodyRec {
     const char *start;
 } ScmStringBody;
 
+#if SIZEOF_LONG == 4
+#define SCM_STRING_MAX_SIZE    SCM_SMALL_INT_MAX
+#define SCM_STRING_MAX_LENGTH  SCM_SMALL_INT_MAX
+#else /*SIZEOF_LONG > 4*/
 #define SCM_STRING_MAX_SIZE    INT_MAX
 #define SCM_STRING_MAX_LENGTH  INT_MAX
+#endif
 
 struct ScmStringRec {
     SCM_HEADER;
@@ -152,7 +158,7 @@ SCM_CLASS_DECL(Scm_StringClass);
 
 SCM_EXTERN ScmObj  Scm_MakeString(const char *str,
                                   ScmSmallInt size, ScmSmallInt len,
-				  int flags);
+                                  int flags);
 SCM_EXTERN ScmObj  Scm_MakeFillString(ScmSmallInt len, ScmChar fill);
 SCM_EXTERN ScmObj  Scm_CopyStringWithFlags(ScmString *str, int flags, int mask);
 
@@ -328,8 +334,9 @@ SCM_EXTERN void        Scm_DStringInit(ScmDString *dstr);
 SCM_EXTERN int         Scm_DStringSize(ScmDString *dstr);
 SCM_EXTERN ScmObj      Scm_DStringGet(ScmDString *dstr, int flags);
 SCM_EXTERN const char *Scm_DStringGetz(ScmDString *dstr);
+SCM_EXTERN const char *Scm_DStringPeek(ScmDString *dstr, int *size, int *len);
 SCM_EXTERN void        Scm_DStringPutz(ScmDString *dstr, const char *str,
-				       int siz);
+                                       int siz);
 SCM_EXTERN void        Scm_DStringAdd(ScmDString *dstr, ScmString *str);
 SCM_EXTERN void        Scm_DStringPutb(ScmDString *dstr, char byte);
 SCM_EXTERN void        Scm_DStringPutc(ScmDString *dstr, ScmChar ch);
@@ -358,6 +365,12 @@ SCM_EXTERN void        Scm_DStringPutc(ScmDString *dstr, ScmChar ch);
 SCM_EXTERN void Scm__DStringRealloc(ScmDString *dstr, int min_incr);
 
 /*
+ * Utility.  Returns NUL-terminated string (SRC doesn't need to be
+ * NUL-terminated, but must be longer than SIZE).
+ */
+SCM_EXTERN char *Scm_StrdupPartial(const char *src, size_t size);
+
+/*
  * String pointers (WILL BE OBSOLETED)
  */
 
@@ -377,7 +390,7 @@ SCM_CLASS_DECL(Scm_StringPointerClass);
 #define SCM_STRING_POINTER(obj)   ((ScmStringPointer*)obj)
 
 SCM_EXTERN ScmObj Scm_MakeStringPointer(ScmString *src, ScmSmallInt index,
-					ScmSmallInt start, ScmSmallInt end);
+                                        ScmSmallInt start, ScmSmallInt end);
 SCM_EXTERN ScmObj Scm_StringPointerRef(ScmStringPointer *sp);
 SCM_EXTERN ScmObj Scm_StringPointerNext(ScmStringPointer *sp);
 SCM_EXTERN ScmObj Scm_StringPointerPrev(ScmStringPointer *sp);

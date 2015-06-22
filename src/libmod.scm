@@ -1,7 +1,7 @@
 ;;;
-;;; libmod.scm - modules and bindings
+;;; libmod.scm - modules, bindings, GLOCs
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -34,21 +34,26 @@
 (select-module gauche)
 
 (inline-stub
- (declcode (.include <gauche/vminsn.h>)))
+ (declcode (.include "gauche/vminsn.h")
+           (.include "gauche/priv/moduleP.h")))
+
+;;;
+;;; Modules API
+;;;
 
 (define-cproc module? (obj) ::<boolean> :constant SCM_MODULEP)
 
 (define-cproc module-name (mod::<module>)
-  (result (SCM_OBJ (-> (SCM_MODULE mod) name))))
+  (return (SCM_OBJ (-> (SCM_MODULE mod) name))))
 
-(define-cproc module-parents (mod::<module>) (result (-> mod parents)))
-(define-cproc module-precedence-list (mod::<module>) (result (-> mod mpl)))
-(define-cproc module-imports (mod::<module>) (result (-> mod imported)))
+(define-cproc module-parents (mod::<module>) (return (-> mod parents)))
+(define-cproc module-precedence-list (mod::<module>) (return (-> mod mpl)))
+(define-cproc module-imports (mod::<module>) (return (-> mod imported)))
 (define-cproc module-exports (mod::<module>) Scm_ModuleExports)
-(define-cproc module-table (mod::<module>) (result (SCM_OBJ (-> mod internal))))
+(define-cproc module-table (mod::<module>) (return (SCM_OBJ (-> mod internal))))
 
 (define-cproc find-module (name::<symbol>) ::<module>?
-  (result (Scm_FindModule name SCM_FIND_MODULE_QUIET)))
+  (return (Scm_FindModule name SCM_FIND_MODULE_QUIET)))
 
 (define-cproc all-modules () Scm_AllModules)
 
@@ -57,7 +62,20 @@
     (cond [(SCM_EQ if-exists ':error) (set! error_if_exists TRUE)]
           [(SCM_FALSEP if-exists)     (set! error_if_exists FALSE)]
           [else (Scm_TypeError ":if-exists" ":error or #f" if_exists)])
-    (result (Scm_MakeModule name error_if_exists))))
+    (return (Scm_MakeModule name error_if_exists))))
+
+;; (use x.y.z) ==> (requrie "x/y/z") (import x.y.z)
+(define-macro (use module . options)
+  ;; Kludge - remove these once we have low-level hygienic macro.
+  (define begin.   ((with-module gauche.internal make-identifier)
+                    'begin (find-module 'gauche) '()))
+  (define require. ((with-module gauche.internal make-identifier)
+                    'require (find-module 'gauche) '()))
+  (define import.  ((with-module gauche.internal make-identifier)
+                    'import (find-module 'gauche) '()))
+  `(,begin.
+     (,require. ,(module-name->path module))
+     (,import. (,module ,@options))))
 
 ;; foo.bar.baz <=> "foo/bar/baz"
 ;;  - Two consecutive dots in module name becomes one dot in path
@@ -93,10 +111,6 @@
      $ map (cut regexp-replace-all #/\./ <> "..")
      $ string-split path "/"))
 
-(define-cproc %export-all (module::<module>) Scm_ExportAll)
-(define-cproc %extend-module (module::<module> supers::<list>)
-  Scm_ExtendModule)
-
 (inline-stub
  (define-cfn get-module-from-mod-or-name (id) ::ScmModule* :static
    (cond [(SCM_MODULEP id) (return (SCM_MODULE id))]
@@ -106,12 +120,12 @@
                (return NULL)]))
  )
 
+;; Global bindind access, public API
 (define-cproc global-variable-bound? (mod-or-name name::<symbol>) ::<boolean>
-  (result
+  (return
    (not (SCM_UNBOUNDP
          (Scm_GlobalVariableRef (get-module-from-mod-or-name mod-or-name)
                                 name 0)))))
-
 (define-cproc global-variable-ref (mod_or_name name::<symbol>
                                                :optional
                                                fallback
@@ -123,34 +137,16 @@
     (when (SCM_UNBOUNDP r2)
       (Scm_Error "global variable %S is not bound in module %S"
                  name module))
-    (result r2)))
+    (return r2)))
 
+(define-in-module gauche (symbol-bound? name :optional (module #f)) ; Deprecated
+  (global-variable-bound? module name))
+
+;; Module import/export internal APIs.  Not public.
 (select-module gauche.internal)
-(inline-stub
- (define-type <gloc> "ScmGloc*" "GLOC"
-   "SCM_GLOCP" "SCM_GLOC" "SCM_OBJ")
- )
-
-;; Returns GLOC object or #f
-(define-cproc find-binding (mod::<module> name::<symbol>
-                                          stay-in-module::<boolean>)
-  ::<gloc>?
-  (result (Scm_FindBinding mod name
-                           (?: stay_in_module SCM_BINDING_STAY_IN_MODULE 0))))
-
-;; This small piece of code encapsulates the common procedure in
-;; pass1/variable to find whether the variable reference is a constant
-;; or not.
-(define-cproc find-const-binding (id::<identifier>)
-  (let* ([g::ScmGloc* (Scm_FindBinding (-> id module) (-> id name) 0)])
-    (cond [(or (not g)
-               (not (SCM_GLOC_CONST_P g))
-               (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM)
-                                            SCM_COMPILE_NOINLINE_CONSTS))
-           (result SCM_FALSE)]
-          [else
-           (result (SCM_GLOC_GET g))])))
-
+(define-cproc %export-all (module::<module>) Scm_ExportAll)
+(define-cproc %extend-module (module::<module> supers::<list>)
+  Scm_ExtendModule)
 (define-cproc %insert-binding (mod::<module> name::<symbol> value
                                              :optional (flags '()))
   (let* ([z::int 0])
@@ -159,6 +155,15 @@
     (unless (SCM_FALSEP (Scm_Memq 'inlinable flags))
       (logior= z SCM_BINDING_INLINABLE))
     (set! SCM_RESULT (SCM_OBJ (Scm_MakeBinding mod name value z)))))
+
+;; Insert binding as a syntactic keyword.  VALUE must be #<macro> or #<syntax>.
+;; Currently Gauche conflates toplevel variable bindings and syntax bindings,
+;; so this is effectively the same as %insert-binding; but we may change it
+;; in future, so use this API to bind syntax.
+(define (%insert-syntax-binding mod name value)
+  (unless (or (syntax? value) (macro? value))
+    (error "Syntax or macro object required, but got" value))
+  (%insert-binding mod name value))
 
 (define-cproc %hide-binding (mod::<module> name::<symbol>) ::<void>
   Scm_HideBinding)
@@ -181,22 +186,139 @@
 (define-cproc %import-modules (mod::<module> mods) ;deprecated
   Scm_ImportModules)
 
+;;;
+;;; Universal import
+;;;
+
+(select-module gauche.internal)
+
+(declare (keep-private-macro import))
+
+;; Kludge: We let user#import handle both gauche#import and r7rs#import, so
+;; that R7RS script can be run by gosh without any special treatment.
+;; If we see r7rs syntax, not only we import the specified module, but
+;; we switch the current module to r7rs.user.
+(define (%expand-user-import args)
+  (if (any (^[import-spec]
+             (or (symbol? import-spec)
+                 (and (list? import-spec)
+                      (pair? (cdr import-spec))
+                      (keyword? (cadr import-spec)))))
+           args)
+    `((with-module gauche import) ,@args)
+    (begin
+      ;; Some black magic needed here to inject the imported module to
+      ;; r7rs.user.  We do this here instead of expanding into forms
+      ;; to do the work, for "select-module" thingy is tricky.
+      (unless (provided? "r7rs")
+        (load "r7rs")
+        (provide "r7rs"))
+      (eval `(import ,@args) (find-module 'r7rs.user))
+      '(select-module r7rs.user))))
+
+(select-module user)
+
+(define-macro (import . import-specs)
+  ((with-module gauche.internal %expand-user-import) import-specs))
+
+;;;
+;;; GLOCs
+;;;
+
+(select-module gauche.internal)
+
+;; GLOCs are not for public use, so all APIs are internal.
+
+(inline-stub
+ (define-type <gloc> "ScmGloc*" "GLOC"
+   "SCM_GLOCP" "SCM_GLOC" "SCM_OBJ")
+ )
+
+;; Returns GLOC object or #f.
+(define-cproc find-binding (mod::<module> name::<symbol>
+                                          stay-in-module::<boolean>)
+  ::<gloc>?
+  (return (Scm_FindBinding mod name
+                           (?: stay_in_module SCM_BINDING_STAY_IN_MODULE 0))))
+
+;; This small piece of code encapsulates the common procedure in
+;; pass1/variable to find whether the variable reference is a constant
+;; or not.
+(define-cproc find-const-binding (id::<identifier>)
+  (let* ([g::ScmGloc* (Scm_IdentifierGlobalBinding id)])
+    (cond [(or (not g)
+               (not (SCM_GLOC_CONST_P g))
+               (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM)
+                                            SCM_COMPILE_NOINLINE_CONSTS))
+           (return SCM_FALSE)]
+          [else
+           (return (SCM_GLOC_GET g))])))
+
 (define-cproc gloc-bound? (gloc::<gloc>) ::<boolean>
-  (result (not (SCM_UNBOUNDP (SCM_GLOC_GET gloc)))))
+  (return (not (SCM_UNBOUNDP (SCM_GLOC_GET gloc)))))
 (define-cproc gloc-ref (gloc::<gloc> :optional fallback)
   (let* ([v::ScmObj (SCM_GLOC_GET gloc)])
     (if (SCM_UNBOUNDP v)
-      (if (SCM_UNBOUNDP fallback)
-        (Scm_Error "gloc %S doesn't have a value" (SCM_OBJ gloc))
-        (result fallback))
-      (result v))))
+      (begin
+        (when (SCM_UNBOUNDP fallback)
+          (Scm_Error "gloc %S doesn't have a value" (SCM_OBJ gloc)))
+        (return fallback))
+      (return v))))
 (define-cproc gloc-set! (gloc::<gloc> value) SCM_GLOC_SET)
 (define-cproc gloc-const? (gloc::<gloc>) ::<boolean> Scm_GlocConstP)
 (define-cproc gloc-inlinable? (gloc::<gloc>) ::<boolean> Scm_GlocInlinableP)
 
 ;;;
-;;; symbol-bound? (deprecated)
+;;; Identifier and binding
 ;;;
 
-(define-in-module gauche (symbol-bound? name . maybe-module)
-  (global-variable-bound? (get-optional maybe-module #f) name))
+;; NB: Identifier procedures are in libsym.scm, for we might integrate
+;; symbols and identifiers (we're still not sure).
+
+;; Returns GLOC if id is bound to one, or #f.  If GLOC is returned,
+;; it is always bound.
+
+;; (define (id->bound-gloc id)
+;;   (and-let* ([gloc (find-binding (identifier-module id)
+;;                                  (identifier-name id) #f)]
+;;              [ (gloc-bound? gloc) ])
+;;     gloc))
+(inline-stub
+ (define-cproc id->bound-gloc (id::<identifier>)
+   (let* ([gloc::ScmGloc* (Scm_IdentifierGlobalBinding id)])
+     (if (and gloc (not (SCM_UNBOUNDP (SCM_GLOC_GET gloc))))
+       (return (SCM_OBJ gloc))
+       (return SCM_FALSE))))
+ )
+
+;; Returns #t if id1 and id2 both refer to the same existing global binding.
+;; Like free-identifier=? but we know id1 and id2 are both toplevel and
+;; at least one is bound, so we skip local binding lookup.
+(define (global-identifier=? id1 id2)
+  (and-let* ([ (identifier? id1) ]
+             [ (identifier? id2) ]
+             [g1 (id->bound-gloc id1)]
+             [g2 (id->bound-gloc id2)])
+    (eq? g1 g2)))
+
+;; Returns #t iff id1 and id2 would resolve to the same binding
+;; (or both are free).
+(define (free-identifier=? id1 id2)
+  (define (lookup id)
+    (env-lookup id (identifier-module id) (identifier-env id)))
+  (define (deep-compare id1 id2)
+    (let ([b1 (lookup id1)]
+          [b2 (lookup id2)])
+      (cond
+       [(or (lvar? b1) (macro? b1))
+        ;;must have the same local variable or syntactic binding
+        (eq? b1 b2)]
+       [(or (lvar? b2) (macro? b2)) #f]
+       [else (let ([g1 (id->bound-gloc id1)]
+                   [g2 (id->bound-gloc id2)])
+               (or (and (not g1) (not g2)) ;both are free
+                   (eq? g1 g2)))])))
+  (and (identifier? id1)
+       (identifier? id2)
+       (or (eq? id1 id2)
+           (deep-compare id1 id2))))

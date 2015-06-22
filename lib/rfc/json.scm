@@ -1,5 +1,5 @@
 ;;;
-;;; json.scm - JSON (RFC4627) Parser
+;;; json.scm - JSON (RFC7159) Parser
 ;;;
 ;;;   Copyright (c) 2006 Rui Ueyama (rui314@gmail.com)
 ;;;
@@ -31,7 +31,7 @@
 ;;;   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;;
 
-;;; http://www.ietf.org/rfc/rfc4627.txt
+;;; http://www.ietf.org/rfc/rfc7159.txt
 
 ;; NOTE: This module depends on parser.peg, whose API is not officially
 ;; fixed.  Hence do not take this code as an example of parser.peg;
@@ -45,6 +45,7 @@
   (use srfi-13)
   (use srfi-14)
   (use srfi-43)
+  (use text.unicode)
   (export <json-parse-error> <json-construct-error>
           parse-json parse-json-string
           parse-json*
@@ -86,38 +87,68 @@
 (define %value-separator ($seq ($char #\,) %ws))
 
 (define %special
-  ($fmap ($ build-special $ string->symbol $ rope-finalize $)
+  ($lift ($ build-special $ string->symbol $ rope-finalize $)
          ($or ($string "false") ($string "true") ($string "null"))))
 
 (define %value
   ($lazy
-   ($fmap (^[v _] v) ($or %special %object %array %number %string) %ws)))
+   ($lift (^[v _] v) ($or %special %object %array %number %string) %ws)))
 
 (define %array
-  ($fmap (^[_0 lis _1] (build-array (rope-finalize lis)))
-         %begin-array ($sep-by %value %value-separator) %end-array))
+  ($lift ($ build-array $ rope-finalize $)
+         ($between %begin-array ($sep-by %value %value-separator) %end-array)))
 
 (define %number
   (let* ([%sign ($or ($do [($char #\-)] ($return -1))
                      ($do [($char #\+)] ($return 1))
                      ($return 1))]
-         [%digits ($fmap ($ string->number $ list->string $) ($many digit 1))]
+         [%digits ($lift ($ string->number $ list->string $) ($many digit 1))]
          [%int %digits]
          [%frac ($do [($char #\.)]
                      [d ($many digit 1)]
                      ($return (string->number (apply string #\0 #\. d))))]
-         [%exp ($fmap (^[_ s d] (* s d)) ($one-of #[eE]) %sign %digits)])
-    ($fmap (^[sign int frac exp]
+         [%exp ($lift (^[_ s d] (* s d)) ($one-of #[eE]) %sign %digits)])
+    ($lift (^[sign int frac exp]
              (let1 mantissa (+ int frac)
                (* sign (if exp (exact->inexact mantissa) mantissa)
                   (if exp (expt 10 exp) 1))))
            %sign %int ($or %frac ($return 0)) ($or %exp ($return #f)))))
 
+(define %unicode
+  (let ([%hex4 ($lift (^s (string->number (list->string s) 16))
+                      ($many hexdigit 4 4))]
+        ;; NB: If we just $fail, the higher-level parser may conceal the
+        ;; direct cause of the error by backtracking.  Unpaired surrogate
+        ;; is an unrecoverable error, so we throw <json-parse-error> directly.
+        ;; There may be a better way to integrate this kind of error in
+        ;; the combinators; let's see.
+        [err (^c (errorf <json-parse-error>
+                         :position #f :object c
+                         "unpaired surrogate: \\u~4,'0x" c))])
+    ($do [($char #\u)]
+         [c %hex4]
+         (cond [(<= #xd800 c #xdbff)
+                ($or ($try ($do [($string "\\u")]
+                                [c2 %hex4]
+                                (receive (cc x)
+                                    (utf16->ucs4 `(,c ,c2) 'permissive)
+                                  (and (null? x)
+                                       ($return (ucs->char cc))))))
+                     ;; NB: We wrap (err c) with dummy $do to put the call
+                     ;; to the err into a parser monad.  Simple ($return (err c))
+                     ;; or ($fail (err c)) won't do, since (err c) is evaluated
+                     ;; at the parser-construction time, not the actual parsing
+                     ;; time.  We need a dummy ($return #t) clause to ensure
+                     ;; (err c) is wrapped; ($do x) is expanded to just x.
+                     ;; Definitely we need something better to do this kind of
+                     ;; operation.
+                     ($do [($return #t)] (err c)))]
+               [(<= #xdc00 c #xdfff) (err c)]
+               [else ($return (ucs->char c))]))))
+
 (define %string
   (let* ([%dquote ($char #\")]
          [%escape ($char #\\)]
-         [%hex4 ($fmap (^s (string->number (list->string s) 16))
-                       ($many hexdigit 4 4))]
          [%special-char
           ($do %escape
                ($or ($char #\")
@@ -128,7 +159,7 @@
                     ($do [($char #\n)] ($return #\newline))
                     ($do [($char #\r)] ($return #\return))
                     ($do [($char #\t)] ($return #\tab))
-                    ($do [($char #\u)] (c %hex4) ($return (ucs->char c)))))]
+                    %unicode))]
          [%unescaped ($none-of #[\"])]
          [%body-char ($or %special-char %unescaped)]
          [%string-body ($->rope ($many %body-char))])
@@ -140,11 +171,11 @@
                      [v %value]
                      ($return (cons k v)))
     ($between %begin-object
-              ($fmap ($ build-object $ rope-finalize $)
+              ($lift ($ build-object $ rope-finalize $)
                      ($sep-by %member %value-separator))
               %end-object)))
 
-(define json-parser ($seq %ws ($or eof %object %array)))
+(define json-parser ($seq %ws ($or eof %value)))
 
 ;; entry point
 (define (parse-json :optional (port (current-input-port)))
@@ -217,12 +248,17 @@
   (define specials
     '((#\" . #\") (#\\ . #\\) (#\x08 . #\b) (#\page . #\f)
       (#\newline . #\n) (#\return . #\r) (#\tab . #\t)))
+  (define (hexescape code) (format #t "\\u~4,'0x" code))
   (define (print-char c)
     (cond [(assv c specials) => (^p (write-char #\\) (write-char (cdr p)))]
           [(and (char-set-contains? char-set:ascii c)
                 (not (eq? (char-general-category c) 'Cc)))
            (write-char c)]
-          [else (format #t "\\u~4,'0x" (char->ucs c))]))
+          [else
+           (let1 code (char->ucs c)
+             (if (>= code #x10000)
+               (for-each hexescape (ucs4->utf16 code))
+               (hexescape code)))]))
   (display "\"")
   (string-for-each print-char str)
   (display "\""))

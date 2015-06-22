@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.dictionary - dictionary generics
 ;;;
-;;;   Copyright (c) 2007-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2007-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -37,13 +37,16 @@
           dict-exists? dict-delete!
           dict-fold dict-fold-right
           dict-for-each dict-map
-          dict-keys dict-values
-          dict->alist dict-pop! dict-push! dict-update!
+          dict-keys dict-values dict-comparator
+          dict->alist dict-pop! dict-push! dict-update! dict-clear!
           define-dict-interface
 
           <bimap> make-bimap bimap-put!
           bimap-left bimap-left-get bimap-left-exists? bimap-left-delete!
           bimap-right bimap-right-get bimap-right-exists? bimap-right-delete!
+
+          <stacked-map> make-stacked-map
+          stacked-map-push! stacked-map-pop! stacked-map-depth
           ))
 (select-module gauche.dictionary)
 
@@ -54,7 +57,13 @@
 ;;    dict-put! dict key value
 ;;    dict-delete! dict key             ; for deletable dictionary
 ;;
-;; Optional methods:
+;; Quasi-required methods (if not provided, returns #f.  It may hinder
+;; the dict to be used in certain context.):
+;;
+;;    dict-comparator dict
+;;
+;; Optional methods (if not provided, the default method works, though
+;; maybe inefficient.):
 ;;
 ;;    dict-fold dict proc seed
 ;;    dict-fold-right dict proc seed    ; for ordered dictionary
@@ -126,6 +135,9 @@
         [(:->alist)
          `(define-method dict->alist ((,dict ,class))
             (,specific ,dict))]
+        [(:comparator)
+         `(define-method dict-comparator ((,dict ,class))
+            (,specific ,dict))]
         [else (error "invalid kind in define-dict-interface:" kind)])))
   `(begin
      ,@(map (^p (gen-def (car p) (cadr p))) (slices clauses 2))))
@@ -148,7 +160,8 @@
   :pop!       hash-table-pop!
   :push!      hash-table-push!
   :update!    hash-table-update!
-  :->alist    hash-table->alist)
+  :->alist    hash-table->alist
+  :comparator hash-table-comparator)
 
 (define-dict-interface <tree-map>
   :get        tree-map-get
@@ -165,7 +178,8 @@
   :pop!       tree-map-pop!
   :push!      tree-map-push!
   :update!    tree-map-update!
-  :->alist    tree-map->alist)
+  :->alist    tree-map->alist
+  :comparator tree-map-comparator)
 
 ;;-----------------------------------------------
 ;; Fallback methods
@@ -201,6 +215,12 @@
 (define-method dict-values ((dict <ordered-dictionary>))
   (reverse (dict-fold dict (^[k v r] (cons v r)) '())))
 
+(define-method dict->alist ((dict <dictionary>))
+  (dict-fold dict acons '()))
+
+(define-method dict->alist ((dict <ordered-dictionary>))
+  (reverse (dict-fold dict acons '())))
+
 (define-method dict-delete! ((dict <dictionary>) key) ;fallback
   (error "You can't delete entry from a dictionary ~s" dict))
 
@@ -230,6 +250,8 @@
 (define-method (setter dict-get) (dict key val)
   (dict-put! dict key val))
 
+(define-method dict-comparator ((dict <dictionary>)) #f)
+
 ;;;
 ;;; Bidirectional map
 ;;;
@@ -240,11 +262,16 @@
 (define-class <bimap> (<dictionary>)
   ((left  :init-keyword :left)    ; x -> y
    (right :init-keyword :right)   ; y -> x
+   (on-conflict :init-keyword :on-conflict
+                :init-value :supersede)
    )
   :metaclass <bimap-meta>)
 
-(define (make-bimap left right)
-  (make <bimap> :left left :right right))
+(define (make-bimap left right :key (on-conflict :supersede))
+  (unless (memv on-conflict '(#f :error :supersede))
+    (error "got invalid on-conflict value; possible values are "
+           ":supersede, :error or #f, but got" on-conflict))
+  (make <bimap> :left left :right right :on-conflict on-conflict))
 
 (define (bimap-left bm)  (slot-ref bm 'left))
 (define (bimap-right bm) (slot-ref bm 'right))
@@ -268,26 +295,30 @@
 (define-bimap-ops left  bimap-left bimap-right)
 (define-bimap-ops right bimap-right bimap-left)
 
-(define (bimap-put! bm x y :key (on-conflict :supersede))
+(define (bimap-put! bm x y :key (on-conflict (~ bm 'on-conflict)))
   (let ([x-exists? (dict-exists? (bimap-left bm) x)]
         [y-exists? (dict-exists? (bimap-right bm) y)])
-    (case on-conflict
-      [(:error)
-       (if x-exists?
-         (error "attempt to insert duplicate left-key into bimap: " x)
-         (error "attempt to insert duplicate right-key into bimap: " y))]
-      [(#f) #f]
-      [(:supersede)
-       (when x-exists?
-         (dict-delete! (bimap-right bm) (dict-get (bimap-left bm) x)))
-       (when y-exists?
-         (dict-delete! (bimap-left bm) (dict-get (bimap-right bm) y)))
-       (dict-put! (bimap-left bm) x y)
-       (dict-put! (bimap-right bm) y x)
-       #t]
-      [else
-       (error "bimap-put!: on-conflict argument must be either one of \
-              :supersede, :error or #f, but got:" on-conflict)])))
+    (if (or x-exists? y-exists?)
+      (case on-conflict
+        [(:error)
+         (if x-exists?
+           (error "attempt to insert duplicate left-key into bimap: " x)
+           (error "attempt to insert duplicate right-key into bimap: " y))]
+        [(#f) #f]
+        [(:supersede)
+         (when x-exists?
+           (dict-delete! (bimap-right bm) (dict-get (bimap-left bm) x)))
+         (when y-exists?
+           (dict-delete! (bimap-left bm) (dict-get (bimap-right bm) y)))
+         (dict-put! (bimap-left bm) x y)
+         (dict-put! (bimap-right bm) y x)
+         #t]
+        [else
+         (error "bimap-put!: on-conflict argument must be either one of \
+              :supersede, :error or #f, but got:" on-conflict)])
+      (begin
+        (dict-put! (bimap-left bm) x y)
+        (dict-put! (bimap-right bm) y x)))))
 
 ;; the normal ref/set! uses left map
 (define-method dict-get ((dict <bimap>) key . maybe-default)
@@ -300,8 +331,80 @@
   (bimap-left-delete! dict key))
 (define-method dict-fold ((dict <bimap>) proc seed)
   (dict-fold (bimap-left dict) proc seed))
+(define-method dict-comparator ((dict <bimap>))
+  (dict-comparator (bimap-left dict)))
 
 ;; Collection protocol.   We just redirect methods to left map.
 (define-method call-with-iterator ((coll <bimap>) proc . args)
   (apply call-with-iterator (bimap-left coll) proc args))
 
+;;;
+;;; Stacked map
+;;;
+
+;; Stacked map allows you to stack (layer) multiple maps and treat
+;; as if they are a single map.  The top map "shadows" the bottom maps.
+
+(define-class <stacked-map-meta> (<class>) ())
+
+;; Unique-dict-maker is a thunk that creates a new dictionary
+;; to be used to check key uniqueness.  When a stacked map is
+;; traversed (e.g. by dict-fold), a new unique-dict is created
+;; and keys are stored as the traversal progresses, and used to
+;; filter out already-seen keys.  You can give it #f to turn off
+;; unique-key check.
+
+(define-class <stacked-map> (<dictionary>)
+  ((stack     :init-keyword :stack :init-value '())
+   (unique-dict-maker :init-keyword :unique-dict-maker
+                      :init-value (cut make-hash-table 'eqv?)))
+  :metaclass <stacked-map-meta>)
+
+(define (make-stacked-map . maps)
+  (make <stacked-map> :stack maps))
+
+;; TODO: Fix ugly name.
+(define (make-stacked-map-with-unique-dict-maker thunk . maps)
+  (make <stacked-map> :stack maps :unique-dict-maker thunk))
+
+(define-method stacked-map-push! ((smap <stacked-map>) (dict <dictionary>))
+  (slot-push! smap 'stack dict))
+(define-method stacked-map-pop! ((smap <stacked-map>))
+  (slot-pop! smap 'stack))
+(define-method stacked-map-depth ((smap <stacked-map>))
+  (length (slot-ref smap 'stack)))
+
+(define-method dict-exists? ((smap <stacked-map>) key)
+  (any (cut dict-exists? <> key) (slot-ref smap 'stack)))
+
+(define-method dict-get ((smap <stacked-map>) key . maybe-default)
+  (let1 maybe-r (any (^m (let1 r (dict-get m key %unique)
+                           (and (not (eq? r %unique)) (list r))))
+                     (slot-ref smap 'stack))
+    (cond [maybe-r (car maybe-r)]
+          [(pair? maybe-default) (car maybe-default)]
+          [else (errorf "~s doesn't have an entry for key ~s" smap key)])))
+
+;; This puts entry to the topmost dict.
+(define-method dict-put! ((smap <stacked-map>) key val)
+  (let1 maps (slot-ref smap 'stack)
+    (if (null? maps)
+      (error "You can't add an entry to an empty stacked map:" smap)
+      (dict-put! (car maps) key val))))
+
+;; This deletes entry from *all* dicts.
+(define-method dict-delete! ((smap <stacked-map>) key)
+  (for-each (cut dict-delete! <> key) (slot-ref smap 'stack)))
+
+(define-method dict-fold ((smap <stacked-map>) proc seed)
+  (let1 udict (and-let* ([thunk (slot-ref smap 'unique-dict-maker)])
+                (thunk))
+    (if udict
+      (fold (^[m s]
+              (dict-fold m (^[k v s] (if (dict-exists? udict k)
+                                       s
+                                       (begin (dict-put! udict k #t)
+                                              (proc k v s))))
+                         s))
+            seed (slot-ref smap 'stack))
+      (fold (^[m s] (dict-fold m proc s)) seed (slot-ref smap 'stack)))))

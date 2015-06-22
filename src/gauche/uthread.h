@@ -1,7 +1,7 @@
 /*
  * uthread.h - user level thread primitives
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -120,7 +120,7 @@ typedef int ScmInternalFastlock;
 #define SCM_INTERNAL_FASTLOCK_INIT(fl)     (0)
 #define SCM_INTERNAL_FASTLOCK_LOCK(fl)     (0)
 #define SCM_INTERNAL_FASTLOCK_UNLOCK(fl)   (0)
-#define SCM_INTENRAL_FASTLOCK_DESTROY(fl)  (0)
+#define SCM_INTERNAL_FASTLOCK_DESTROY(fl)  (0)
 
 /* ScmInternalCond - condition varaiable
  *
@@ -141,5 +141,8 @@ typedef int ScmInternalCond;
 #define SCM_INTERNAL_COND_INITIALIZER      (0)
 #define SCM_INTERNAL_COND_TIMEDOUT         (0)
 #define SCM_INTERNAL_COND_INTR             (0)
+
+/* Issues a full memory barrier */
+#define SCM_INTERNAL_SYNC()
 
 #endif /* GAUCHE_UTHREAD_H */

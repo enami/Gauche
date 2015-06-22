@@ -1,7 +1,7 @@
 /*
  * treemap.h - general library of balanced trees
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -124,6 +124,8 @@ SCM_EXTERN void          Scm_TreeCoreDump(ScmTreeCore *tc, ScmPort *out);
  * ScmTreeMap
  */
 
+/* We store ScmComparator in core.data if the treemap is created
+   in the Scheme world.  See make-tree-map in lib/gauche/treeutil.scm */
 struct ScmTreeMapRec {
     SCM_HEADER;
     ScmTreeCore core;

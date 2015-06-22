@@ -1,7 +1,7 @@
 /*
  * net.h - network interface
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -94,7 +94,8 @@ const char *inet_ntop(int af, const void *src, char *dst, socklen_t size);
  * Sockaddr_storage
  */
 
-#if !defined(HAVE_STRUCT_SOCKADDR_STORAGE) && !defined(_MSC_VER)
+#if !defined(HAVE_STRUCT_SOCKADDR_STORAGE) && !defined(_MSC_VER) \
+    && !defined(_SS_MAXSIZE)
 /* Alternative implementation in case the system doesn't provide
    sockaddr_storage.  The code is based on the reference implementation
    provided in RFC3493.
@@ -202,6 +203,13 @@ typedef struct ScmSocketRec {
     ScmPort *inPort;
     ScmPort *outPort;
     ScmString *name;
+#if defined(GAUCHE_WINDOWS)
+    /* Save them so that we can close them when the socket is closed.
+       We can't let these closed by inPort/outPort cleanup routine, since
+       even after one port is closed, another port may be still in use. */
+    int infd;
+    int outfd;
+#endif /*GAUCHE_WINDOWS*/
 } ScmSocket;
 
 #define SOCKET_CLOSED(fd)  ((fd) == INVALID_SOCKET)

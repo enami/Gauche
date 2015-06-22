@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.cgen.cise - C in S expression
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -32,19 +32,19 @@
 ;;;
 
 (define-module gauche.cgen.cise
-  (use srfi-1)
   (use srfi-13)
   (use gauche.sequence)
   (use gauche.parameter)
   (use gauche.cgen.unit)
   (use gauche.cgen.literal)
-  (use gauche.experimental.app)
   (use gauche.experimental.lamb)
   (use util.match)
-  (use util.list)
   (export cise-render cise-render-to-string cise-render-rec
           cise-translate
-          cise-context cise-context-copy cise-register-macro! cise-lookup-macro
+          cise-ambient cise-default-ambient cise-ambient-copy
+          cise-ambient-decl-strings
+          cise-register-macro!
+          cise-lookup-macro
           cise-emit-source-line
           define-cise-macro
           define-cise-stmt
@@ -61,20 +61,42 @@
 ;; If true, include #line directive in the output.
 (define cise-emit-source-line (make-parameter #t))
 
-;; The global context
-(define-class <cise-context> ()
-  ((macros :init-keyword :macros :init-form (make-hash-table 'eq?))
+;; The global settings
+(define-class <cise-ambient> ()
+  (;; CiSE macro definitions
+   ;;   The default cise-ambient holds all predefined macros; you can
+   ;;   copy the default ambient and add custom macros.
+   (macros :init-keyword :macros :init-form (make-hash-table 'eq?))
+   ;; Stree for forward declarations.  Some macros, such as define-cfn,
+   ;; insert this.  This must be emitted at toplevel, so local
+   ;; transformation functinos such as cise-render DOES NOT emit
+   ;; the code put here.  Cise-translate does.   If the caller only calls
+   ;; local transformation functions and need to expand macros that
+   ;; generates static-decls, the caller has to call emit-static-decls
+   ;; at the point where toplevel code is allowed.
    (static-decls  :init-keyword :static-decls  :init-value '())))
 
+;; The default ambient - this should be only modified during loading of
+;; this module, in order to register all the default cise macros.  Once
+;; this module is loaded, this must be treated as immutable, and the
+;; user must get its copy to use via cise-default-ambient.
+(define *default-ambient* (make <cise-ambient>))
+
+;; Returns a copy of the default ambient
+(define (cise-default-ambient) (cise-ambient-copy *default-ambient* '()))
+
 ;; Keeps the cise macro bindings.
-(define cise-context (make-parameter (make <cise-context>)))
+;; We initialize it with *default-ambient* so that it gets all the cise
+;; macros in this module.  At the end of this module we replace its
+;; value with a copy, so that the default ambient is "sealed".
+(define cise-ambient (make-parameter *default-ambient*))
 
 ;;=============================================================
 ;; Environment
 ;;
 
-;; Environment must be treated opaque from outside of CISE module.
-
+;; Environment keeps transient information during cise macro expansion.
+;; It must be treated opaque from outside of CISE module.
 (define-class <cise-env> ()
   ((context :init-keyword :context) ; toplevel, stmt or expr
    (decls   :init-keyword :decls)   ; list of extra decls
@@ -131,12 +153,17 @@
 ;; Global decls
 ;;
 
-(define (push-static-decl! stree :optional (context (cise-context)))
-  (push! (ref context'static-decls) stree))
+(define (push-static-decl! stree :optional (ambient (cise-ambient)))
+  (push! (~ ambient'static-decls) stree))
 
-(define (emit-static-decls port :optional (context (cise-context)))
-  (dolist [stree (reverse (ref context'static-decls))]
+(define (emit-static-decls port :optional (ambient (cise-ambient)))
+  (dolist [stree (reverse (~ ambient'static-decls))]
     (render-finalize stree port)))
+
+;; external API
+(define (cise-ambient-decl-strings ambient)
+  (call-with-output-string
+    (cut emit-static-decls <> ambient)))
 
 ;;=============================================================
 ;; Expander
@@ -146,35 +173,43 @@
 ;;  All other stuff is handled by "cise macros"
 
 ;;
-;; cise-register-macro! NAME EXPANDER &optional CONTEXT
+;; cise-register-macro! NAME EXPANDER &optional AMBIENT
 ;;
 ;;   Register cise macro expander EXPANDER with the name NAME.
 ;;   EXPANDER takes twi arguments, the form to expand and a
 ;;   opaque cise environmen.
 ;;
-(define (cise-register-macro! name expander :optional (context (cise-context)))
-  (hash-table-put! (ref context'macros) name expander))
+(define (cise-register-macro! name expander :optional (ambient (cise-ambient)))
+  (hash-table-put! (~ ambient'macros) name expander))
 
 ;;
-;; cise-lookup-macro NAME &optional CONTEXT
+;; cise-lookup-macro NAME &optional AMBIENT
 ;;
 ;;   Lookup cise macro.
 ;;
-(define (cise-lookup-macro name :optional (context (cise-context)))
-  (hash-table-get (ref context'macros) name #f))
+(define (cise-lookup-macro name :optional (ambient (cise-ambient)))
+  (hash-table-get (~ ambient'macros) name #f))
 
 ;;
-;; copy the current cise context
+;; copy the current cise ambient
 ;;
-(define (cise-context-copy :optional (context (cise-context)))
-  (make <cise-context>
-    :macros (hash-table-copy (ref context'macros))
-    :static-decls  (ref context'static-decls)))
+;;   By default, static-decls are copied.  It's useful when you save
+;;   the snapshot of ambient for the later retry.  Another usage is
+;;   to have a transient "child" ambient, where you add new macros,
+;;   emit something, and come back to the original ambient.  In that
+;;   case you want to clear out static-decls.  Hence we have the second
+;;   argument.   NB: This spec smells fishy.  May change later.
+(define (cise-ambient-copy :optional
+                           (ambient (cise-ambient))
+                           (static-decls (~ ambient'static-decls)))
+  (make <cise-ambient>
+    :macros (hash-table-copy (~ ambient'macros))
+    :static-decls static-decls))
 
 ;;
 ;; define-cise-macro (OP FORM ENV) . BODY
 ;;
-;;   Default syntax to add new cise macro to the current context.
+;;   Default syntax to add new cise macro to the current ambient.
 ;;
 (define-syntax define-cise-macro
   (syntax-rules ()
@@ -188,8 +223,9 @@
 ;; define-cise-expr OP [ENV] CLAUSE ... [:where DEFINITION ...]
 ;; define-cise-toplevel OP [ENV] CLAUSE ... [:where DEFINITION ...]
 ;;
+
 (define-syntax define-cise-stmt
-  (syntax-rules ()
+  (syntax-rules (:where)
     ;; recursion
     [(_ "clauses" op env clauses (:where defs ...))
      (define-cise-macro (op form env)
@@ -209,7 +245,7 @@
      (define-cise-stmt "clauses" op env () clauses)]))
 
 (define-syntax define-cise-expr
-  (syntax-rules ()
+  (syntax-rules (:where)
     ;; recursion
     [(_ "clauses" op env clauses (:where defs ...))
      (define-cise-macro (op form env)
@@ -231,7 +267,7 @@
      (define-cise-expr "clauses" op env () clauses)]))
 
 (define-syntax define-cise-toplevel
-  (syntax-rules ()
+  (syntax-rules (:where)
     ;; recursion
     [(_ "clauses" op env clauses (:where defs ...))
      (define-cise-macro (op form env)
@@ -337,10 +373,13 @@
     [#\newline   (wrap-expr "'\\n'"  env)]
     [#\return    (wrap-expr "'\\r'"  env)]
     [#\tab       (wrap-expr "'\\t'"  env)]
-    [[? char?]   (wrap-expr `("'" ,(if (char-set-contains? #[[:alnum:]] form)
-                                     (string form)
-                                     (format "\\x~2'0x" (char->integer form)))
-                              "'") env)]
+    [[? char?]
+     (if (>= (char->integer form) 128)
+       (error "CISE: Cannot embed non-ASCII character literal (yet):" form)
+       (wrap-expr `("'" ,(if (char-set-contains? #[[:alnum:]] form)
+                           (string form)
+                           (format "\\x~2,'0x" (char->integer form)))
+                    "'") env))]
     [_           (error "Invalid CISE form: " form)]))
 
 ;;
@@ -358,7 +397,7 @@
 
 (define (cise-translate inp outp
                         :key (environment (make-module #f))
-                             (context (cise-context-copy (cise-context))))
+                             (ambient (cise-ambient-copy)))
   (define (finish toutp)
     (unless (eq? outp toutp)
       (emit-static-decls outp)
@@ -367,7 +406,7 @@
 
   (eval '(use gauche.cgen.cise) environment)
   (eval '(use util.match) environment)
-  (parameterize ([cise-context context])
+  (parameterize ([cise-ambient ambient])
     (let loop ([toutp outp])
       (match (read inp)
         [(? eof-object?) (finish toutp)]
@@ -392,20 +431,24 @@
 ;;------------------------------------------------------------
 ;; C function definition
 ;;
-(define-cise-macro (define-cfn form env)
-  (define (argchk args)
-    (match (canonicalize-vardecl args)
-      [() '()]
-      [((var ':: type) . rest) `((,var . ,type) ,@(argchk rest))]
-      [(var . rest) `((,var . ScmObj) ,@(argchk rest))]))
 
+;; (define-cfn <name> (<arg> ...) [<rettype> [<qualifier> ...]] <body>)
+
+(define-cise-macro (define-cfn form env)
   (define (gen-args args env)
     (let1 eenv (expr-env env)
       ($ intersperse ","
          $ map (^.[(var . type) (cise-render-typed-var type var eenv)]) args)))
 
-  (define (gen-cfn cls name args rettype body)
-    `(,(cise-render-identifier cls) " "
+  (define (gen-qualifiers quals) ; we might support more qualifiers in future
+    (intersperse " "
+                 (map (^[qual] (ecase qual
+                                 [(:static) "static"]
+                                 [(:inline) "inline"]))
+                      (reverse quals))))
+
+  (define (gen-cfn name quals args rettype body)
+    `(,@(gen-qualifiers quals) " "
       ,(cise-render-typed-var rettype name env)
       "(" ,(gen-args args env) ")"
       "{",(cise-render-to-string `(begin ,@body) 'stmt)"}"))
@@ -416,26 +459,108 @@
   (define (type-symbol-type s)
     (string->symbol (string-drop (keyword->string s) 1)))
 
-  (define (record-static name args ret-type)
+  (define (record-static name quals args ret-type)
     (push-static-decl!
      `(,(source-info form env)
-       "static ",ret-type" ",(cise-render-identifier name)
+       ,@(gen-qualifiers quals) " "
+       ,ret-type" ",(cise-render-identifier name)
        "(",(gen-args args env)");")))
 
-  (define (check-static name args ret-type body)
+  (define (check-quals name quals args ret-type body)
     (match body
-      [(':static . body) (record-static name args ret-type)
-                         (gen-cfn "static" name args ret-type body)]
-      [_                 (gen-cfn "" name args ret-type body)]))
+      [(':static . body)
+       (check-quals name `(:static ,@quals) args ret-type body)]
+      [(':inline . body)
+       (check-quals name `(:inline ,@quals) args ret-type body)]
+      [((? keyword? z) . body)
+       (errorf "Invalid qualifier in define-cfn ~s: ~s" name z)]
+      [_
+       (when (memq :static quals)
+         (record-static name quals args ret-type))
+       (gen-cfn name quals args ret-type body)]))
 
   (ensure-toplevel-ctx form env)
   (match form
     [(_ name (args ...) ':: ret-type . body)
-     (check-static name (argchk args) ret-type body)]
+     (check-quals name '() (canonicalize-argdecl args) ret-type body)]
     [(_ name (args ...) [? type-symbol? ts] . body)
-     (check-static name (argchk args) (type-symbol-type ts) body)]
+     (check-quals name '() (canonicalize-argdecl args) (type-symbol-type ts) body)]
     [(_ name (args ...) . body)
-     (check-static name (argchk args) 'ScmObj body)]))
+     (check-quals name '() (canonicalize-argdecl args) 'ScmObj body)]))
+
+;;------------------------------------------------------------
+;; CPS transformation
+;;
+;;  (define-cproc ...
+;;    ...
+;;    (let1/cps resultvar expr
+;;      (closevar ...)
+;;      expr2 ...))
+;;
+;;  =>
+;;  (define-cfn tmp_cc (resultvar data::(void**))
+;;    (let* ([closevar (aref data 0)]
+;;           ...)
+;;      expr2 ...))
+;;
+;;  (define-cproc
+;;    ...
+;;    (let* ([data ...])
+;;      (set! (aref data 0) closevar)
+;;      ...
+;;      (Scm_VMPushCC tmp_cc data k)
+;;      expr))
+;;
+;; NB: This macro assumes the outer cproc returns one ScmObj, via
+;; SCM_RESULT.  So it doesn't work well if the outer cproc is declared
+;; with some other return values.  For example, if the outer cproc
+;; is supposed to have ::<void> return val, you actually should
+;; write something like the following:
+;;
+;;   (define-cproc foo (args ...)   ;; don't declare return type here
+;;     ...
+;;     (let1/cps r (Scm_VMApply1 proc x ...)
+;;       [var ...]
+;;       ...
+;;       (return SCM_UNDEFINED)))   ;; explicitly return #<undef>
+;;
+
+(define-cise-macro (let1/cps form env)
+  (match form
+    [(_ rvar expr vars . body)
+     (let* ([tmp-cc (gensym "tmp_cc_")]
+            [data (gensym "data")]
+            [closed (canonicalize-argdecl vars)]
+            [cc-env (make-env 'toplevel '())])
+       ;; NB: We want to check the # of closed variables is smaller
+       ;; than SCM_CCONT_DATA_SIZE, but it's not available at runtime
+       ;; (and if we're cross-compiling, our runtime's value may be
+       ;; different from the target system's.
+
+       ;; KLUDGE! If we're in stub generation, cise-ambient is set up
+       ;; to alter 'return' macro.  But we need the original 'return'
+       ;; macro in order to expand define-cfn.  We need better mechanism
+       ;; to handle it smoothly.
+       (let1 amb (cise-default-ambient)
+         (parameterize ([cise-ambient amb])
+           (push-static-decl!
+            (cise-render-to-string
+             `(define-cfn ,tmp-cc (,rvar ,data :: void**) :static
+                (let* ,(map-with-index
+                        (^[i p]
+                          `(,(car p) :: ,(cdr p)
+                            (cast (,(cdr p)) (aref ,data ,i))))
+                        closed)
+                  ,@body))
+             'toplevel)))
+         (for-each push-static-decl! (reverse (~ amb'static-decls))))
+         
+       `(let* ([,data :: (.array void* (,(length closed)))])
+          ,@(map-with-index
+             (^[i p] `(set! (aref ,data ,i) (cast void* ,(car p))))
+             closed)
+          (Scm_VMPushCC ,tmp-cc ,data ,(length closed))
+          (return ,expr)))]))
 
 ;;------------------------------------------------------------
 ;; Syntax
@@ -743,10 +868,10 @@
 ;;
 ;;   Boolean ops.  C's &&, ||, and !.
 ;;
-;; [cise expr] logand EXPR EXPR
-;; [cise expr] logior EXPR EXPR
-;; [cise expr] logxor EXPR EXPR
-;; [cise expr] lognot EXPR EXPR
+;; [cise expr] logand EXPR EXPR ...
+;; [cise expr] logior EXPR EXPR ...
+;; [cise expr] logxor EXPR EXPR ...
+;; [cise expr] lognot EXPR
 ;;
 ;;   Bitwise ops.
 ;;
@@ -834,6 +959,10 @@
 (define-nary and "&&")
 (define-nary or  "||")
 
+(define-nary logior  "|")
+(define-nary logxor  "^")
+(define-nary logand  "&")
+
 (define-macro (define-unary op sop)
   `(define-cise-macro (,op form env)
      (wrap-expr
@@ -871,9 +1000,6 @@
       env)))
 
 (define-binary %       "%")
-(define-binary logior  "|")
-(define-binary logxor  "^")
-(define-binary logand  "&")
 (define-binary <       "<")
 (define-binary <=      "<=")
 (define-binary >       ">")
@@ -1038,15 +1164,15 @@
 (define (canonicalize-vardecl vardecls)
   (define (expand-type elt seed)
     (cond
+     [(keyword? elt)  ;; The case of (var ::type)
+      (rxmatch-case (keyword->string elt)
+        [#/^:(.+)$/ (_ t) `(:: ,(string->symbol t) ,@seed)]
+        [else (cons elt seed)])]
      [(symbol? elt)
       (rxmatch-case (symbol->string elt)
         [#/^(.+)::$/ (_ v) `(,(string->symbol v) :: ,@seed)]
         [#/^(.+)::(.+)$/ (_ v t)
             `(,(string->symbol v) :: ,(string->symbol t) ,@seed)]
-        [else (cons elt seed)])]
-     [(keyword? elt)  ;; The case of (var ::type)
-      (rxmatch-case (keyword->string elt)
-        [#/^:(.+)$/ (_ t) `(:: ,(string->symbol t) ,@seed)]
         [else (cons elt seed)])]
      [else (cons elt seed)]))
 
@@ -1055,7 +1181,7 @@
   (define (scan in r)
     (match in
       [() (reverse r)]
-      [([? symbol? var] :: type . rest)
+      [([? symbol? var] ':: type . rest)
        (scan rest `((,var :: ,type) ,@r))]
       [([? symbol? var] . rest)
        (scan rest `((,var :: ScmObj) ,@r))]
@@ -1067,4 +1193,20 @@
 
   (scan (fold-right expand-type '() vardecls) '()))
 
+;; Like canonicalize-vardecl, but for argument declarations.
+;; (foo::type bar baz:: type bee :: type)
+;; => ((foo . type) (bar . ScmObj) (baz . type) (bee . type))
+(define (canonicalize-argdecl argdecls)
+  (define (rec args)
+    (match (canonicalize-vardecl args)
+      [() '()]
+      [((var ':: type) . rest) `((,var . ,type) ,@(rec rest))]
+      [(var . rest) `((,var . ScmObj) ,@(rec rest))]))
+  (rec argdecls))
+
+;;=============================================================
+;; Sealing the default environment
+;;   This must come at the bottom of the module.
+
+(cise-ambient (cise-default-ambient))
 

@@ -1,7 +1,7 @@
 /*
  * regexp.c - regular expression
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *   Copyright (c) 2006 Rui Ueyama, All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,7 @@
 #include "gauche.h"
 #include "gauche/regexp.h"
 #include "gauche/class.h"
-#include "gauche/builtin-syms.h"
+#include "gauche/priv/builtin-syms.h"
 
 /* I don't like to reinvent wheels, so I looked for a regexp implementation
  * that can handle multibyte encodings and not bound to Unicode.
@@ -96,7 +96,8 @@ enum {
     RE_ANY_RL,
     RE_TRY,                     /* followed by offset (2 bytes). try matching
                                    the following sequence, and if fails,
-                                   jump to offset. */
+                                   jump to offset.  This handles backtracking.
+                                */
     RE_SET,                     /* followed by charset #.  match any char in
                                    the charset. */
     RE_SET_RL,
@@ -138,22 +139,25 @@ enum {
                                  * offset (2 bytes). */
     /* The following instructions are not necessary to implement the basic
        engine, but used in the optimized code */
+    /* The *R instructions (and *R_RL counterparts) consumes all input that
+       matches, without backtracking.  */
     RE_SET1R,                   /* (1-byte set match repeat)
-                                   followed by charset #.  Consumes all input
-                                   that matches the given set. */
+                                   followed by charset #. */
     RE_SET1R_RL,
     RE_NSET1R,                  /* (1-byte negative set match repeat)
-                                   followed by charset #.  Consumes all input
-                                   that don't match the given set. */
+                                   followed by charset #. */
     RE_NSET1R_RL,
     RE_SETR,                    /* (set match repeat)
-                                   followed by charset #.  Consumes all input
-                                   that matches the given set. */
+                                   followed by charset #. */
     RE_SETR_RL,
     RE_NSETR,                   /* (negative set match repeat)
-                                   followed by charset #.  Consumes all input
-                                   that don't match the given set. */
+                                   followed by charset #. */
     RE_NSETR_RL,
+    RE_MATCH1R,                 /* (1-byte exact match repeat)
+                                   followed by a byte */
+    RE_MATCHR,                  /* (multiple byte exact match repeat)
+                                   followed by length, and bytes to match. */
+    RE_ANYR,                    /* (any char match repeat)  */
     RE_NUM_INSN
 };
 
@@ -242,13 +246,11 @@ static ScmRegexp *make_regexp(void)
 
 static int regexp_compare(ScmObj x, ScmObj y, int equalp)
 {
-    ScmRegexp *rx, *ry;
-
     if (!equalp) {
         Scm_Error("cannot compare regexps: %S and %S", x, y);
     }
-    rx = SCM_REGEXP(x);
-    ry = SCM_REGEXP(y);
+    ScmRegexp *rx = SCM_REGEXP(x);
+    ScmRegexp *ry = SCM_REGEXP(y);
 
     if ((rx->numCodes != ry->numCodes)
         || (rx->numGroups != ry->numGroups)
@@ -258,11 +260,10 @@ static int regexp_compare(ScmObj x, ScmObj y, int equalp)
         return 1;
     } else {
         /* we compare bytecode. */
-        int i;
-        for (i=0; i<rx->numCodes; i++) {
+        for (int i=0; i<rx->numCodes; i++) {
             if (rx->code[i] != ry->code[i]) return 1;
         }
-        for (i=0; i<rx->numSets; i++) {
+        for (int i=0; i<rx->numSets; i++) {
             if (rx->sets[i] == ry->sets[i]) continue;
             if (!Scm_CharSetEq(rx->sets[i], ry->sets[i])) return 1;
         }
@@ -336,7 +337,7 @@ static ScmObj rc1_read_integer(regcomp_ctx *ctx);
 static ScmObj rc1_group_name(regcomp_ctx *ctx);
 static ScmObj rc1_lex_minmax(regcomp_ctx *ctx);
 static ScmObj rc1_lex_open_paren(regcomp_ctx *ctx);
-static ScmChar rc1_lex_xdigits(ScmPort *port, int ndigs, int key);
+static ScmObj rc1_lex_xdigits(ScmPort *port, int key);
 
 /*----------------------------------------------------------------
  * pass1 - parser
@@ -391,10 +392,9 @@ static ScmChar rc1_lex_xdigits(ScmPort *port, int ndigs, int key);
 /* Lexer */
 static ScmObj rc1_lex(regcomp_ctx *ctx)
 {
-    ScmChar ch;
     ScmObj cs;
 
-    ch = Scm_GetcUnsafe(ctx->ipat);
+    ScmChar ch = Scm_GetcUnsafe(ctx->ipat);
     if (ch == SCM_CHAR_INVALID) return SCM_EOF;
     switch (ch) {
     case '(': return rc1_lex_open_paren(ctx);
@@ -423,15 +423,8 @@ static ScmObj rc1_lex(regcomp_ctx *ctx)
         case 'e': return SCM_MAKE_CHAR(0x1b);
         case 'b': return SCM_SYM_WB;
         case 'B': return SCM_SYM_NWB;
-        case 'x':
-            ch = rc1_lex_xdigits(ctx->ipat, 2, 'x');
-            return SCM_MAKE_CHAR(ch);
-        case 'u':
-            ch = rc1_lex_xdigits(ctx->ipat, 4, 'u');
-            return SCM_MAKE_CHAR(Scm_UcsToChar(ch));
-        case 'U':
-            ch = rc1_lex_xdigits(ctx->ipat, 8, 'U');
-            return SCM_MAKE_CHAR(Scm_UcsToChar(ch));
+        case 'x': case 'u': case 'U':
+            return rc1_lex_xdigits(ctx->ipat, ch);
         case 'd':
             cs = Scm_GetStandardCharSet(SCM_CHAR_SET_DIGIT);
             rc_register_charset(ctx, SCM_CHAR_SET(cs));
@@ -481,33 +474,48 @@ static ScmObj rc1_lex(regcomp_ctx *ctx)
     /*NOTREACHED*/
 }
 
-/* Read \x, \u, \U escape sequence in the regexp spec. */
-static ScmChar rc1_lex_xdigits(ScmPort *port, int ndigs, int key)
+/* Read \x, \u, \U escape sequence in the regexp spec.
+   This may read-ahead some hexdigit characters.  In such case, it
+   returns SEQ node. */
+static ScmObj rc1_lex_xdigits(ScmPort *port, int key)
 {
-    char buf[8];
-    int nread;
-    ScmChar r;
-    SCM_ASSERT(ndigs <= 8);
-    r = Scm_ReadXdigitsFromPort(port, ndigs, buf, &nread);
-    if (r == SCM_CHAR_INVALID) {
-        ScmDString ds;
-        int c, i;
+    ScmDString buf;
+
+    Scm_DStringInit(&buf);
+    ScmObj bad = Scm_ReadXdigitsFromPort(port, key, 0, FALSE, &buf);
+    if (SCM_STRINGP(bad)) {
         /* skip chars to the end of regexp, so that the reader will read
            after the erroneous string */
         for (;;) {
+            int c;
             SCM_GETC(c, port);
             if (c == EOF || c == '/') break;
             if (c == '\\') SCM_GETC(c, port);
         }
         /* construct an error message */
-        Scm_DStringInit(&ds);
-        Scm_DStringPutc(&ds, '\\');
-        Scm_DStringPutc(&ds, key);
-        for (i=0; i<nread; i++) Scm_DStringPutc(&ds, (unsigned char)buf[i]);
-        Scm_Error("Bad '\\%c' escape sequence in a regexp literal: %s",
-                  key, Scm_DStringGetz(&ds));
+        Scm_ReadError(port,
+                      "Bad '\\%c' escape sequence in a regexp literal: \\%c%A",
+                      key, key, bad);
+        return SCM_UNDEFINED;   /* dummy */
+    } else {
+        int size, len;
+        const char *chars = Scm_DStringPeek(&buf, &size, &len);
+        if (len == 1) {
+            ScmChar ch;
+            SCM_CHAR_GET(chars, ch);
+            return SCM_MAKE_CHAR(ch);
+        } else {
+            ScmObj h = SCM_NIL, t = SCM_NIL;
+            SCM_APPEND1(h, t, SCM_SYM_SEQ);
+            while (len-- > 0) {
+                ScmChar ch;
+                SCM_CHAR_GET(chars, ch);
+                chars += SCM_CHAR_NBYTES(ch);
+                SCM_APPEND1(h, t, SCM_MAKE_CHAR(ch));
+            }
+            return h;
+        }
     }
-    return r;
 }
 
 /* Called after '+', '*' or '?' is read, and check if there's a
@@ -527,11 +535,8 @@ static ScmObj rc1_rep(regcomp_ctx *ctx, ScmObj greedy,
    "(" has already been read. */
 static ScmObj rc1_lex_open_paren(regcomp_ctx *ctx)
 {
-    ScmObj pos, name;
-    ScmChar ch;
-
-    pos = Scm_PortSeekUnsafe(ctx->ipat, SCM_MAKE_INT(0), SEEK_CUR);
-    ch = Scm_GetcUnsafe(ctx->ipat);
+    ScmObj pos = Scm_PortSeekUnsafe(ctx->ipat, SCM_MAKE_INT(0), SEEK_CUR);
+    ScmChar ch = Scm_GetcUnsafe(ctx->ipat);
     if (ch != '?') {
         Scm_UngetcUnsafe(ch, ctx->ipat);
         return SCM_SYM_OPEN_PAREN;
@@ -543,14 +548,15 @@ static ScmObj rc1_lex_open_paren(regcomp_ctx *ctx)
     case '=': return SCM_SYM_ASSERT;
     case '!': return SCM_SYM_NASSERT;
     case '(': return SCM_SYM_CPAT;
-    case '<':
+    case '<': {
         ch = Scm_GetcUnsafe(ctx->ipat);
         if (ch == '=') return SCM_SYM_LOOKBEHIND;
         if (ch == '!') return SCM_SYM_NLOOKBEHIND;
         Scm_UngetcUnsafe(ch, ctx->ipat);
-        name = rc1_group_name(ctx);
+        ScmObj name = rc1_group_name(ctx);
         if (!SCM_FALSEP(name)) return Scm_Cons(SCM_SYM_REG, name);
         break;
+    }
     case 'i':
         ch = Scm_GetcUnsafe(ctx->ipat);
         if (ch == ':') return SCM_SYM_SEQ_UNCASE;
@@ -570,12 +576,11 @@ static ScmObj rc1_lex_open_paren(regcomp_ctx *ctx)
 
 static ScmObj rc1_read_integer(regcomp_ctx *ctx)
 {
-    ScmObj r;
-    ScmDString ds;
     ScmChar ch = Scm_GetcUnsafe(ctx->ipat);
     if (!isdigit(ch)) {
         Scm_Error("number expected, but got '%c'", ch);
     }
+    ScmDString ds;
     Scm_DStringInit(&ds);
     do {
         Scm_DStringPutc(&ds, ch);
@@ -584,7 +589,7 @@ static ScmObj rc1_read_integer(regcomp_ctx *ctx)
     if (ch != SCM_CHAR_INVALID) {
         Scm_UngetcUnsafe(ch, ctx->ipat);
     }
-    r = Scm_StringToNumber(SCM_STRING(Scm_DStringGet(&ds, 0)), 10, 0);
+    ScmObj r = Scm_StringToNumber(SCM_STRING(Scm_DStringGet(&ds, 0)), 10, 0);
     if (SCM_BIGNUMP(r)) {
         Scm_Error("number too big: %S", r);
     }
@@ -594,12 +599,11 @@ static ScmObj rc1_read_integer(regcomp_ctx *ctx)
 
 static ScmObj rc1_group_name(regcomp_ctx *ctx)
 {
-    ScmChar ch;
     ScmDString ds;
     Scm_DStringInit(&ds);
 
     for (;;) {
-        ch = Scm_GetcUnsafe(ctx->ipat);
+        ScmChar ch = Scm_GetcUnsafe(ctx->ipat);
         if (ch == SCM_CHAR_INVALID) return SCM_FALSE;
         if (ch == '>') {
             return Scm_Intern(SCM_STRING(Scm_DStringGet(&ds, 0)));
@@ -625,14 +629,12 @@ static ScmObj rc1_group_name(regcomp_ctx *ctx)
  */
 static ScmObj rc1_lex_minmax(regcomp_ctx *ctx)
 {
-    int rep_min = -1, rep_max = -1, exact = FALSE, ch;
-    ScmObj pos, m;
+    int rep_min = -1, rep_max = -1, exact = FALSE;
     ScmObj type = SCM_SYM_REP; /* default is greedy */
-
-    pos = Scm_PortSeekUnsafe(ctx->ipat, SCM_MAKE_INT(0), SEEK_CUR);
+    ScmObj pos = Scm_PortSeekUnsafe(ctx->ipat, SCM_MAKE_INT(0), SEEK_CUR);
 
     for (;;) {
-        ch = Scm_GetcUnsafe(ctx->ipat);
+        int ch = Scm_GetcUnsafe(ctx->ipat);
         if (SCM_CHAR_ASCII_P(ch) && isdigit(ch)) {
             if (rep_min < 0) {
                 rep_min = (ch - '0');
@@ -658,7 +660,7 @@ static ScmObj rc1_lex_minmax(regcomp_ctx *ctx)
     if (rep_min > MAX_LIMITED_REPEAT) goto out_of_range;
     if (!exact) {
         for (;;) {
-            ch = Scm_GetcUnsafe(ctx->ipat);
+            int ch = Scm_GetcUnsafe(ctx->ipat);
             if (SCM_CHAR_ASCII_P(ch) && isdigit(ch)) {
                 if (rep_max < 0) {
                     rep_max = (ch - '0');
@@ -677,11 +679,12 @@ static ScmObj rc1_lex_minmax(regcomp_ctx *ctx)
         }
     }
 
+    ScmObj m;
     if (exact)            m = SCM_MAKE_INT(rep_min);
     else if (rep_max < 0) m = SCM_FALSE;
     else                  m = SCM_MAKE_INT(rep_max);
 
-    ch = Scm_GetcUnsafe(ctx->ipat);
+    int ch = Scm_GetcUnsafe(ctx->ipat);
     if (ch == '?') type = SCM_SYM_REP_MIN;
     else Scm_UngetcUnsafe(ch, ctx->ipat);
     return Scm_Cons(type, Scm_Cons(SCM_MAKE_INT(rep_min), m));
@@ -710,19 +713,17 @@ static ScmObj rc1_fold_alts(regcomp_ctx *ctx, ScmObj alts)
     return Scm_Cons(SCM_SYM_ALT, r);
 }
 
-static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level);
+static ScmObj rc1_parse(regcomp_ctx *, int, ScmObj);
 
-static ScmObj rc1_lex_conditional_pattern(regcomp_ctx *ctx, int bolp, int level)
+static ScmObj rc1_lex_conditional_pattern(regcomp_ctx *ctx, int bolp,
+                                          ScmObj grps)
 {
-    ScmChar ch;
-    ScmObj type, item, r;
-
-    ch = Scm_GetcUnsafe(ctx->ipat);
+    ScmChar ch = Scm_GetcUnsafe(ctx->ipat);
     if (ch == SCM_CHAR_INVALID)
         goto error;
     if (isdigit(ch)) {
         Scm_UngetcUnsafe(ch, ctx->ipat);
-        r = rc1_read_integer(ctx);
+        ScmObj r = rc1_read_integer(ctx);
         if (!SCM_EQ(rc1_lex(ctx), SCM_SYM_CLOSE_PAREN))
             goto error;
         return r;
@@ -730,10 +731,11 @@ static ScmObj rc1_lex_conditional_pattern(regcomp_ctx *ctx, int bolp, int level)
     if (ch == '?') {
         ch = Scm_GetcUnsafe(ctx->ipat);
         if (ch == '=')
-            return Scm_Cons(SCM_SYM_ASSERT, rc1_parse(ctx, bolp, FALSE, level));
+            return Scm_Cons(SCM_SYM_ASSERT, rc1_parse(ctx, bolp, grps));
         if (ch == '!')
-            return Scm_Cons(SCM_SYM_NASSERT, rc1_parse(ctx, bolp, FALSE, level));
+            return Scm_Cons(SCM_SYM_NASSERT, rc1_parse(ctx, bolp, grps));
         if (ch == '<') {
+            ScmObj type;
             ch = Scm_GetcUnsafe(ctx->ipat);
             if (ch == '=') {
                 type = SCM_SYM_ASSERT;
@@ -744,7 +746,7 @@ static ScmObj rc1_lex_conditional_pattern(regcomp_ctx *ctx, int bolp, int level)
                           ch, ctx->pattern);
                 type = SCM_SYM_NASSERT; /* dummy */
             }
-            item = rc1_parse(ctx, bolp, FALSE, level);
+            ScmObj item = rc1_parse(ctx, bolp, grps);
             return SCM_LIST2(type, Scm_Cons(SCM_SYM_LOOKBEHIND, item));
         }
         /* fallthru */
@@ -757,28 +759,33 @@ static ScmObj rc1_lex_conditional_pattern(regcomp_ctx *ctx, int bolp, int level)
 }
 
 /* Parser */
-static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
+/* Groups represents the current nestings of parentheses, including both
+   capturing groups and non-capturing parens.  It works like a stack, where
+   the leftmost item is for the innermost open paren.  The value is a
+   group number for capturing groups, and #f for others. */
+static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, ScmObj groups)
 {
     ScmObj stack = SCM_NIL, alts = SCM_NIL;
-    ScmObj token, item;
     int bolpsave = bolp;
 
+#define TOPP()     (SCM_NULLP(groups))
 #define PUSH(elt)  (stack = Scm_Cons((elt), stack))
 #define PUSH1(elt) (stack = Scm_Cons((elt), SCM_CDR(stack)))
 
     for (;;) {
-        token = rc1_lex(ctx);
+        ScmObj token = rc1_lex(ctx);
+        ScmObj item;
         if (SCM_EOFP(token)) {
-            if (!topp) {
+            if (!TOPP()) {
                 Scm_Error("unterminated grouping in regexp %S", ctx->pattern);
             }
             break;
         }
         if (SCM_EQ(token, SCM_SYM_CLOSE_PAREN)) {
-            if (topp) {
+            if (TOPP()) {
                 Scm_Error("extra close parenthesis in regexp %S", ctx->pattern);
             }
-            level--;
+            groups = SCM_CDR(groups);
             break;
         }
         if (SCM_EQ(token, SCM_SYM_BOL)) {
@@ -799,13 +806,13 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
         }
         if (SCM_EQ(token, SCM_SYM_OPEN_PAREN)) {
             int grpno = ++ctx->grpcount;
-            item = rc1_parse(ctx, bolp, FALSE, level+1);
+            item = rc1_parse(ctx, bolp, Scm_Cons(SCM_MAKE_INT(grpno), groups));
             PUSH(Scm_Cons(SCM_MAKE_INT(grpno), Scm_Cons(SCM_FALSE, item)));
             bolp = FALSE;
             continue;
         }
         if (SCM_EQ(token, SCM_SYM_SEQ)) {
-            item = rc1_parse(ctx, bolp, FALSE, level);
+            item = rc1_parse(ctx, bolp, Scm_Cons(SCM_FALSE, groups));
             PUSH(Scm_Cons(SCM_SYM_SEQ, item));
             bolp = FALSE;
             continue;
@@ -813,7 +820,7 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
         if (SCM_EQ(token, SCM_SYM_SEQ_UNCASE) || SCM_EQ(token, SCM_SYM_SEQ_CASE)) {
             int oldflag = ctx->casefoldp;
             ctx->casefoldp = SCM_EQ(token, SCM_SYM_SEQ_UNCASE);
-            item = rc1_parse(ctx, bolp, FALSE, level);
+            item = rc1_parse(ctx, bolp, Scm_Cons(SCM_FALSE, groups));
             PUSH(Scm_Cons(token, item));
             ctx->casefoldp = oldflag;
             bolp = FALSE;
@@ -821,21 +828,21 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
         }
         if (SCM_EQ(token, SCM_SYM_ONCE)) {
             /* (?>re) can have BOL/EOL.*/
-            item = rc1_parse(ctx, TRUE, FALSE, level);
+            item = rc1_parse(ctx, TRUE, Scm_Cons(SCM_FALSE, groups));
             PUSH(Scm_Cons(SCM_SYM_ONCE, item));
             bolp = FALSE;
             continue;
         }
         if (SCM_EQ(token, SCM_SYM_ASSERT) || SCM_EQ(token, SCM_SYM_NASSERT)) {
             /* (?=re) and (?!re) can have BOL/EOL.*/
-            item = rc1_parse(ctx, TRUE, FALSE, level);
+            item = rc1_parse(ctx, TRUE, Scm_Cons(SCM_FALSE, groups));
             PUSH(Scm_Cons(token, item));
             continue;
         }
         if (SCM_EQ(token, SCM_SYM_LOOKBEHIND) || SCM_EQ(token, SCM_SYM_NLOOKBEHIND)) {
             /* "(?<=a)" => (assert (lookbehind a))
                "(?<!a)" => (nassert (lookbehind a)) */
-            item = rc1_parse(ctx, TRUE, FALSE, level);
+            item = rc1_parse(ctx, TRUE, Scm_Cons(SCM_FALSE, groups));
             PUSH(SCM_LIST2(SCM_EQ(token, SCM_SYM_LOOKBEHIND)? SCM_SYM_ASSERT : SCM_SYM_NASSERT,
                            Scm_Cons(SCM_SYM_LOOKBEHIND, item)));
             continue;
@@ -893,8 +900,9 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
         }
         if (SCM_EQ(token, SCM_SYM_CPAT)) {
             ScmObj cond, ypat, npat;
-            cond = rc1_lex_conditional_pattern(ctx, bolp, level);
-            item = rc1_parse(ctx, bolp, FALSE, level);
+            ScmObj new_groups = Scm_Cons(SCM_FALSE, groups);
+            cond = rc1_lex_conditional_pattern(ctx, bolp, new_groups);
+            item = rc1_parse(ctx, bolp, new_groups);
             if (SCM_PAIRP(item) && SCM_PAIRP(SCM_CAR(item))
                 && SCM_EQ(SCM_CAAR(item), SCM_SYM_ALT)) {
                 ScmObj elt = SCM_CAR(item);
@@ -906,7 +914,7 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
                 npat = SCM_CDDR(elt);
             } else {
                 ypat = item;
-                npat = SCM_FALSE;
+                npat = SCM_NIL;
             }
             PUSH(SCM_LIST4(SCM_SYM_CPAT, cond, ypat, npat));
             bolp = FALSE;
@@ -916,7 +924,7 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
             /* "(?P<name>x)" => (<integer> name . <ast>)) */
             int grpno = ++ctx->grpcount;
             ScmObj name = SCM_CDR(token);
-            item = rc1_parse(ctx, bolp, FALSE, level+1);
+            item = rc1_parse(ctx, bolp, Scm_Cons(SCM_MAKE_INT(grpno), groups));
             PUSH(Scm_Cons(SCM_MAKE_INT(grpno), Scm_Cons(name, item)));
             ctx->rx->grpNames = Scm_Acons(name, SCM_MAKE_INT(grpno), ctx->rx->grpNames);
             bolp = FALSE;
@@ -937,22 +945,28 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
             continue;
         }
         if (SCM_PAIRP(token) && SCM_EQ(SCM_CAR(token), SCM_SYM_BACKREF)) {
-            ScmObj ep, h = SCM_NIL, t = SCM_NIL;
+            ScmObj h = SCM_NIL, t = SCM_NIL;
             ScmObj ref = SCM_CDR(token);
             if (SCM_INTP(ref)) {
                 int grpno = SCM_INT_VALUE(ref);
-                if (ctx->grpcount - level < grpno) goto synerr;
+                if (ctx->grpcount < grpno
+                    || !SCM_FALSEP(Scm_Memv(SCM_MAKE_INT(grpno), groups))) {
+                    Scm_Error("Backreference \\%d refers to an unfinished group.",
+                              grpno);
+                }
                 PUSH(token);
                 bolp = FALSE;
                 continue;
             }
 
             SCM_ASSERT(SCM_SYMBOLP(ref));
+            ScmObj ep;
             SCM_FOR_EACH(ep, ctx->rx->grpNames) {
                 if (!SCM_EQ(SCM_CAAR(ep), ref)) continue;
                 SCM_APPEND1(h, t, Scm_Cons(SCM_SYM_BACKREF, SCM_CDAR(ep)));
             }
             if (SCM_NULLP(h)) goto synerr;
+
             PUSH(SCM_NULLP(SCM_CDR(h))? SCM_CAR(h) : Scm_Cons(SCM_SYM_ALT, h));
             bolp = FALSE;
             continue;
@@ -976,15 +990,14 @@ static ScmObj rc1_parse(regcomp_ctx *ctx, int bolp, int topp, int level)
 
 static ScmObj rc1(regcomp_ctx *ctx)
 {
-    ScmObj ast = rc1_parse(ctx, TRUE, TRUE, 0);
-    int ngrp;
+    ScmObj ast = rc1_parse(ctx, TRUE, SCM_NIL);
     if (ctx->casefoldp) {
         ast = SCM_LIST3(SCM_MAKE_INT(0), SCM_FALSE,
                         Scm_Cons(SCM_SYM_SEQ_UNCASE, ast));
     } else {
         ast = Scm_Cons(SCM_MAKE_INT(0), Scm_Cons(SCM_FALSE, ast));
     }
-    ngrp = ctx->grpcount + 1;
+    int ngrp = ctx->grpcount + 1;
     ctx->rx->numGroups = ngrp;
     return ast;
 }
@@ -1021,11 +1034,10 @@ static void rc_register_charset(regcomp_ctx *ctx, ScmCharSet *cs)
    parser context, build a charset vector. */
 static void rc_setup_charsets(ScmRegexp *rx, regcomp_ctx *ctx)
 {
-    ScmObj cp;
-    int i = 0;
     rx->numSets = Scm_Length(ctx->sets);
     rx->sets = SCM_NEW_ARRAY(ScmCharSet*, rx->numSets);
-    for (i=0, cp = Scm_Reverse(ctx->sets); !SCM_NULLP(cp); cp = SCM_CDR(cp)) {
+    ScmObj cp = Scm_Reverse(ctx->sets);
+    for (int i=0; !SCM_NULLP(cp); cp = SCM_CDR(cp)) {
         rx->sets[i++] = SCM_CHAR_SET(SCM_CAR(cp));
     }
 }
@@ -1043,16 +1055,16 @@ static int    is_distinct(ScmObj x, ScmObj y);
 
 static ScmObj rc2_optimize_seq(ScmObj seq, ScmObj rest)
 {
-    ScmObj elt, tail, etype, opted;
     if (!SCM_PAIRP(seq)) return seq;
-    elt = SCM_CAR(seq);
-    tail = rc2_optimize_seq(SCM_CDR(seq), rest);
+    ScmObj opted;
+    ScmObj elt = SCM_CAR(seq);
+    ScmObj tail = rc2_optimize_seq(SCM_CDR(seq), rest);
     rest = SCM_NULLP(tail)? rest : tail;
     if (!SCM_PAIRP(elt) || SCM_EQ(SCM_CAR(elt), SCM_SYM_COMP)) {
         if (SCM_EQ(tail, SCM_CDR(seq))) return seq;
         else return Scm_Cons(elt, tail);
     }
-    etype = SCM_CAR(elt);
+    ScmObj etype = SCM_CAR(elt);
     if (SCM_EQ(etype, SCM_SYM_SEQ)) {
         return Scm_Append2(rc2_optimize_seq(SCM_CDR(elt), rest), tail);
     }
@@ -1081,9 +1093,9 @@ static ScmObj rc2_optimize_seq(ScmObj seq, ScmObj rest)
 
 static ScmObj rc2_optimize(ScmObj ast, ScmObj rest)
 {
-    ScmObj type, seq, seqo;
     if (!SCM_PAIRP(ast)) return ast;
-    type = SCM_CAR(ast);
+    ScmObj seq, seqo;
+    ScmObj type = SCM_CAR(ast);
     if (SCM_EQ(type, SCM_SYM_COMP)) return ast;
     if (SCM_EQ(type, SCM_SYM_LOOKBEHIND)) return ast;
 
@@ -1120,9 +1132,8 @@ static ScmObj rc2_optimize(ScmObj ast, ScmObj rest)
 
 static int is_distinct(ScmObj x, ScmObj y)
 {
-    ScmObj carx;
     if (SCM_PAIRP(x)) {
-        carx = SCM_CAR(x);
+        ScmObj carx = SCM_CAR(x);
         if (SCM_EQ(carx, SCM_SYM_COMP)) {
             SCM_ASSERT(SCM_CHAR_SET_P(SCM_CDR(x)));
             if (SCM_CHARP(y) || SCM_CHAR_SET_P(y)) {
@@ -1183,8 +1194,7 @@ static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp);
  */
 static int rc3_charset_index(ScmRegexp *rx, ScmObj cs)
 {
-    int i;
-    for (i=0; i<rx->numSets; i++)
+    for (int i=0; i<rx->numSets; i++)
         if (cs == SCM_OBJ(rx->sets[i])) return i;
     Scm_Panic("rc3_charset_index: can't be here");
     return 0;                   /* dummy */
@@ -1236,22 +1246,21 @@ static void rc3_fill_offset(regcomp_ctx *ctx, int codep, int offset)
 
 static void rc3_seq(regcomp_ctx *ctx, ScmObj seq, int lastp)
 {
-    ScmObj cp, item;
+    ScmObj cp;
 
     if (ctx->lookbehindp) seq = Scm_Reverse(seq);
 
     SCM_FOR_EACH(cp, seq) {
-        item = SCM_CAR(cp);
+        ScmObj item = SCM_CAR(cp);
 
         /* concatenate literal character sequence */
         if (SCM_CHARP(item)) {
-            ScmObj h = SCM_NIL, t = SCM_NIL, ht;
-            int nrun = 0, nb, i;
-            ScmChar ch;
+            ScmObj h = SCM_NIL, t = SCM_NIL;
+            int nrun = 0;
             char chbuf[SCM_CHAR_MAX_BYTES];
 
             do {
-                ch = SCM_CHAR_VALUE(item);
+                ScmChar ch = SCM_CHAR_VALUE(item);
                 nrun += SCM_CHAR_NBYTES(ch);
                 SCM_APPEND1(h, t, item);
                 cp = SCM_CDR(cp);
@@ -1265,11 +1274,12 @@ static void rc3_seq(regcomp_ctx *ctx, ScmObj seq, int lastp)
             } else {
                 EMIT4(!ctx->casefoldp, RE_MATCH, RE_MATCH_RL, RE_MATCH_CI, RE_MATCH_CI_RL);
                 rc3_emit(ctx, (char)nrun);
+                ScmObj ht;
                 SCM_FOR_EACH(ht, h) {
-                    ch = SCM_CHAR_VALUE(SCM_CAR(ht));
-                    nb = SCM_CHAR_NBYTES(ch);
+                    ScmChar ch = SCM_CHAR_VALUE(SCM_CAR(ht));
+                    int nb = SCM_CHAR_NBYTES(ch);
                     SCM_CHAR_PUT(chbuf, ch);
-                    for (i = 0; i < nb; i++) rc3_emit(ctx, chbuf[i]);
+                    for (int i = 0; i < nb; i++) rc3_emit(ctx, chbuf[i]);
                 }
             }
             if (SCM_NULLP(cp)) break;
@@ -1324,13 +1334,13 @@ static void rc3_minmax(regcomp_ctx *ctx, ScmObj type, int count,
            #1<N>:
     */
     ScmObj jlist = SCM_NIL;
-    int n, j0 = 0, jn;
+    int j0 = 0, jn;
     int greedy = SCM_EQ(type, SCM_SYM_REP);
 
     /* first part - TRYs and JUMPs
        j0 is used to patch the label #0k
        the destination of jumps to be patched are linked to jlist */
-    for (n=0; n<count; n++) {
+    for (int n=0; n<count; n++) {
         if (n>0) rc3_fill_offset(ctx, j0, ctx->codep);
         rc3_emit(ctx, RE_TRY);
         if (ctx->emitp) j0 = ctx->codep;
@@ -1360,7 +1370,7 @@ static void rc3_minmax(regcomp_ctx *ctx, ScmObj type, int count,
         rc3_fill_offset(ctx, jn, ctx->codep);
     }
     if (ctx->emitp && greedy) jlist = Scm_ReverseX(jlist);
-    for (n=0; n<count; n++) {
+    for (int n=0; n<count; n++) {
         if (ctx->emitp) {
             rc3_fill_offset(ctx, SCM_INT_VALUE(SCM_CAR(jlist)),
                             ctx->codep);
@@ -1382,7 +1392,6 @@ static void rc3_minmax(regcomp_ctx *ctx, ScmObj type, int count,
 
 static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp)
 {
-    ScmObj type;
     ScmRegexp *rx = ctx->rx;
 
     /* first, deal with atoms */
@@ -1391,7 +1400,7 @@ static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp)
         if (SCM_CHARP(ast)) {
             char chbuf[SCM_CHAR_MAX_BYTES];
             ScmChar ch = SCM_CHAR_VALUE(ast);
-            int i, nb = SCM_CHAR_NBYTES(ch);
+            int nb = SCM_CHAR_NBYTES(ch);
             SCM_CHAR_PUT(chbuf, ch);
             if (nb == 1) {
                 EMIT4(!ctx->casefoldp, RE_MATCH1, RE_MATCH1_RL, RE_MATCH1_CI, RE_MATCH1_CI_RL);
@@ -1399,7 +1408,7 @@ static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp)
             } else {
                 EMIT4(!ctx->casefoldp, RE_MATCH, RE_MATCH_RL, RE_MATCH_CI, RE_MATCH_CI_RL);
                 rc3_emit(ctx, nb);
-                for (i=0; i<nb; i++) rc3_emit(ctx, chbuf[i]);
+                for (int i=0; i<nb; i++) rc3_emit(ctx, chbuf[i]);
             }
             return;
         }
@@ -1442,7 +1451,7 @@ static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp)
     }
 
     /* now we have a structured node */
-    type = SCM_CAR(ast);
+    ScmObj type = SCM_CAR(ast);
     if (SCM_EQ(type, SCM_SYM_COMP)) {
         ScmObj cs = SCM_CDR(ast);
         SCM_ASSERT(SCM_CHAR_SET_P(cs));
@@ -1472,23 +1481,48 @@ static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp)
         return;
     }
     if (SCM_EQ(type, SCM_SYM_REP_WHILE)) {
-        /* here we have an opportunity to generate an optimized code. */
+        /* here we have an opportunity to generate an optimized code.
+           for now, we only check elem is a single item case, but we can
+           do better. */
+        /* (rep-while m n . elem) */
         ScmObj m = SCM_CADR(ast), n = SCM_CAR(SCM_CDDR(ast));
         ScmObj elem = SCM_CDR(SCM_CDDR(ast));
         if (SCM_FALSEP(n) && SCM_PAIRP(elem) && SCM_NULLP(SCM_CDR(elem))) {
-            if (SCM_CHAR_SET_P(SCM_CAR(elem))) {
+            /* (rep-while m #f elem1) */
+            ScmObj elem1 = SCM_CAR(elem);
+            if (SCM_EQ(elem1, SCM_SYM_ANY) && !ctx->lookbehindp) {
                 rc3_seq_rep(ctx, elem, SCM_INT_VALUE(m), FALSE);
-                elem = SCM_CAR(elem);
-                EMIT4(!SCM_CHAR_SET_SMALLP(elem), RE_SETR, RE_SETR_RL, RE_SET1R, RE_SET1R_RL);
-                rc3_emit(ctx, rc3_charset_index(rx, elem));
+                rc3_emit(ctx, RE_ANYR);
                 return;
             }
-            if (SCM_PAIRP(elem)&&SCM_EQ(SCM_CAR(elem), SCM_SYM_COMP)) {
+            if (SCM_CHARP(elem1) && !ctx->lookbehindp) {
+                ScmChar ch = SCM_CHAR_VALUE(elem1);
                 rc3_seq_rep(ctx, elem, SCM_INT_VALUE(m), FALSE);
-                elem = SCM_CDR(elem);
-                SCM_ASSERT(SCM_CHAR_SET_P(elem));
+                int n = SCM_CHAR_NBYTES(ch);
+                if (n == 1) {
+                    rc3_emit(ctx, RE_MATCH1R);
+                    rc3_emit(ctx, (char)ch);
+                } else {
+                    char chbuf[SCM_CHAR_MAX_BYTES];
+                    SCM_CHAR_PUT(chbuf, ch);
+                    rc3_emit(ctx, RE_MATCHR);
+                    rc3_emit(ctx, (char)n);  /* we know it's never overflow */
+                    for (int i=0; i < n; i++) rc3_emit(ctx, chbuf[i]);
+                }
+                return;
+            }
+            if (SCM_CHAR_SET_P(elem1)) {
+                rc3_seq_rep(ctx, elem, SCM_INT_VALUE(m), FALSE);
+                EMIT4(!SCM_CHAR_SET_SMALLP(elem1), RE_SETR, RE_SETR_RL, RE_SET1R, RE_SET1R_RL);
+                rc3_emit(ctx, rc3_charset_index(rx, elem1));
+                return;
+            }
+            if (SCM_PAIRP(elem1)&&SCM_EQ(SCM_CAR(elem1), SCM_SYM_COMP)) {
+                rc3_seq_rep(ctx, elem, SCM_INT_VALUE(m), FALSE);
+                ScmObj cs = SCM_CDR(elem1);
+                SCM_ASSERT(SCM_CHAR_SET_P(cs));
                 EMIT4(!ctx->lookbehindp, RE_NSETR, RE_NSETR_RL, RE_NSET1R, RE_NSET1R_RL);
-                rc3_emit(ctx, rc3_charset_index(rx, elem));
+                rc3_emit(ctx, rc3_charset_index(rx, cs));
                 return;
             }
         }
@@ -1658,41 +1692,38 @@ static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp)
            #2:   <no-pattern>
            #3:
         */
-        int ocodep1, ocodep2, ocodep3;
         ScmObj cond = SCM_CADR(ast);
         ScmObj ypat = SCM_CAR(SCM_CDDR(ast));
         ScmObj npat = SCM_CADR(SCM_CDDR(ast));
         if (SCM_INTP(cond)) {
             rc3_emit(ctx, RE_CPAT);
             rc3_emit(ctx, (char)SCM_INT_VALUE(cond));
-            ocodep1 = ctx->codep;
+            int ocodep1 = ctx->codep;
             rc3_emit_offset(ctx, 0); /* will be patched */
             rc3_seq(ctx, ypat, lastp);
             rc3_emit(ctx, RE_JUMP);
-            ocodep2 = ctx->codep;
+            int ocodep2 = ctx->codep;
             rc3_emit_offset(ctx, 0); /* will be patched */
             rc3_fill_offset(ctx, ocodep1, ctx->codep);
-            if (SCM_FALSEP(npat)) rc3_emit(ctx, RE_FAIL);
-            else rc3_seq(ctx, npat, lastp);
+            rc3_seq(ctx, npat, lastp);
             rc3_fill_offset(ctx, ocodep2, ctx->codep);
         } else {
             SCM_ASSERT(SCM_EQ(SCM_CAR(cond), SCM_SYM_ASSERT)
                        || SCM_EQ(SCM_CAR(cond), SCM_SYM_NASSERT));
             rc3_emit(ctx, RE_CPATA);
-            ocodep1 = ctx->codep;
+            int ocodep1 = ctx->codep;
             rc3_emit_offset(ctx, 0); /* will be patched */
-            ocodep2 = ctx->codep;
+            int ocodep2 = ctx->codep;
             rc3_emit_offset(ctx, 0); /* will be patched */
             rc3_rec(ctx, cond, lastp);
             rc3_emit(ctx, RE_SUCCESS);
             rc3_fill_offset(ctx, ocodep1, ctx->codep);
             rc3_seq(ctx, ypat, lastp);
             rc3_emit(ctx, RE_JUMP);
-            ocodep3 = ctx->codep;
+            int ocodep3 = ctx->codep;
             rc3_emit_offset(ctx, 0); /* will be patched */
             rc3_fill_offset(ctx, ocodep2, ctx->codep);
-            if (SCM_FALSEP(npat)) rc3_emit(ctx, RE_FAIL);
-            else rc3_seq(ctx, npat, lastp);
+            rc3_seq(ctx, npat, lastp);
             rc3_fill_offset(ctx, ocodep3, ctx->codep);
         }
         return;
@@ -1702,12 +1733,11 @@ static void rc3_rec(regcomp_ctx *ctx, ScmObj ast, int lastp)
 
 static int is_bol_anchored(ScmObj ast)
 {
-    ScmObj type;
     if (!SCM_PAIRP(ast)) {
         if (SCM_EQ(ast, SCM_SYM_BOL)) return TRUE;
         else return FALSE;
     }
-    type = SCM_CAR(ast);
+    ScmObj type = SCM_CAR(ast);
     if (SCM_INTP(type)) {
         if (!SCM_PAIRP(SCM_CDDR(ast))) return FALSE;
         return is_bol_anchored(SCM_CAR(SCM_CDDR(ast)));
@@ -1749,10 +1779,8 @@ static int is_char_or_charset(ScmObj ast)
    we can skip prefix of s as far as it matches #/A/. */
 static int is_simple_prefixed(ScmObj ast)
 {
-    ScmObj car;
-
     if (!SCM_PAIRP(ast)) return FALSE;
-    car = SCM_CAR(ast);
+    ScmObj car = SCM_CAR(ast);
     if (SCM_EQ(car, SCM_SYM_REP_WHILE)) {
         if (SCM_EQ(SCM_CADR(ast), SCM_MAKE_INT(1))
             && SCM_FALSEP(SCM_CAR(SCM_CDDR(ast)))) {
@@ -1793,8 +1821,6 @@ static ScmObj calculate_lasetn(ScmObj ast);
    skip the input. */
 static ScmObj calculate_laset(ScmObj head, ScmObj rest)
 {
-    ScmObj head_car, cs;
-
     if (!SCM_PAIRP(head)) {
         if (SCM_CHARP(head)) {
             return Scm_CharSetAddRange(SCM_CHAR_SET(Scm_MakeEmptyCharSet()),
@@ -1805,18 +1831,18 @@ static ScmObj calculate_laset(ScmObj head, ScmObj rest)
         }
         return SCM_FALSE;
     }
-    head_car = SCM_CAR(head);
+    ScmObj head_car = SCM_CAR(head);
 
     if (SCM_EQ(head_car, SCM_SYM_COMP)) {
         SCM_ASSERT(SCM_CHAR_SET_P(SCM_CDR(head)));
-        cs = Scm_CharSetCopy(SCM_CHAR_SET(SCM_CDR(head)));
+        ScmObj cs = Scm_CharSetCopy(SCM_CHAR_SET(SCM_CDR(head)));
         return Scm_CharSetComplement(SCM_CHAR_SET(cs));
     } else if (SCM_EQ(head_car, SCM_SYM_SEQ)||SCM_EQ(head_car, SCM_SYM_ONCE)) {
         return calculate_lasetn(SCM_CDR(head));
     } else if (SCM_EQ(head_car, SCM_SYM_ALT)) {
-        ScmObj choices = SCM_CDR(head), r;
+        ScmObj choices = SCM_CDR(head);
         if (!SCM_PAIRP(choices)) return SCM_FALSE;
-        r = calculate_laset(SCM_CAR(choices), SCM_NIL);
+        ScmObj r = calculate_laset(SCM_CAR(choices), SCM_NIL);
         choices = SCM_CDR(choices);
         while (!SCM_FALSEP(r) && SCM_PAIRP(choices)) {
             r = merge_laset(r, calculate_laset(SCM_CAR(choices), SCM_NIL));
@@ -1875,8 +1901,6 @@ static ScmObj rc3(regcomp_ctx *ctx, ScmObj ast)
 /* For debug */
 void Scm_RegDump(ScmRegexp *rx)
 {
-    int end = rx->numCodes, codep;
-
     Scm_Printf(SCM_CUROUT, "Regexp %p: (flags=%08x", rx, rx->flags);
     if (rx->flags&SCM_REGEXP_BOL_ANCHORED)
         Scm_Printf(SCM_CUROUT, ",BOL_ANCHORED");
@@ -1891,7 +1915,8 @@ void Scm_RegDump(ScmRegexp *rx)
         Scm_Printf(SCM_CUROUT, "(none)\n");
     }
 
-    for (codep = 0; codep < end; codep++) {
+    int end = rx->numCodes;
+    for (int codep = 0; codep < end; codep++) {
         int code = rx->code[codep];
         switch (code) {
         case RE_MATCH1:    case RE_MATCH1_CI:
@@ -2021,6 +2046,29 @@ void Scm_RegDump(ScmRegexp *rx)
                        rx->code[codep],
                        rx->sets[rx->code[codep]]);
             continue;
+        case RE_MATCH1R:
+            codep++;
+            Scm_Printf(SCM_CUROUT, "%4d  %s  0x%02x  '%c'\n",
+                       codep-1, "MATCH1R",
+                       rx->code[codep], rx->code[codep]);
+            continue;
+        case RE_MATCHR:
+            codep++;
+            {
+                u_int numchars = (u_int)rx->code[codep];
+                u_int i;
+                Scm_Printf(SCM_CUROUT, "%4d  %s(%3d) '",
+                           codep-1, "MATCHR",
+                           numchars);
+                for (i=0; i< numchars; i++)
+                    Scm_Printf(SCM_CUROUT, "%c", rx->code[++codep]);
+                Scm_Printf(SCM_CUROUT, "'\n");
+            }
+            continue;
+        case RE_ANYR:
+            Scm_Printf(SCM_CUROUT, "%4d  %s\n",
+                       codep, "ANYR");
+            continue;
         case RE_CPAT:
             Scm_Printf(SCM_CUROUT, "%4d  CPAT %d %d\n",
                        codep, rx->code[codep+1],
@@ -2075,7 +2123,6 @@ static ScmObj rc_setup_context_seq(regcomp_ctx *ctx, ScmObj seq);
 
 static ScmObj rc_setup_context(regcomp_ctx *ctx, ScmObj ast)
 {
-    ScmObj type, rest;
     if (!SCM_PAIRP(ast)) {
         if (SCM_CHARP(ast)) return ast;
         if (SCM_CHAR_SET_P(ast)) {
@@ -2089,11 +2136,11 @@ static ScmObj rc_setup_context(regcomp_ctx *ctx, ScmObj ast)
         }
         goto badast;
     }
-    type = SCM_CAR(ast);
+    ScmObj type = SCM_CAR(ast);
     if (SCM_INTP(type)) {
         int grpno = ctx->grpcount++;
         ScmObj prevno = type, name = SCM_CADR(ast), body = SCM_CDDR(ast);
-        rest = rc_setup_context_seq(ctx, body);
+        ScmObj rest = rc_setup_context_seq(ctx, body);
         if (SCM_SYMBOLP(name)) {
             ctx->rx->grpNames = Scm_Acons(name, SCM_MAKE_INT(grpno),
                                           ctx->rx->grpNames);
@@ -2114,15 +2161,14 @@ static ScmObj rc_setup_context(regcomp_ctx *ctx, ScmObj ast)
        return ast;
     }
     if (SCM_EQ(type, SCM_SYM_CPAT)) {
-       ScmObj cond, then, alt;
        if (!SCM_PAIRP(SCM_CDR(ast))
            || !SCM_PAIRP(SCM_CDDR(ast))
            || !SCM_PAIRP(SCM_CDR(SCM_CDDR(ast)))
            || !SCM_NULLP(SCM_CDDR(SCM_CDDR(ast))))
            goto badast;
-       cond = SCM_CADR(ast);
-       then = SCM_CAR(SCM_CDDR(ast));
-       alt = SCM_CADR(SCM_CDDR(ast));
+       ScmObj cond = SCM_CADR(ast);
+       ScmObj then = SCM_CAR(SCM_CDDR(ast));
+       ScmObj alt = SCM_CADR(SCM_CDDR(ast));
        if (SCM_PAIRP(cond)) {
            if (!SCM_EQ(SCM_CAR(cond), SCM_SYM_ASSERT)
                && !SCM_EQ(SCM_CAR(cond), SCM_SYM_NASSERT)) goto badast;
@@ -2142,22 +2188,21 @@ static ScmObj rc_setup_context(regcomp_ctx *ctx, ScmObj ast)
         || SCM_EQ(type, SCM_SYM_SEQ_UNCASE) || SCM_EQ(type, SCM_SYM_SEQ_CASE)
         || SCM_EQ(type, SCM_SYM_ONCE) || SCM_EQ(type, SCM_SYM_LOOKBEHIND)
         || SCM_EQ(type, SCM_SYM_ASSERT) || SCM_EQ(type, SCM_SYM_NASSERT)) {
-        rest = rc_setup_context_seq(ctx, SCM_CDR(ast));
+        ScmObj rest = rc_setup_context_seq(ctx, SCM_CDR(ast));
         if (SCM_EQ(SCM_CDR(ast), rest)) return ast;
         else return Scm_Cons(type, rest);
     }
     if (SCM_EQ(type, SCM_SYM_REP_WHILE) || SCM_EQ(type, SCM_SYM_REP)
         || SCM_EQ(type, SCM_SYM_REP_MIN)) {
-        ScmObj m, n, item;
         if (!SCM_PAIRP(SCM_CDR(ast)) || !SCM_PAIRP(SCM_CDDR(ast)))
             goto badast;
-        m = SCM_CADR(ast);
-        n = SCM_CAR(SCM_CDDR(ast));
-        item = SCM_CDR(SCM_CDDR(ast));
+        ScmObj m = SCM_CADR(ast);
+        ScmObj n = SCM_CAR(SCM_CDDR(ast));
+        ScmObj item = SCM_CDR(SCM_CDDR(ast));
         if (!SCM_INTP(m) || SCM_INT_VALUE(m) < 0) goto badast;
         if (!SCM_FALSEP(n) && (!SCM_INTP(n) || SCM_INT_VALUE(m) < 0))
             goto badast;
-        rest = rc_setup_context_seq(ctx, item);
+        ScmObj rest = rc_setup_context_seq(ctx, item);
         if (SCM_EQ(item, rest)) return ast;
         else return SCM_LIST4(type, m, n, rest);
     }
@@ -2168,7 +2213,7 @@ static ScmObj rc_setup_context(regcomp_ctx *ctx, ScmObj ast)
 
 static ScmObj rc_setup_context_seq(regcomp_ctx *ctx, ScmObj seq)
 {
-    ScmObj sp, sp2, obj, head = SCM_NIL, tail = SCM_NIL;
+    ScmObj sp, sp2, obj = SCM_NIL, head = SCM_NIL, tail = SCM_NIL;
     SCM_FOR_EACH(sp, seq) {
         obj = rc_setup_context(ctx, SCM_CAR(sp));
         if (!SCM_EQ(obj, SCM_CAR(sp))) break;
@@ -2191,19 +2236,18 @@ static ScmObj rc_setup_context_seq(regcomp_ctx *ctx, ScmObj seq)
  */
 ScmObj Scm_RegComp(ScmString *pattern, int flags)
 {
-    ScmRegexp *rx = make_regexp();
-    ScmObj ast;
-    regcomp_ctx cctx;
-
     if (SCM_STRING_INCOMPLETE_P(pattern)) {
         Scm_Error("incomplete string is not allowed: %S", pattern);
     }
+
+    ScmRegexp *rx = make_regexp();
+    regcomp_ctx cctx;
     rc_ctx_init(&cctx, rx, pattern);
     cctx.casefoldp = flags & SCM_REGEXP_CASE_FOLD;
     rx->flags |= (flags & SCM_REGEXP_CASE_FOLD);
 
     /* pass 1 : parse regexp spec */
-    ast = rc1(&cctx);
+    ScmObj ast = rc1(&cctx);
     rc_setup_charsets(rx, &cctx);
     if (flags & SCM_REGEXP_PARSE_ONLY) return ast;
 
@@ -2265,11 +2309,10 @@ struct match_ctx {
 
 static int match_ci(const char **input, const unsigned char **code, int length)
 {
-    ScmChar inch, c;
-    int csize;
     do {
+        ScmChar inch, c;
         SCM_CHAR_GET(*input, inch);
-        csize = SCM_CHAR_NBYTES(inch);
+        int csize = SCM_CHAR_NBYTES(inch);
         *input += csize;
         SCM_CHAR_GET(*code, c);
         *code += SCM_CHAR_NBYTES(c);
@@ -2293,14 +2336,13 @@ static int is_word_constituent(unsigned char b)
 
 static int is_word_boundary(struct match_ctx *ctx, const char *input)
 {
-    unsigned char nextb, prevb;
     const char *prevp;
 
     if (input == ctx->input || input == ctx->stop) return TRUE;
-    nextb = (unsigned char)*input;
+    unsigned char nextb = (unsigned char)*input;
     SCM_CHAR_BACKWARD(input, ctx->input, prevp);
     SCM_ASSERT(prevp != NULL);
-    prevb = (unsigned char)*prevp;
+    unsigned char prevb = (unsigned char)*prevp;
     if ((is_word_constituent(nextb) && !is_word_constituent(prevb))
         || (!is_word_constituent(nextb) && is_word_constituent(prevb))) {
         return TRUE;
@@ -2457,9 +2499,11 @@ static void rex_rec(const unsigned char *code,
         case RE_BEGIN: {
             int grpno = *code++;
             const char *opos = ctx->matches[grpno]->startp;
+            const char *oend = ctx->matches[grpno]->endp;
             ctx->matches[grpno]->startp = input;
             rex_rec(code, input, ctx);
             ctx->matches[grpno]->startp = opos;
+            ctx->matches[grpno]->endp = oend;
             return;
         }
         case RE_BEGIN_RL: {
@@ -2578,6 +2622,34 @@ static void rex_rec(const unsigned char *code,
                 input = bpos;
             }
             continue;
+        case RE_MATCH1R:
+            for (;;) {
+                if (ctx->stop <= input) break;
+                if ((unsigned char)*input >= 128) break;
+                if (*code != (unsigned char)*input) break;
+                input++;
+            }
+            code++;
+            continue;
+        case RE_MATCHR:
+            param = *code++;
+            for (;;) {
+                if (ctx->stop <= input) break;
+                const unsigned char *str = code;
+                const unsigned char *ip = input;
+                for (unsigned int i = 0; i < param; i++) {
+                    if (*str++ != (unsigned char)*ip++) break;
+                }
+                input = ip;
+            }
+            code += param;
+            continue;
+        case RE_ANYR:
+            for (;;) {
+                if (ctx->stop <= input) break;
+                input += SCM_CHAR_NFOLLOWS(*input) + 1;
+            }
+            continue;
         case RE_CPAT: {
             int grpno = *code++;
             if (ctx->matches[grpno]->startp) code += 2;
@@ -2694,14 +2766,13 @@ static ScmObj make_match(ScmRegexp *rx, ScmString *orig,
                          struct match_ctx *ctx)
 {
     ScmRegMatch *rm = SCM_NEW(ScmRegMatch);
-    const ScmStringBody *origb;
     SCM_SET_CLASS(rm, SCM_CLASS_REGMATCH);
     rm->numMatches = rx->numGroups;
     rm->grpNames = rx->grpNames;
     /* we keep information of original string separately, instead of
        keeping a pointer to orig; For orig may be destructively modified,
        but its elements are not. */
-    origb = SCM_STRING_BODY(orig);
+    const ScmStringBody *origb = SCM_STRING_BODY(orig);
     rm->input = SCM_STRING_BODY_START(origb);
     rm->inputLen = SCM_STRING_BODY_LENGTH(origb);
     rm->inputSize = SCM_STRING_BODY_SIZE(origb);
@@ -2714,7 +2785,6 @@ static ScmObj rex(ScmRegexp *rx, ScmString *orig,
 {
     struct match_ctx ctx;
     sigjmp_buf cont;
-    int i;
 
     ctx.rx = rx;
     ctx.codehead = rx->code;
@@ -2724,7 +2794,7 @@ static ScmObj rex(ScmRegexp *rx, ScmString *orig,
     ctx.cont = &cont;
     ctx.matches = SCM_NEW_ARRAY(struct ScmRegMatchSub *, rx->numGroups);
 
-    for (i = 0; i < rx->numGroups; i++) {
+    for (int i = 0; i < rx->numGroups; i++) {
         ctx.matches[i] = SCM_NEW(struct ScmRegMatchSub);
         ctx.matches[i]->start = -1;
         ctx.matches[i]->length = -1;
@@ -2795,21 +2865,19 @@ ScmObj Scm_RegExec(ScmRegexp *rx, ScmString *str)
 
     /* if we have lookahead-set, we may be able to skip input efficiently. */
     if (!SCM_FALSEP(rx->laset)) {
-        ScmObj r;
-        const char *next;
-
         if (rx->flags & SCM_REGEXP_SIMPLE_PREFIX) {
             while (start <= start_limit) {
-                r = rex(rx, str, start, end);
+                ScmObj r = rex(rx, str, start, end);
                 if (!SCM_FALSEP(r)) return r;
-                next = skip_input(start, start_limit, rx->laset, TRUE);
+                const char *next = skip_input(start, start_limit, rx->laset,
+                                              TRUE);
                 if (start != next) start = next;
                 else start = next + SCM_CHAR_NFOLLOWS(*start) + 1;
             }
         } else {
             while (start <= start_limit) {
                 start = skip_input(start, start_limit, rx->laset, FALSE);
-                r = rex(rx, str, start, end);
+                ScmObj r = rex(rx, str, start, end);
                 if (!SCM_FALSEP(r)) return r;
                 start += SCM_CHAR_NFOLLOWS(*start)+1;
             }
@@ -2991,12 +3059,10 @@ ScmObj Scm_RegMatchAfter(ScmRegMatch *rm, ScmObj obj)
 /* for debug */
 void Scm_RegMatchDump(ScmRegMatch *rm)
 {
-    int i;
-
     Scm_Printf(SCM_CUROUT, "RegMatch %p\n", rm);
     Scm_Printf(SCM_CUROUT, "  numMatches = %d\n", rm->numMatches);
     Scm_Printf(SCM_CUROUT, "  input = %S\n", rm->input);
-    for (i=0; i<rm->numMatches; i++) {
+    for (int i=0; i<rm->numMatches; i++) {
         struct ScmRegMatchSub *sub = rm->matches[i];
         if (sub->startp) {
             Scm_Printf(SCM_CUROUT, "[%3d-%3d]  %S\n",

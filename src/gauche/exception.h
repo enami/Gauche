@@ -1,7 +1,7 @@
 /*
  * exception.h - more exception classes
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -58,12 +58,19 @@
     |                   +- <file-already-exists-error> ; srfi-36 (*)
     |                   +- <no-such-file-error>        ; srfi-36 (*)
     +- <thread-exception> ; srfi-18
-         +- <join-timeout-exception>      ; srfi-18
-         +- <abandoned-mutex-exception>   ; srfi-18
-         +- <terminated-thread-exception> ; srfi-18
-         +- <uncaught-exception>          ; srfi-18
+    |    +- <join-timeout-exception>      ; srfi-18
+    |    +- <abandoned-mutex-exception>   ; srfi-18
+    |    +- <terminated-thread-exception> ; srfi-18
+    |    +- <uncaught-exception>          ; srfi-18
+    +- <mixin-condition>
+         +- <load-condition-mixin> ; compounded to an error during loading
+         +- <compile-error-mixin>  ; compounded to an error during compiling
 
  (*) - not implemented yet
+
+ SRFI-35 does not make distinction between primary inheritance and mixin
+ inheritance; the <condition-mixin> subtree is Gauche's convention.  The
+ default error reporting routine treats mixins specially.
 */
 
 /*---------------------------------------------------
@@ -80,9 +87,28 @@ SCM_CLASS_DECL(Scm_ConditionClass);
 SCM_EXTERN int Scm_ConditionHasType(ScmObj c, ScmObj k);
 
 /* <message-condition> : condition with message. */
+/* R7RS requires error condition to store 'message' and 'irritants' separately.
+   We can't add fields during 0.9 to keep ABI compatibility.  So, as the
+   temporary solution, we clam them into the 'message' fields.  The message
+   field now contain a list of one or more elements, as follows:
+    (<preformatted-message> <message-prefix> <irritant> ...)
+   Where <preformatted-message> is a string and that's what we get
+   to access "message" slot of a error condition.  <message-prefix> and
+   <irritant>s are just what is passed to "error" procedure:
+      (error <message-prefix> <irritant> ...)
+   For errorf and the family, it's tricky to separate <irritant>s.  For now
+   we preformat the message and treat it as if it was given as the
+   <message-prefix>, with no irritants.
+
+   In Scheme level we won't show this structure.  If Scheme code accesses
+   the message slot, we return <preformatetd-message>.
+
+   C code that access 'message' slot directly needs to be modified.
+ */
+
 typedef struct ScmMessageConditionRec {
     ScmCondition common;
-    ScmObj message;             /* message */
+    ScmObj message;  /* message - should be accessed via Scm_ConditionMessage */
 } ScmMessageCondition;
 
 SCM_CLASS_DECL(Scm_MessageConditionClass);
@@ -109,7 +135,7 @@ SCM_CLASS_DECL(Scm_ErrorClass);
 #define SCM_CLASS_ERROR            (&Scm_ErrorClass)
 #define SCM_ERRORP(obj)            SCM_ISA(obj, SCM_CLASS_ERROR)
 #define SCM_ERROR(obj)             ((ScmError*)(obj))
-#define SCM_ERROR_MESSAGE(obj)     SCM_ERROR(obj)->message
+#define SCM_ERROR_MESSAGE(obj)     Scm_ConditionMessage(obj)
 
 SCM_EXTERN ScmObj Scm_MakeError(ScmObj message);
 
@@ -212,6 +238,7 @@ SCM_CLASS_DECL(Scm_SeriousCompoundConditionClass);
 #define SCM_SERIOUS_COMPOUND_CONDITION_P(obj) SCM_ISA(obj, SCM_CLASS_SERIOUS_COMPOUND_CONDITION)
 
 SCM_EXTERN ScmObj Scm_MakeCompoundCondition(ScmObj conditions);
+SCM_EXTERN ScmObj Scm_ExtractSimpleCondition(ScmObj condition, ScmClass *type);
 
 /*---------------------------------------------------
  * Thread exceptions
@@ -251,5 +278,58 @@ SCM_CLASS_DECL(Scm_UncaughtExceptionClass);
 #define SCM_CLASS_UNCAUGHT_EXCEPTION (&Scm_UncaughtExceptionClass)
 #define SCM_UNCAUGHT_EXCEPTION_P(obj) SCM_ISA(obj, SCM_CLASS_UNCAUGHT_EXCEPTION)
 
+/*---------------------------------------------------
+ * Mixins
+ */
+
+/* Mixin conditions are used to be compounded to the main <error> condition
+   to add some more context.  It is not a mixin classes in ordinary sense,
+   since it won't be used for multiple inheritance; instead, an instance
+   of the mixin class is compounded at runtime.  See, for example,
+   the 'compile' function in compile.scm mixing <compile-error-mixin>
+   into the error raised during compilation.  */
+
+SCM_CLASS_DECL(Scm_MixinConditionClass);
+#define SCM_CLASS_MIXIN_CONDITION   (&Scm_MixinConditionClass)
+#define SCM_MIXIN_CONDITION_P(obj)  SCM_ISA(obj, SCM_CLASS_MIXIN_CONDITION)
+
+typedef struct ScmLoadConditionMixinRec {
+    ScmCondition common;
+    ScmObj history;             /* current-load-history */
+    ScmObj port;                /* current-load-port */
+} ScmLoadConditionMixin;
+
+SCM_CLASS_DECL(Scm_LoadConditionMixinClass);
+#define SCM_CLASS_LOAD_CONDITION_MIXIN (&Scm_LoadConditionMixinClass)
+#define SCM_LOAD_CONDITION_MIXIN_P(obj) SCM_ISA(obj, SCM_CLASS_LOAD_CONDITION_MIXIN)
+#define SCM_LOAD_CONDITION_MIXIN(obj)  ((ScmLoadConditionMixin*)(obj))
+
+typedef struct ScmCompileErrorMixinRec {
+    ScmCondition condition;
+    ScmObj expr;                /* offending expr */
+} ScmCompileErrorMixin;
+
+SCM_CLASS_DECL(Scm_CompileErrorMixinClass);
+#define SCM_CLASS_COMPILE_ERROR_MIXIN (&Scm_CompileErrorMixinClass)
+#define SCM_COMPILE_ERROR_MIXIN_P(obj) SCM_ISA(obj, SCM_CLASS_COMPILE_ERROR_MIXIN)
+#define SCM_COMPILE_ERROR_MIXIN(obj)   ((ScmCompileErrorMixin*)(obj))
+
+/* This struct is shared among all subclasses of &i/o-filename-error. */
+typedef struct ScmFilenameErrorMixinRec {
+    ScmCondition common;
+    ScmObj filename;            /* offending name */
+} ScmFilenameErrorMixin;
+
+SCM_CLASS_DECL(Scm_FilenameErrorMixinClass);
+#define SCM_CLASS_FILENAME_ERROR_MIXIN (&Scm_FilenameErrorMixinClass)
+#define SCM_FILENAME_ERROR_MIXIN_P(obj) SCM_ISA(obj, SCM_CLASS_FILENAME_ERROR_MIXIN)
+#define SCM_FILENAME_ERROR_MIXIN(obj)   ((ScmFilenameErrorMixin*)(obj))
+
+SCM_CLASS_DECL(Scm_FilenameErrorMixinClass);
+SCM_CLASS_DECL(Scm_MalformedFilenameErrorMixinClass);
+SCM_CLASS_DECL(Scm_FileProtectionErrorMixinClass);
+SCM_CLASS_DECL(Scm_FileIsReadOnlyErrorMixinClass);
+SCM_CLASS_DECL(Scm_FileAlreadyExistsErrorMixinClass);
+SCM_CLASS_DECL(Scm_NoSuchFileErrorMixinClass);
 
 #endif /*GAUCHE_EXCEPTION_H*/

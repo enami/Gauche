@@ -1,7 +1,7 @@
 ;;;
 ;;; libmisc.scm - miscellaneous built-in procedures
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -36,31 +36,6 @@
  (declcode (.include <gauche/vminsn.h>)))
 
 ;;;
-;;; Sorting
-;;;
-
-;; The public API for sorting is in lib/gauche/sortutil.scm and
-;; will be autoloaded.  We provide a C-implemented low-level routines.
-(select-module gauche.internal)
-
-(define-cproc %sort (seq)
-  (cond [(SCM_VECTORP seq)
-         (let* ([r (Scm_VectorCopy (SCM_VECTOR seq) 0 -1 SCM_UNDEFINED)])
-           (Scm_SortArray (SCM_VECTOR_ELEMENTS r) (SCM_VECTOR_SIZE r) '#f)
-           (result r))]
-        [(>= (Scm_Length seq) 0) (result (Scm_SortList seq '#f))]
-        [else (SCM_TYPE_ERROR seq "proper list or vector")
-              (result SCM_UNDEFINED)]))
-
-(define-cproc %sort! (seq)
-  (cond [(SCM_VECTORP seq)
-         (Scm_SortArray (SCM_VECTOR_ELEMENTS seq) (SCM_VECTOR_SIZE seq) '#f)
-         (result seq)]
-        [(>= (Scm_Length seq) 0) (result (Scm_SortListX seq '#f))]
-        [else (SCM_TYPE_ERROR seq "proper list or vector")
-              (result SCM_UNDEFINED)]))
-
-;;;
 ;;; Miscellaneous
 ;;;
 
@@ -68,16 +43,37 @@
 
 (define-cproc has-setter? (proc) ::<boolean> Scm_HasSetter)
 
-(define-cproc identity (val) :constant (result val))   ;sometimes useful
+(define-cproc identity (val) :constant (return val))   ;sometimes useful
 
-(define-cproc undefined () (inliner CONSTU) (result SCM_UNDEFINED))
+(define-cproc undefined () (inliner CONSTU) (return SCM_UNDEFINED))
 (define-cproc undefined? (obj) ::<boolean> :constant SCM_UNDEFINEDP)
 
-(define-cproc warn (fmt::<string> :rest args) ::<void> Scm_FWarn)
+(define (warn fmt . args)
+  (unless (sys-getenv "GAUCHE_SUPPRESS_WARNING")
+    (apply format (current-error-port) (string-append "WARNING: " fmt) args)
+    (flush (current-error-port))))
+
+;; srfi-111 box
+;; NB: We have built-in support for boxes to use internally, but Scheme
+;; interface is less frequently used, so we put these symbols in a separate
+;; module.  It is a bit awkward to do so in the current genstub.
+;; TODO: Better stub syntax for handling modules.
+(select-module srfi-111)
+(define-cproc box (v) (return (SCM_OBJ (Scm_MakeBox v))))
+(define-cproc box? (v) ::<boolean> (return (SCM_BOXP v)))
+(define-cproc unbox (b::<box>) (return (SCM_BOX_VALUE b)))
+(define-cproc set-box! (b::<box> v) ::<void> (SCM_BOX_SET b v))
+(export box box? unbox set-box!)
 
 ;; Foreign pointer (may be in libsys.scm?)
 
 (select-module gauche)
+
+(define-cproc foreign-pointer-invalid? (fp::<foreign-pointer>) ::<boolean>
+  Scm_ForeignPointerInvalidP)
+
+(define-cproc foreign-pointer-invalidate! (fp::<foreign-pointer>) ::<void>
+  Scm_ForeignPointerInvalidate)
 
 (define-cproc foreign-pointer-attributes (fp::<foreign-pointer>)
   Scm_ForeignPointerAttr)

@@ -9,7 +9,7 @@
 (test-section "ref,set!")
 
 (test* "list-ref" '(e d c b a)
-       (map (lambda (k) (list-ref '(a b c d e) k)) '(4 3 2 1 0)))
+       (map (^k (list-ref '(a b c d e) k)) '(4 3 2 1 0)))
 (test* "list-set!" '(a (b) c (d) e)
        (rlet1 lis (list 'a 'b 'c 'd 'e)
          (for-each (lambda (k)
@@ -18,10 +18,10 @@
                    '(4 3 2 1 0))))
 (let ()
   (define (ensure-error name proc)
-    (test* #`",name (negative)" (test-error) (proc -1))
-    (test* #`",name (too big)" (test-error) (proc 5))
-    (test* #`",name (nonexact)" (test-error) (proc 1.0))
-    (test* #`",name (noninteger)" (test-error) (proc 1/4)))
+    (test* #"~name (negative)" (test-error) (proc -1))
+    (test* #"~name (too big)" (test-error) (proc 5))
+    (test* #"~name (nonexact)" (test-error) (proc 1.0))
+    (test* #"~name (noninteger)" (test-error) (proc 1/4)))
 
   (ensure-error "list-ref" (^k (list-ref '(a b c d e) k)))
   (ensure-error "list-set!" (^k (list-set! (list 'a 'b 'c 'd 'e) k 0)))
@@ -81,6 +81,38 @@
        (fold-left + 0 '(1 2 3) '(4 5 6)))
 (test* "fold-left" '(((z a A) b B) c C)
        (fold-left list 'z '(a b c) '(A B C)))
+(test* "count" 3 (count even? '(3 1 4 1 5 9 2 6 5)))
+(test* "count" 3
+       (count < '(1 2 4 8) '(2 4 6 8 10 12 14 16)))
+(test* "count" 2
+       (count < '(3 1 4 1) '#0=(1 10 . #0#)))
+(test* "reduce" 55 (reduce + 0 (iota 10 1)))
+(test* "reduce-right" '(1 2 3 4 5 6 7 8 9 . 10)
+       (reduce-right cons 0 (iota 10 1)))
+(test* "concatenate" '(1 2 3 4 5)
+       (concatenate '((1 2 3) () (4 5))))
+(test* "concatenate" '(1 2 3 4 . 5)
+       (concatenate '((1 2 3) () (4) 5)))
+(test* "concatenate!" '(1 2 3 4 5)
+       (concatenate (list (list 1 2 3) '() (list 4 5))))
+(test* "concatenate!" '(1 2 3 4 . 5)
+       (concatenate (list (list 1 2 3) '() (list 4) 5)))
+(test* "append-reverse" '(1 2 3 4 5)
+       (append-reverse '(3 2 1) '(4 5)))
+(test* "append-reverse" '(1 2 3 4 . 5)
+       (append-reverse '(4 3 2 1) 5))
+(test* "append-reverse!" '(1 2 3 4 5)
+       (append-reverse! (list 3 2 1) (list 4 5)))
+(test* "append-reverse!" '(1 2 3 4 . 5)
+       (append-reverse! (list 4 3 2 1) 5))
+(test* "append-map" '(1 -1 3 -3 5 -5)
+       (append-map (^x (list x (- x))) '(1 3 5)))
+(test* "append-map" '(1 -2 3 -4 5 -6)
+       (append-map (^[x y] (list x (- y)))
+                   '(1 3 5) '(2 4 6 8)))
+(test* "append-map!" '(1 -2 3 -4 5 -6)
+       (append-map! (^[x y] (list x (- y)))
+                    '(1 3 5) '(2 4 6 8)))
 
 ;;--------------------------------------------------------------------------
 (test-section "filtering")
@@ -251,6 +283,8 @@
        (call-with-values
            (^[] (split-at! (list 'a 'b 'c 'd 'e 'f 'g 'h) 3))
          list))
+(test* "partition" '((one four five) (2 3 6))
+       (values->list (partition symbol? '(one 2 3 four five 6))))
 
 (test* "split-at* (normal)" '((a b c) (d))
        (receive r (split-at* '(a b c d) 3) r))
@@ -407,6 +441,67 @@
        (assv-set! (list (cons 3 'a) (cons 5 'b)) 5 'c))
 (test* "assv-set!" '((9 . c) (3 . a) (5 . b))
        (assv-set! (list (cons 3 'a) (cons 5 'b)) 9 'c))
+
+;;--------------------------------------------------------------------------
+
+(test-section "circular list and equality")
+
+;; At this moment we haven't tested #n=, #n# notation, so we build
+;; circular structure at runtime.
+
+(let ()
+  (define (cdr-cycle . lis)
+    (set-cdr! (last-pair lis) lis)
+    lis)
+  (define (car-cycle . lis)
+    (if (null? lis)
+      lis
+      (let* ([head (cons #f (car lis))]
+             [next (let loop ([lis (cdr lis)])
+                     (if (null? lis)
+                       head
+                       (cons (loop (cdr lis)) (car lis))))])
+        (set-car! head next)
+        head)))
+
+  (test* "equal? w/ cdr-cycle 1" #t
+         (equal? (cdr-cycle 1 2 3) (cdr-cycle 1 2 3 1 2 3)))
+  (test* "equal? w/ cdr-cycle 2" #f
+         (equal? (cdr-cycle 1 2 3) (cdr-cycle 1 2 3 1 2)))
+  (test* "equal? w/ cdr-cycle 3" #f
+         (equal? (cdr-cycle 1 2 3)
+                 (apply append (make-list 10000 (list 1 2 3)))))
+  (test* "equal? w/ cdr-cycle 4" #t
+         (equal? (cdr-cycle 1 2 3)
+                 (apply cdr-cycle (apply append (make-list 10000 (list 1 2 3))))))
+  (test* "equal? w/ cdr-cycle 5" #f
+         (equal? (cdr-cycle 1 2 3) '(1)))
+
+  (test* "equal? w/ car-cycle 1" #t
+         (equal? (car-cycle 1) (car-cycle 1)))
+  (test* "equal? w/ car-cycle 2" #f
+         (equal? (car-cycle 1) (car-cycle 2)))
+  (test* "equal? w/ car-cycle 3" #t
+         (equal? (car-cycle 1 2 3) (car-cycle 1 2 3 1 2 3)))
+  (test* "equal? w/ car-cycle 4" #f
+         (equal? (car-cycle 1 2 3) (car-cycle 1 2 3 1 2)))
+
+  (test* "equal? w/ car/cdr-cycle 1" #t
+         (equal? (cdr-cycle (car-cycle 1))
+                 (cdr-cycle (car-cycle 1))))
+  (test* "equal? w/ car/cdr-cycle 2" #f
+         (equal? (cdr-cycle (car-cycle 1))
+                 (car-cycle (cdr-cycle 1))))
+  (test* "equal? w/ car/cdr-cycle 3" #t
+         (equal? (cdr-cycle (car-cycle 1 2 3))
+                 (cdr-cycle (car-cycle 1 2 3 1 2 3))))
+  (test* "equal? w/ car/cdr-cycle 4" #t
+         (equal? (cdr-cycle (car-cycle 1 2 3))
+                 (cdr-cycle (car-cycle 1 2 3) (car-cycle 1 2 3 1 2 3))))
+  (test* "equal? w/ car/cdr-cycle 4" #f
+         (equal? (cdr-cycle (car-cycle 1 2 3))
+                 (cdr-cycle (car-cycle 1 2 3) (car-cycle 1 2 3 1 2 3 1))))
+  )
 
 ;;--------------------------------------------------------------------------
 

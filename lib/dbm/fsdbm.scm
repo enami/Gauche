@@ -1,7 +1,7 @@
 ;;;
 ;;; fsdbm - dbm on filesystem
 ;;;
-;;;   Copyright (c) 2003-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2003-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -134,7 +134,7 @@
   (next-method)
   (let ((path (value-file-path (%dbm-k2s self key) (ref self 'path))))
     (cond ((call-with-input-file path
-             (lambda (p) (and p (%dbm-s2v self (read-chunk p))))
+             (^p (and p (%dbm-s2v self (read-chunk p))))
              :if-does-not-exist #f))
           ((pair? args) (car args))
           (else (errorf "fsdbm: no data for key ~s in database ~s"
@@ -159,7 +159,7 @@
         (if k
           (proc (%dbm-s2k self k)
                 (call-with-input-file path
-                  (lambda (p) (%dbm-s2v self (read-chunk p))))
+                  (^p (%dbm-s2v self (read-chunk p))))
                 seed)
           seed))))
   (next-method)
@@ -272,10 +272,10 @@
                       (with-input-from-string path
                         (cut shash 0 *hash-range*)))))
 
-(define (value-file-path key . maybe-dir)
+(define (value-file-path key :optional (dir #f))
   (let1 p (key->path key)
-    (cond [(get-optional maybe-dir #f)
-           => (cut build-path <> (path->hash p) p)]
-          [else (build-path (path->hash p) p)])))
+    (if dir
+	(build-path dir (path->hash p) p)
+	(build-path (path->hash p) p))))
 
 

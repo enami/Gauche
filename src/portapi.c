@@ -1,7 +1,7 @@
 /*
  * portapi.c - port common API
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -64,7 +64,7 @@
 #define VMDECL        ScmVM *vm = Scm_VM()
 #define LOCK(p)       PORT_LOCK(p, vm)
 #define UNLOCK(p)     PORT_UNLOCK(p)
-#define SAFE_CALL(p, exp) PORT_SAFE_CALL(p, exp)
+#define SAFE_CALL(p, exp) PORT_SAFE_CALL(p, exp, /*no cleanup*/)
 #define SHORTCUT(p, unsafe) \
   do { if (PORT_LOCKED(p, vm)) { unsafe; }} while (0)
 #else
@@ -74,7 +74,6 @@
 #define SAFE_CALL(p, exp) (exp)
 #define SHORTCUT(p, unsafe) /* none */
 #endif
-
 
 /* Convenience macro */
 #ifndef CLOSE_CHECK
@@ -88,6 +87,18 @@
     } while (0)
 #endif /* CLOSE_CHECK */
 
+/* In the walk pass of multi-pass writing (see write.c), we set
+   SCM_PORT_WALKING flag of the port.  Usually Scm_Write family recognizes
+   the flag and suppress output.  However, in case if low-level port API
+   is directly called during the walk pass, we just check the flag again.
+*/
+#ifndef WALKER_CHECK
+#define WALKER_CHECK(port)                      \
+    do {                                        \
+        if (PORT_WALKER_P(port)) return;        \
+    } while (0)
+#endif /* WALKER_CHECK */
+
 /*=================================================================
  * Putb
  */
@@ -100,6 +111,7 @@ void Scm_PutbUnsafe(ScmByte b, ScmPort *p)
 {
     VMDECL;
     SHORTCUT(p, Scm_PutbUnsafe(b, p); return);
+    WALKER_CHECK(p);
     LOCK(p);
     CLOSE_CHECK(p);
 
@@ -110,7 +122,7 @@ void Scm_PutbUnsafe(ScmByte b, ScmPort *p)
         }
         SCM_ASSERT(p->src.buf.current < p->src.buf.end);
         *p->src.buf.current++ = b;
-        if (p->src.buf.mode == SCM_PORT_BUFFER_NONE) {
+        if (SCM_PORT_BUFFER_MODE(p) == SCM_PORT_BUFFER_NONE) {
             SAFE_CALL(p, bufport_flush(p, 1, FALSE));
         }
         UNLOCK(p);
@@ -140,30 +152,31 @@ void Scm_Putc(ScmChar c, ScmPort *p)
 void Scm_PutcUnsafe(ScmChar c, ScmPort *p)
 #endif
 {
-    int nb;
     VMDECL;
     SHORTCUT(p, Scm_PutcUnsafe(c, p); return);
+    WALKER_CHECK(p);
     LOCK(p);
     CLOSE_CHECK(p);
 
     switch (SCM_PORT_TYPE(p)) {
-    case SCM_PORT_FILE:
-        nb = SCM_CHAR_NBYTES(c);
+    case SCM_PORT_FILE: {
+        int nb = SCM_CHAR_NBYTES(c);
         if (p->src.buf.current+nb > p->src.buf.end) {
             SAFE_CALL(p, bufport_flush(p, (int)(p->src.buf.current - p->src.buf.buffer), FALSE));
         }
         SCM_ASSERT(p->src.buf.current+nb <= p->src.buf.end);
         SCM_CHAR_PUT(p->src.buf.current, c);
         p->src.buf.current += nb;
-        if (p->src.buf.mode == SCM_PORT_BUFFER_LINE) {
+        if (SCM_PORT_BUFFER_MODE(p) == SCM_PORT_BUFFER_LINE) {
             if (c == '\n') {
                 SAFE_CALL(p, bufport_flush(p, nb, FALSE));
             }
-        } else if (p->src.buf.mode == SCM_PORT_BUFFER_NONE) {
+        } else if (SCM_PORT_BUFFER_MODE(p) == SCM_PORT_BUFFER_NONE) {
             SAFE_CALL(p, bufport_flush(p, nb, FALSE));
         }
         UNLOCK(p);
         break;
+    }
     case SCM_PORT_OSTR:
         SCM_DSTRING_PUTC(&p->src.ostr, c);
         UNLOCK(p);
@@ -191,6 +204,7 @@ void Scm_PutsUnsafe(ScmString *s, ScmPort *p)
 {
     VMDECL;
     SHORTCUT(p, Scm_PutsUnsafe(s, p); return);
+    WALKER_CHECK(p);
     LOCK(p);
     CLOSE_CHECK(p);
 
@@ -200,7 +214,7 @@ void Scm_PutsUnsafe(ScmString *s, ScmPort *p)
         const char *ss = Scm_GetStringContent(s, &size, NULL, NULL);
         SAFE_CALL(p, bufport_write(p, ss, size));
 
-        if (p->src.buf.mode == SCM_PORT_BUFFER_LINE) {
+        if (SCM_PORT_BUFFER_MODE(p) == SCM_PORT_BUFFER_LINE) {
             const char *cp = p->src.buf.current;
             while (cp-- > p->src.buf.buffer) {
                 if (*cp == '\n') {
@@ -208,7 +222,7 @@ void Scm_PutsUnsafe(ScmString *s, ScmPort *p)
                     break;
                 }
             }
-        } else if (p->src.buf.mode == SCM_PORT_BUFFER_NONE) {
+        } else if (SCM_PORT_BUFFER_MODE(p) == SCM_PORT_BUFFER_NONE) {
             SAFE_CALL(p, bufport_flush(p, 0, TRUE));
         }
         UNLOCK(p);
@@ -241,13 +255,14 @@ void Scm_PutzUnsafe(const char *s, int siz, ScmPort *p)
 {
     VMDECL;
     SHORTCUT(p, Scm_PutzUnsafe(s, siz, p); return);
+    WALKER_CHECK(p);
     LOCK(p);
     CLOSE_CHECK(p);
     if (siz < 0) siz = (int)strlen(s);
     switch (SCM_PORT_TYPE(p)) {
     case SCM_PORT_FILE:
         SAFE_CALL(p, bufport_write(p, s, siz));
-        if (p->src.buf.mode == SCM_PORT_BUFFER_LINE) {
+        if (SCM_PORT_BUFFER_MODE(p) == SCM_PORT_BUFFER_LINE) {
             const char *cp = p->src.buf.current;
             while (cp-- > p->src.buf.buffer) {
                 if (*cp == '\n') {
@@ -255,7 +270,7 @@ void Scm_PutzUnsafe(const char *s, int siz, ScmPort *p)
                     break;
                 }
             }
-        } else if (p->src.buf.mode == SCM_PORT_BUFFER_NONE) {
+        } else if (SCM_PORT_BUFFER_MODE(p) == SCM_PORT_BUFFER_NONE) {
             SAFE_CALL(p, bufport_flush(p, 0, TRUE));
         }
         UNLOCK(p);
@@ -287,6 +302,7 @@ void Scm_FlushUnsafe(ScmPort *p)
 {
     VMDECL;
     SHORTCUT(p, Scm_FlushUnsafe(p); return);
+    WALKER_CHECK(p);
     LOCK(p);
     CLOSE_CHECK(p);
     switch (SCM_PORT_TYPE(p)) {
@@ -336,16 +352,36 @@ ScmChar Scm_Peekc(ScmPort *p)
 ScmChar Scm_PeekcUnsafe(ScmPort *p)
 #endif
 {
-    ScmChar ch;
     VMDECL;
     SHORTCUT(p, return Scm_PeekcUnsafe(p));
     LOCK(p);
-    if ((ch = p->ungotten) == SCM_CHAR_INVALID) {
+    ScmChar ch = p->ungotten;
+    if (ch == SCM_CHAR_INVALID) {
         ch = Scm_GetcUnsafe(p);
         p->ungotten = ch;
     }
     UNLOCK(p);
     return ch;
+}
+
+/* At this moment we only allow one character to be 'ungotten',
+   but we might change it in future, so this one returns a list. */
+#ifdef SAFE_PORT_OP
+ScmObj Scm_UngottenChars(ScmPort *p)
+#else
+ScmObj Scm_UngottenCharsUnsafe(ScmPort *p)
+#endif
+{
+    VMDECL;
+    SHORTCUT(p, return Scm_UngottenCharsUnsafe(p));
+    LOCK(p);
+    ScmChar ch = p->ungotten;
+    UNLOCK(p);
+    if (ch == SCM_CHAR_INVALID) {
+        return SCM_NIL;
+    } else {
+        return SCM_LIST1(SCM_MAKE_CHAR(ch));
+    }
 }
 
 /*=================================================================
@@ -387,9 +423,8 @@ int Scm_PeekbUnsafe(ScmPort *p)
         if (b >= 0) {
             if (p->scrcnt > 0) {
                 /* unshift scratch buffer */
-                int i;
                 SCM_ASSERT(p->scrcnt < SCM_CHAR_MAX_BYTES);
-                for (i=p->scrcnt; i>0; i--) {
+                for (int i=p->scrcnt; i>0; i--) {
                     p->scratch[i] = p->scratch[i-1];
                 }
                 p->scratch[0] = b;
@@ -404,6 +439,26 @@ int Scm_PeekbUnsafe(ScmPort *p)
     return b;
 }
 
+#ifdef SAFE_PORT_OP
+ScmObj Scm_UngottenBytes(ScmPort *p)
+#else
+ScmObj Scm_UngottenBytesUnsafe(ScmPort *p)
+#endif
+{
+    VMDECL;
+    SHORTCUT(p, return Scm_UngottenBytesUnsafe(p));
+    char buf[SCM_CHAR_MAX_BYTES];
+    LOCK(p);
+    for (int i=0; i<p->scrcnt; i++) buf[i] = p->scratch[i];
+    int n = p->scrcnt;
+    UNLOCK(p);
+    ScmObj h = SCM_NIL, t = SCM_NIL;
+    for (int i=0; i<n; i++) {
+        SCM_APPEND1(h, t, SCM_MAKE_INT((unsigned char)buf[i]));
+    }
+    return h;
+}
+
 /*=================================================================
  * Getb
  */
@@ -414,8 +469,7 @@ int Scm_PeekbUnsafe(ScmPort *p)
 /* shift scratch buffer content */
 static inline void shift_scratch(ScmPort *p, int off)
 {
-    u_int i;
-    for (i=0; i<p->scrcnt; i++) {
+    for (u_int i=0; i<p->scrcnt; i++) {
         p->scratch[i] = p->scratch[i+off];
     }
 }
@@ -446,7 +500,7 @@ int Scm_Getb(ScmPort *p)
 int Scm_GetbUnsafe(ScmPort *p)
 #endif
 {
-    int b = 0, r = 0;
+    int b = 0;
     VMDECL;
     SHORTCUT(p, return Scm_GetbUnsafe(p));
     LOCK(p);
@@ -461,6 +515,7 @@ int Scm_GetbUnsafe(ScmPort *p)
         switch (SCM_PORT_TYPE(p)) {
         case SCM_PORT_FILE:
             if (p->src.buf.current >= p->src.buf.end) {
+                int r = 0;
                 SAFE_CALL(p, r = bufport_fill(p, 1, FALSE));
                 if (r == 0) {
                     UNLOCK(p);
@@ -501,12 +556,13 @@ static int getc_scratch_unsafe(ScmPort *p)
 #endif
 {
     char tbuf[SCM_CHAR_MAX_BYTES];
-    int nb = SCM_CHAR_NFOLLOWS(p->scratch[0]), ch, i, curr = p->scrcnt;
-    int r = 0;
+    int nb = SCM_CHAR_NFOLLOWS(p->scratch[0]);
+    int curr = p->scrcnt;
 
     memcpy(tbuf, p->scratch, curr);
     p->scrcnt = 0;
-    for (i=curr; i<=nb; i++) {
+    for (int i=curr; i<=nb; i++) {
+        int r = EOF;
         SAFE_CALL(p, r = Scm_Getb(p));
         if (r == EOF) {
             UNLOCK(p);
@@ -515,6 +571,7 @@ static int getc_scratch_unsafe(ScmPort *p)
         }
         tbuf[i] = (char)r;
     }
+    int ch;
     SCM_CHAR_GET(tbuf, ch);
     return ch;
 }
@@ -526,34 +583,35 @@ int Scm_Getc(ScmPort *p)
 int Scm_GetcUnsafe(ScmPort *p)
 #endif
 {
-    int first, nb, c = 0, r = 0;
     VMDECL;
     SHORTCUT(p, return Scm_GetcUnsafe(p));
     LOCK(p);
     CLOSE_CHECK(p);
     if (p->scrcnt > 0) {
-        r = GETC_SCRATCH(p);
+        int r = GETC_SCRATCH(p);
         UNLOCK(p);
         return r;
     }
     if (p->ungotten != SCM_CHAR_INVALID) {
-        c = p->ungotten;
+        int c = p->ungotten;
         p->ungotten = SCM_CHAR_INVALID;
         UNLOCK(p);
         return c;
     }
 
     switch (SCM_PORT_TYPE(p)) {
-    case SCM_PORT_FILE:
+    case SCM_PORT_FILE: {
+        int c = 0;
         if (p->src.buf.current >= p->src.buf.end) {
+            int r = 0;
             SAFE_CALL(p, r = bufport_fill(p, 1, FALSE));
             if (r == 0) {
                 UNLOCK(p);
                 return EOF;
             }
         }
-        first = (unsigned char)*p->src.buf.current++;
-        nb = SCM_CHAR_NFOLLOWS(first);
+        int first = (unsigned char)*p->src.buf.current++;
+        int nb = SCM_CHAR_NFOLLOWS(first);
         p->bytes++;
         if (nb > 0) {
             if (p->src.buf.current + nb > p->src.buf.end) {
@@ -598,13 +656,15 @@ int Scm_GetcUnsafe(ScmPort *p)
         }
         UNLOCK(p);
         return c;
-    case SCM_PORT_ISTR:
+    }
+    case SCM_PORT_ISTR: {
         if (p->src.istr.current >= p->src.istr.end) {
             UNLOCK(p);
             return EOF;
         }
-        first = (unsigned char)*p->src.istr.current++;
-        nb = SCM_CHAR_NFOLLOWS(first);
+        int c = 0;
+        int first = (unsigned char)*p->src.istr.current++;
+        int nb = SCM_CHAR_NFOLLOWS(first);
         p->bytes++;
         if (nb > 0) {
             if (p->src.istr.current + nb > p->src.istr.end) {
@@ -622,11 +682,14 @@ int Scm_GetcUnsafe(ScmPort *p)
         }
         UNLOCK(p);
         return c;
-    case SCM_PORT_PROC:
+    }
+    case SCM_PORT_PROC: {
+        int c = 0;
         SAFE_CALL(p, c = p->src.vt.Getc(p));
         if (c == '\n') p->line++;
         UNLOCK(p);
         return c;
+    }
     default:
         UNLOCK(p);
         Scm_PortError(p, SCM_PORT_ERROR_INPUT, "bad port type for input: %S", p);
@@ -651,7 +714,6 @@ static int getz_scratch(char *buf, int buflen, ScmPort *p)
 static int getz_scratch_unsafe(char *buf, int buflen, ScmPort *p)
 #endif
 {
-    int i, n = 0;
     if (p->scrcnt >= (u_int)buflen) {
         memcpy(buf, p->scratch, buflen);
         p->scrcnt -= buflen;
@@ -659,8 +721,9 @@ static int getz_scratch_unsafe(char *buf, int buflen, ScmPort *p)
         return buflen;
     } else {
         memcpy(buf, p->scratch, p->scrcnt);
-        i = p->scrcnt;
+        int i = p->scrcnt;
         p->scrcnt = 0;
+        int n = 0;
         SAFE_CALL(p, n = Scm_Getz(buf+i, buflen-i, p));
         return i + n;
     }
@@ -670,10 +733,9 @@ static int getz_scratch_unsafe(char *buf, int buflen, ScmPort *p)
 #define GETZ_ISTR getz_istr
 static int getz_istr(ScmPort *p, char *buf, int buflen)
 {
-    int siz;
     if (p->src.istr.current + buflen >= p->src.istr.end) {
         if (p->src.istr.current >= p->src.istr.end) return EOF;
-        siz = (int)(p->src.istr.end - p->src.istr.current);
+        int siz = (int)(p->src.istr.end - p->src.istr.current);
         memcpy(buf, p->src.istr.current, siz);
         p->src.istr.current = p->src.istr.end;
         return siz;
@@ -691,14 +753,13 @@ int Scm_Getz(char *buf, int buflen, ScmPort *p)
 int Scm_GetzUnsafe(char *buf, int buflen, ScmPort *p)
 #endif
 {
-    int siz = 0, r = 0;
     VMDECL;
     SHORTCUT(p, return Scm_GetzUnsafe(buf, buflen, p));
     LOCK(p);
     CLOSE_CHECK(p);
 
     if (p->scrcnt) {
-        r = GETZ_SCRATCH(buf, buflen, p);
+        int r = GETZ_SCRATCH(buf, buflen, p);
         UNLOCK(p);
         return r;
     }
@@ -706,28 +767,33 @@ int Scm_GetzUnsafe(char *buf, int buflen, ScmPort *p)
         p->scrcnt = SCM_CHAR_NBYTES(p->ungotten);
         SCM_CHAR_PUT(p->scratch, p->ungotten);
         p->ungotten = SCM_CHAR_INVALID;
-        r = GETZ_SCRATCH(buf, buflen, p);
+        int r = GETZ_SCRATCH(buf, buflen, p);
         UNLOCK(p);
         return r;
     }
 
     switch (SCM_PORT_TYPE(p)) {
-    case SCM_PORT_FILE:
+    case SCM_PORT_FILE: {
+        int siz = 0;
         SAFE_CALL(p, siz = bufport_read(p, buf, buflen));
         p->bytes += siz;
         UNLOCK(p);
         if (siz == 0) return EOF;
         else return siz;
-    case SCM_PORT_ISTR:
-        r = GETZ_ISTR(p, buf, buflen);
+    }
+    case SCM_PORT_ISTR: {
+        int r = GETZ_ISTR(p, buf, buflen);
         p->bytes += r;
         UNLOCK(p);
         return r;
-    case SCM_PORT_PROC:
+    }
+    case SCM_PORT_PROC: {
+        int r = 0;
         SAFE_CALL(p, r = p->src.vt.Getz(buf, buflen, p));
         p->bytes += r;
         UNLOCK(p);
         return r;
+    }
     default:
         UNLOCK(p);
         Scm_PortError(p, SCM_PORT_ERROR_INPUT, "bad port type for input: %S", p);
@@ -760,17 +826,16 @@ int Scm_GetzUnsafe(char *buf, int buflen, ScmPort *p)
    line of xml doc to find out charset parameter). */
 ScmObj readline_body(ScmPort *p)
 {
-    int b1 = 0, b2 = 0;
     ScmDString ds;
 
     Scm_DStringInit(&ds);
-    b1 = Scm_GetbUnsafe(p);
+    int b1 = Scm_GetbUnsafe(p);
     if (b1 == EOF) return SCM_EOF;
     for (;;) {
         if (b1 == EOF) return Scm_DStringGet(&ds, 0);
         if (b1 == '\n') break;
         if (b1 == '\r') {
-            b2 = Scm_GetbUnsafe(p);
+            int b2 = Scm_GetbUnsafe(p);
             if (b2 == EOF || b2 == '\n') break;
             Scm_UngetbUnsafe(b2, p);
             break;
@@ -978,10 +1043,162 @@ ScmObj Scm_PortSeekUnsafe(ScmPort *p, ScmObj off, int whence)
     else return Scm_OffsetToInteger(r);
 }
 
+/*=================================================================
+ * Port Attributes
+ *
+ * Port attributes are stored in alist.  Each entry is either one
+ * of the following form:
+ *  (key value)          Just a value
+ *  (key getter setter)  Procedurally handled value.  Getter will be
+ *                       called as (getter port [fallback]), and Setter
+ *                       will be called as (setter port value).
+ *                       Setter can be #f if the attr is read-only.
+ *                       Port is locked while getter and setter is called.
+ *
+ * The latter type of attribute can be created by Scm_PortAttrCreate.
+ */
+
+#ifdef SAFE_PORT_OP
+ScmObj Scm_PortAttrGet(ScmPort *p, ScmObj key, ScmObj fallback)
+#else
+ScmObj Scm_PortAttrGetUnsafe(ScmPort *p, ScmObj key, ScmObj fallback)
+#endif
+{
+    ScmObj r = SCM_UNBOUND;
+    VMDECL;
+    SHORTCUT(p, return Scm_PortAttrGetUnsafe(p, key, fallback););
+    LOCK(p);
+    ScmObj v = Scm_Assq(key, p->attrs);
+    if (SCM_PAIRP(v)) {
+        SCM_ASSERT(SCM_PAIRP(SCM_CDR(v)));
+        if (SCM_PAIRP(SCM_CDDR(v))) {
+            /* procedural */
+            ScmObj getter = SCM_CADR(v);
+            if (SCM_UNBOUNDP(fallback)) {
+                SAFE_CALL(p, r = Scm_ApplyRec1(getter, SCM_OBJ(p)));
+            } else {
+                SAFE_CALL(p, r = Scm_ApplyRec2(getter, SCM_OBJ(p), fallback));
+            }
+        } else {
+            r = SCM_CADR(v);
+        }
+    } else {
+        r = fallback;
+    }
+    UNLOCK(p);
+
+    if (SCM_UNBOUNDP(r)) {
+        Scm_Error("No port attribute for key %S in port %S", key, SCM_OBJ(p));
+    }
+    return r;
+}
+
+
+#ifdef SAFE_PORT_OP
+ScmObj Scm_PortAttrSet(ScmPort *p, ScmObj key, ScmObj val)
+#else
+ScmObj Scm_PortAttrSetUnsafe(ScmPort *p, ScmObj key, ScmObj val)
+#endif
+{
+    int err_readonly = FALSE;
+    int exists = FALSE;
+    VMDECL;
+    SHORTCUT(p, return Scm_PortAttrSetUnsafe(p, key, val););
+    LOCK(p);
+    ScmObj v = Scm_Assq(key, p->attrs);
+    if (SCM_PAIRP(v)) {
+        SCM_ASSERT(SCM_PAIRP(SCM_CDR(v)));
+        exists = TRUE;
+        if (SCM_PAIRP(SCM_CDDR(v))) {
+            /* procedural */
+            ScmObj setter = SCM_CAR(SCM_CDDR(v));
+            if (SCM_FALSEP(setter)) {
+                err_readonly = TRUE;
+            } else {
+                SAFE_CALL(p, Scm_ApplyRec2(setter, SCM_OBJ(p), val));
+            }
+        } else {
+            SCM_SET_CAR(SCM_CDR(v), val);
+        }
+    } else {
+        p->attrs = Scm_Cons(SCM_LIST2(key, val), p->attrs);
+    }
+    UNLOCK(p);
+    if (err_readonly) {
+        Scm_Error("Port attribute %A is read-only in port: %S",
+                  key, SCM_OBJ(p));
+    }
+    return SCM_MAKE_BOOL(exists);
+}
+
+#ifdef SAFE_PORT_OP
+ScmObj Scm_PortAttrCreate(ScmPort *p, ScmObj key, ScmObj get, ScmObj set)
+#else
+ScmObj Scm_PortAttrCreateUnsafe(ScmPort *p, ScmObj key, ScmObj get, ScmObj set)
+#endif
+{
+    int err_exists = FALSE;
+    VMDECL;
+    SHORTCUT(p, return Scm_PortAttrCreateUnsafe(p, key, get, set););
+
+    /* If get == #f, we create an ordinary attr entry.  Otherwise,
+       we create a procedural entry. */
+    ScmObj entry = (SCM_FALSEP(get)
+                    ? SCM_LIST2(key, SCM_FALSE)
+                    : SCM_LIST3(key, get, set));
+    LOCK(p);
+    ScmObj v = Scm_Assq(key, p->attrs);
+    if (SCM_FALSEP(v)) {
+        p->attrs = Scm_Cons(entry, p->attrs);
+    } else {
+        err_exists = TRUE;
+    }
+    UNLOCK(p);
+    if (err_exists) {
+        Scm_Error("Couldn't create port attribute %A in %S: Named attribute already exists.",
+                  key, SCM_OBJ(p));
+    }
+    return SCM_UNDEFINED;       /* we may return more useful info in future */
+}
+
+#ifdef SAFE_PORT_OP
+ScmObj Scm_PortAttrDelete(ScmPort *p, ScmObj key)
+#else
+ScmObj Scm_PortAttrDeleteUnsafe(ScmPort *p, ScmObj key)
+#endif
+{
+    VMDECL;
+    SHORTCUT(p, return Scm_PortAttrDeleteUnsafe(p, key););
+    LOCK(p);
+    p->attrs = Scm_AssocDelete(key, p->attrs, SCM_CMP_EQ);
+    UNLOCK(p);
+    return SCM_UNDEFINED;       /* we may return more useful info in future */
+}
+
+#ifdef SAFE_PORT_OP
+ScmObj Scm_PortAttrs(ScmPort *p)
+#else
+ScmObj Scm_PortAttrsUnsafe(ScmPort *p)
+#endif
+{
+    ScmObj h = SCM_NIL, t = SCM_NIL;
+    VMDECL;
+    SHORTCUT(p, return Scm_PortAttrsUnsafe(p););
+    LOCK(p);
+    ScmObj cp;
+    SCM_FOR_EACH(cp, p->attrs) {
+        ScmObj k = SCM_CAAR(cp);
+        ScmObj v = Scm_PortAttrGetUnsafe(p, k, SCM_UNBOUND);
+        SCM_APPEND1(h, t, Scm_Cons(k, v));
+    }
+    UNLOCK(p);
+    return h;
+}
+
+
 #undef VMDECL
 #undef LOCK
 #undef UNLOCK
 #undef SAFE_CALL
 #undef SHORTCUT
 #undef CLOSE_CHECK
-

@@ -58,20 +58,20 @@
 
 (define (cmds . args)
   (let1 cmdlist (apply cmd args)
-    (string-concatenate (apply append (map (lambda (x) `(,x " ")) cmdlist)))))
+    (string-concatenate (apply append (map (^x `(,x " ")) cmdlist)))))
 
 (define (rmrf . files)
   ;; shorthand of normalizing pathname.  this doesn't do anything on
-  ;; unix, but on Windows the separator in PATHNAME is replaced.
+  ;; unix, but on Windows separators in PATHNAME are replaced.
   (define (n pathname) (sys-normalize-pathname pathname))
 
   (dolist [f files]
     (cond-expand
      [gauche.os.windows
-      (sys-system #`"rmdir /q /s ,(n f) > NUL 2>&1")
-      (sys-system #`"del /q ,(n f) > NUL 2>&1")]
+      (sys-system #"rmdir /q /s ~(n f) > NUL 2>&1")
+      (sys-system #"del /q ~(n f) > NUL 2>&1")]
      [else
-      (sys-system #`"rm -rf ,f > /dev/null")])))
+      (sys-system #"rm -rf ~f > /dev/null")])))
 
 (define (touch file)
   (with-output-to-file file (cut values)))
@@ -512,5 +512,29 @@
   ])
 
 (rmrf "testc.o")
+
+;;-------------------------------
+(test-section "unwind-protect upon exit")
+
+;; unwind-protect is tested in exception.scm, but we needed to do this test
+;; after we test gauche.process.
+
+(rmrf "test.o" "test1.o")
+
+(with-output-to-file "test.o"
+  (cut write '(define (main args)
+                (unwind-protect (begin
+                                  (with-output-to-file "test1.o"
+                                    (^[] (display "foo\n")))
+                                  (exit 1))
+                  (sys-unlink "test1.o")))))
+
+(test* "unwind-protect upon exit" '(1 #f)
+       ;; assuming we're running gosh under $top_builddir/src
+       (let1 p (run-process `("./gosh" "-ftest" "test.o") :wait #t)
+         (list (sys-wait-exit-status (process-exit-status p))
+               (file-exists? "test1.o"))))
+
+(rmrf "test.o" "test1.o")
 
 (test-end)

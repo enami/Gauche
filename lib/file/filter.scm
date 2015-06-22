@@ -1,7 +1,7 @@
 ;;;
 ;;; file/filter.scm - utility to build filter programs
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -79,6 +79,7 @@
 
   (define (rename-ok? tfile ofile)
     (or (not leave-unchanged)
+        (not (file-is-readable? ofile))
         (and (file-is-readable? ofile)
              (file-is-readable? tfile)
              (not (file-equal? tfile ofile)))))
@@ -89,7 +90,7 @@
     (cond [(string? temporary-file)
            (process-with-tempfile output temporary-file)]
           [(eq? temporary-file #t)
-           (process-with-tempfile output #`",|output|.tmp")]
+           (process-with-tempfile output #`",(sys-basename output).tmp")]
           [(not temporary-file)
            (guard (e [else (unless keep-output? (sys-unlink output))
                            (raise e)])

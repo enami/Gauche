@@ -52,13 +52,13 @@
 (define-syntax test-succ
   (syntax-rules ()
     [(_ label expect parse input)
-     (test* #`",label (success)" expect
+     (test* #"~label (success)" expect
             (peg-parse-string parse input))]))
 
 (define-syntax test-fail
   (syntax-rules ()
     [(_ label expect parse input)
-     (test* #`",label (failure)" expect
+     (test* #"~label (failure)" expect
             (guard (e [(<parse-error> e)
                        (list (ref e 'position) (ref e 'objects))]
                       [else e])
@@ -240,6 +240,21 @@
            ($do (v ($or ($string "foo") ($string "bar")))
                 ($string (rope-finalize v)))
            "foobar")
+
+;; $lift and $lift*
+(test-succ "$lift" '(#\a . #\b)
+           ($lift cons anychar anychar)
+           "abc")
+(test-fail "$lift" '(1 #\z)
+           ($lift cons anychar ($char #\z))
+           "abc")
+
+(test-succ "$lift*" "abc"
+           ($lift* list->string anychar anychar anychar)
+           "abc")
+(test-fail "$lift" '(2 #\z)
+           ($lift* list->string anychar anychar ($char #\z))
+           "abc")
 
 ;; $fold-parsers and $fold-parsers-right
 (test-succ "$fold-parsers" '()                  ; base case
@@ -536,8 +551,8 @@
        (p        ($do [number?] [eof] ($return #t))))
   (define (%test str . fails?)
     (if (null? fails?)
-      (test-succ #`"number(1) \",str\"" #t p str)
-      (test-fail #`"number(1) \",str\"" (car fails?) p str)))
+      (test-succ #"number(1) \"~str\"" #t p str)
+      (test-fail #"number(1) \"~str\"" (car fails?) p str)))
   (%test "27652") (%test "-27652") (%test "+27652")
   (%test "" '(0 #[0-9])) (%test "-" '(1 #[0-9])) (%test "+" '(1 #[0-9]))
   (%test "+27.46") (%test "0.46")
@@ -662,7 +677,7 @@
 
 (let ()
   (define (t str)
-    (test* #`"parse error ,str" (test-error <json-parse-error>)
+    (test* #"parse error ~str" (test-error <json-parse-error>)
            (parse-json-string str)))
   (t "{\"x\": 100")
   (t "{x : 100}}")
@@ -784,9 +799,26 @@
                    ("Country"   . "US"))))
   )
 
+(cond-expand
+ [gauche.ces.utf8
+  (let1 data `(("[\"\\u03bb\"]" #("\x3bb;"))
+               ("[\"\\ud800\"]" ,(test-error <json-parse-error>))
+               ("[\"\\ud867\\ude3d\\u03bb\"]" #("\x29e3d;\x3bb;"))
+               ("[\"\\ude3d\\ud867\"]" ,(test-error <json-parse-error>))
+               ("[\"\\uf020\\u03bb\"]"  #("\xf020;\x3bb;")))
+    (dolist [d data]
+      (test* (format "unicode escape reading (~s)" (car d))
+             (cadr d)
+             (parse-json-string (car d)))
+      (when (vector? (cadr data))
+        (test* (format "unicode escape writing (~s)" (cadr d))
+               (car d)
+               (construct-json-string (cadr d))))))]
+ [else])
+
 (let ()
   (define (t obj)
-    (test* #`"writer error ,obj" (test-error <json-construct-error>)
+    (test* #"writer error ~obj" (test-error <json-construct-error>)
            (construct-json-string obj)))
   (t "a")
   (t '#(1 2 x))

@@ -1,7 +1,7 @@
 ;;;
 ;;; srfi-13.scm - string library
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -30,12 +30,6 @@
 ;;;   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 ;;;   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;;
-
-;; Natively implemented functions:
-;;   string? make-string string string->list list->string
-;;   string-join string-length string-ref string-copy
-;;   string-set! string-fill!
-;;   string-append string-contains
 
 (define-module srfi-13
   (export string-null? string-every string-any
@@ -75,6 +69,14 @@
           make-kmp-restart-vector
           kmp-step
           string-kmp-partial-search
+
+          ;; Gauche supports the following functions natively, but
+          ;; we re-export them so that they will be available by
+          ;; importing srfi-13 into vanilla enviornment.
+          string? make-string string string->list list->string
+          string-join string-length string-ref string-copy
+          string-set! string-fill!
+          string-append
           ))
 (select-module srfi-13)
 
@@ -93,7 +95,6 @@
 (define %maybe-substring (with-module gauche.internal %maybe-substring))
 (define %hash-string (with-module gauche.internal %hash-string))
 (define %string-replace-body! (with-module gauche.internal %string-replace-body!))
-
 ;;;
 ;;; Predicates
 ;;;
@@ -124,7 +125,7 @@
 ;;;
 
 (define (string-tabulate proc len)
-  (check-arg (lambda (l) (and (integer? l) (>= l 0))) len)
+  (check-arg (^l (and (integer? l) (>= l 0))) len)
   (let ((sink (open-output-string)))
     (do ((i 0 (+ i 1)))
         ((>= i len) (get-output-string sink))
@@ -141,7 +142,7 @@
 
 (define (string-copy! target tstart s . args)
   (check-arg string? target)
-  (check-arg (lambda (x) (and (integer? x) (>= x 0))) tstart)
+  (check-arg (^x (and (integer? x) (>= x 0))) tstart)
   (let* ((str (apply %maybe-substring s args))
          (slen (string-length str))
          (tlen (string-length target)))
@@ -285,84 +286,84 @@
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare
-         s1 s2 (lambda (_) #f) (lambda (_) #t) (lambda (_) #f)
+         s1 s2 (^_ #f) (^_ #t) (^_ #f)
          args))
 
 (define (string<> s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare
-         s1 s2 (lambda (_) #t) (lambda (_) #f) (lambda (_) #t)
+         s1 s2 (^_ #t) (^_ #f) (^_ #t)
          args))
 
 (define (string< s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare
-         s1 s2 (lambda (_) #t) (lambda (_) #f) (lambda (_) #f)
+         s1 s2 (^_ #t) (^_ #f) (^_ #f)
          args))
 
 (define (string<= s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare
-         s1 s2 (lambda (_) #t) (lambda (_) #t) (lambda (_) #f)
+         s1 s2 (^_ #t) (^_ #t) (^_ #f)
          args))
 
 (define (string> s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare
-         s1 s2 (lambda (_) #f) (lambda (_) #f) (lambda (_) #t)
+         s1 s2 (^_ #f) (^_ #f) (^_ #t)
          args))
 
 (define (string>= s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare
-         s1 s2 (lambda (_) #f) (lambda (_) #t) (lambda (_) #t)
+         s1 s2 (^_ #f) (^_ #t) (^_ #t)
          args))
 
 (define (string-ci= s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare-ci
-         s1 s2 (lambda (_) #f) (lambda (_) #t) (lambda (_) #f)
+         s1 s2 (^_ #f) (^_ #t) (^_ #f)
          args))
 
 (define (string-ci<> s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare-ci
-         s1 s2 (lambda (_) #t) (lambda (_) #f) (lambda (_) #t)
+         s1 s2 (^_ #t) (^_ #f) (^_ #t)
          args))
 
 (define (string-ci< s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare-ci
-         s1 s2 (lambda (_) #t) (lambda (_) #f) (lambda (_) #f)
+         s1 s2 (^_ #t) (^_ #f) (^_ #f)
          args))
 
 (define (string-ci<= s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare-ci
-         s1 s2 (lambda (_) #t) (lambda (_) #t) (lambda (_) #f)
+         s1 s2 (^_ #t) (^_ #t) (^_ #f)
          args))
 
 (define (string-ci> s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare-ci
-         s1 s2 (lambda (_) #f) (lambda (_) #f) (lambda (_) #t)
+         s1 s2 (^_ #f) (^_ #f) (^_ #t)
          args))
 
 (define (string-ci>= s1 s2 . args)
   (check-arg string? s1)
   (check-arg string? s2)
   (apply string-compare-ci
-         s1 s2 (lambda (_) #f) (lambda (_) #t) (lambda (_) #t)
+         s1 s2 (^_ #f) (^_ #t) (^_ #t)
          args))
 
 ;;;
@@ -687,7 +688,7 @@
     ))
 
 (define (string-unfold p f g seed
-                       :optional (base "") (make-final (lambda (_) "")))
+                       :optional (base "") (make-final (^_ "")))
   (check-arg procedure? p)
   (check-arg procedure? f)
   (check-arg procedure? g)
@@ -701,7 +702,7 @@
                (loop (g seed)))))))
 
 (define (string-unfold-right p f g seed
-                             :optional (base "") (make-final (lambda (_) "")))
+                             :optional (base "") (make-final (^_ "")))
   (check-arg procedure? p)
   (check-arg procedure? f)
   (check-arg procedure? g)
@@ -737,7 +738,7 @@
 
 (define (xsubstring s from :optional to start end)
   (check-arg string? s)
-  (check-arg (lambda (x) (and (integer? x) (exact? x))) from)
+  (check-arg (^x (and (integer? x) (exact? x))) from)
   (let* ((str (%maybe-substring s start end))
          (len (string-length str))
          (from-rank (quotient from len))
@@ -771,7 +772,7 @@
 
 (define (string-xcopy! target tstart s sfrom . args)
   (check-arg string? target)
-  (check-arg (lambda (x) (and (integer? x) (exact? x))) tstart)
+  (check-arg (^x (and (integer? x) (exact? x))) tstart)
   (let ((result (apply xsubstring s sfrom args)))
     (string-copy! target tstart result)))
 
@@ -812,27 +813,33 @@
 ;;; Filter
 ;;;
 
-(define (string-filter s c/s/p . args)
-  (check-arg string? s)
-  (let ((src (open-input-string (apply %maybe-substring s args)))
-        (dest (open-output-string))
-        (pred (%get-char-pred c/s/p)))
-    (let loop ((ch (read-char src)))
-      (cond ((eof-object? ch) (get-output-string dest))
-            ((pred c/s/p ch) (write-char ch dest) (loop (read-char src)))
-            (else (loop (read-char src)))))
-    ))
+;; NB: We accidentally got the argument order of string-filter and
+;; string-delete reversed for a good while.  To keep the code that
+;; was written in wrong argument order, we permit both order---
+;; (string-filter pred string) and (string-filter string pred),
+;; although the new code should use the former (srfi-13 style).
 
-(define (string-delete s c/s/p . args)
-  (check-arg string? s)
-  (let ((src (open-input-string (apply %maybe-substring s args)))
-        (dest (open-output-string))
-        (pred (%get-char-pred c/s/p)))
-    (let loop ((ch (read-char src)))
-      (cond ((eof-object? ch) (get-output-string dest))
-            ((pred c/s/p ch) (loop (read-char src)))
-            (else (write-char ch dest) (loop (read-char src)))))
-    ))
+(define (string-filter c/s/p s . args)
+  (if (string? c/s/p)
+    (apply string-filter s c/s/p args) ;; for the backward compatibility
+    (let ([src (open-input-string (apply %maybe-substring s args))]
+          [dest (open-output-string)]
+          [pred (%get-char-pred c/s/p)])
+      (let loop ([ch (read-char src)])
+        (cond [(eof-object? ch) (get-output-string dest)]
+              [(pred c/s/p ch) (write-char ch dest) (loop (read-char src))]
+              [else (loop (read-char src))])))))
+
+(define (string-delete c/s/p s . args)
+  (if (string? c/s/p)
+    (apply string-delete s c/s/p args) ;; for the backward compatibility
+    (let ([src (open-input-string (apply %maybe-substring s args))]
+          [dest (open-output-string)]
+          [pred (%get-char-pred c/s/p)])
+      (let loop ([ch (read-char src)])
+        (cond [(eof-object? ch) (get-output-string dest)]
+              [(pred c/s/p ch) (loop (read-char src))]
+              [else (write-char ch dest) (loop (read-char src))])))))
 
 ;;; Low-level procedures.  These are included for completeness, but
 ;;; I'm not using these in other SRFI-13 routines, since it is more

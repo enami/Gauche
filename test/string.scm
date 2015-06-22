@@ -33,10 +33,6 @@
        (string->list "abcdefg" 0 1)) ;srfi-13 extension
 (test* "string->list" '() (string->list ""))
 
-;; this should be switched by native encoding.
-;(test* "string w/ char >= \\x80" (integer->char #xa1)
-;       (string-ref (string (integer->char #xa1)) 0))
-
 (test* "string-copy" '("abcde" #f)
        (let* ((x "abcde") (y (string-copy x)))
          (list y (eq? x y))))
@@ -46,6 +42,28 @@
 (test* "string-ref" #\b (string-ref "abc" 1))
 (define x (string-copy "abcde"))
 (test* "string-set!" "abZde" (begin (string-set! x 2 #\Z) x))
+
+(test* "string w/ char >= \\x80" #\u00a1
+       (string-ref (string #\u00a1) 0))
+
+(test* "string-reader hex-escape" '(1 2 3)
+       (let1 s "\x1;\x2;\x00003;"
+         (map (^i (char->integer (string-ref s i))) '(0 1 2))))
+(test* "string-reader hex-escape legacy support" '(1 2 0 48 48 51)
+       (let1 s "\x01\x02\x00003"
+         (map (^i (char->integer (string-ref s i))) '(0 1 2 3 4 5))))
+(test* "string-reader hex-escape error cases 1 (no hexdigits)"
+       (test-error)
+       (read-from-string "\"\\x;\""))
+(test* "string-reader hex-escape error cases 2 (integer overflow)"
+       (test-error)
+       (read-from-string "\"\\x11111111111111111111111111111111;\""))
+(test* "string-reader hex-escape error cases 3 (out of unicode range)"
+       (test-error)
+       (read-from-string "\"\\x111111;\""))
+(test* "string-reader hex-escape legacy fallback" "\x11;1111"
+       (read-from-string "\"\\x111111\""))
+
 
 (test* "string-fill!" "ZZZZZZ"
        (string-fill! (string-copy "000000") #\Z))
@@ -556,7 +574,7 @@
 
 (define (string-port-tester . args)
   (let ((out (open-output-string)))
-    (for-each (lambda (s) (display s out)) args)
+    (for-each (^s (display s out)) args)
     (get-output-string out)))
 
 (define (test-string-port signature total seg)
@@ -602,16 +620,16 @@
 
 (test* "string interpolation" "string interpolation"
        (let ((x "inter") (y "polation"))
-         #`"string ,|x|,|y|"))
+         #"string ~|x|~|y|"))
 (test "string interpolation" "string interpolation"
       (lambda ()
         (define (x) "inter")
         (define (y) "polation")
-        #`"string ,(x),(y)"))
+        #"string ~(x)~(y)"))
 (test "string interpolation" "string interpolation"
       (lambda ()
         (define (x a)
           (if a "inter" "polation"))
-        #`"string ,(x #t),(x #f)"))
+        #"string ~(x #t)~(x #f)"))
 
 (test-end)

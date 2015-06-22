@@ -1,4 +1,4 @@
-@node Library modules - SRFIs, Library modules - Utilities, Library modules - Gauche extensions, Top
+@node Library modules - SRFIs, Library modules - Utilities, Library modules - R7RS integration, Top
 @chapter Library modules - SRFIs
 @c NODE ライブラリモジュール - SRFI
 
@@ -16,7 +16,6 @@ of supported SRFIs.
 
 @c ----------------------------------------------------------------------
 @menu
-* Feature conditional::         srfi-0
 * List library::                srfi-1
 * Homogeneous vectors::         srfi-4
 * A compatible let form with signatures and rest arguments::  srfi-5
@@ -32,167 +31,19 @@ of supported SRFIs.
 * Vector library::              srfi-43
 * Requiring extensions::        srfi-55
 * Integers as bits::            srfi-60
+* Basic hash tables::           srfi-69
 * Accessing environment variables::  srfi-98
+* Basic socket interface::      srfi-106
+* Boxes::                       srfi-111
+* Sets and bags::               srfi-113
+* Comparators::                 srfi-114
 @end menu
 
-@node Feature conditional, List library, Library modules - SRFIs, Library modules - SRFIs
-@section @code{srfi-0} - Feature conditional
-@c NODE 機能条件式, @code{srfi-0} - 機能条件式
-
-@deftp {Module} srfi-0
-@mdindex srfi-0
-@c EN
-Provides SRFI-0 @code{cond-expand} macro form.
-Now this module is autoloaded when @code{cond-expand} is used,
-so you don't need to say @code{(use srfi-0)} explicitly.
-Portable programs can't use 'use' form anyway.
-@c JP
-このモジュールは SRFI-0 の @code{cond-expand} マクロ形式を提供します。
-現在、このモジュールは @code{cond-expand} を使用したときに、自動的に
-ロードされますので、明示的に @code{(use srfi-0)} を書く必要はありません。
-ポータブルなプログラムにするには、'use' 形式を使わない方が良いでしょう。
-@c COMMON
-@end deftp
-
-@defmac cond-expand (feature-requirement command-or-definition @dots{}) @dots{}
-[SRFI-0]
-@c EN
-This macro expands to @var{command-or-definition} @dots{} if Gauche
-supports @var{feature-requirement}.
-In a way, it can be used to absorb the different feature sets supported by
-different Scheme implementations.
-
-@var{feature-requirement} must be in the following syntax:
-@c JP
-Gauche が @var{feature-requirement} をサポートしていれば、このマクロは
-@var{command-or-definition} @dots{} を展開します。
-異るScheme の実装による機能の差異を吸収するのに使えると言えるでしょう。
-
-@var{feature-requiremnt} は以下のような構文でなければなりません。
-@c COMMON
-@example
-@var{feature-requirement}
-  : @var{feature-identifier}
-  | (and @var{feature-requirement} @dots{})
-  | (or  @var{feature-requirement} @dots{})
-  | (not @var{feature-requirement})
-@end example
-
-@c EN
-@var{feature-identifier} is a symbol that indicates a feature.
-If such a feature is supported in Gauche, it satisfies the
-@var{feature-requirement}.  You can do boolean combination
-of @var{feature-requirement}s to compose more complex conditions.
-
-The macro tests each @var{feature-requirement} in order, and
-if one is satisfied, the macro itself expands to the
-corresponding @var{command-or-definition} @dots{}.
-
-The last clause may begin with a symbol @code{else} instead of
-@var{feature-requirement}.  If no condition is fulfilled before
-it, then the macro expands to the @var{command-or-definition}s
-of the else clause.  If there's no else clause and no condition
-is fulfilled, an error is signaled.
-
-Currently, Gauche recognizes srfi names (e.g. @code{srfi-1})
-that it supports (@xref{Standard conformance}, for the list of
-supported SRFIs), and a symbol @code{gauche} as @var{feature-identifier}.
-
-Suppose you are writing a program that requires srfi-13 (string library).
-In Gauche, the standard way to use srfi-13 is like this:
-@c JP
-@var{feature-identifier} は機能を示すシンボルです。ある機能が Gauche で
-サポートされているなら、それは、@var{feature-requirement} を満たします。
-より複雑な条件を構成するために、@var{feature-requirement} のブール代数による
-組み合わせを用いることが出来ます。
-
-このマクロは @var{feature-requirement} を順にテストし、そのひとつが
-満たされたら、対応する @var{command-or-definition} @dots{} に展開されます。
-
-最後の節は、@var{feature-requirement} ではなく、@code{else} で始めることも
-できます。これ以前に満たされた条件がない場合には、このマクロは else 節の
-@var{command-or-definition} に展開されます。もし、else 節がなく、
-満たされる条件節がひとつもなければ、エラーが発生します。
-
-現時点の Gauche では、サポートされている SRFI の機能は、srfi 名
-(たとえば、@code{srfi-1})で識別されます(サポートされている SRFI に
-ついては @ref{Standard conformance} を参照してください)。
-また、シンボル @code{gauche} も @var{feature-identifier} として認識されます。
-
-srfi-13 (文字列ライブラリ)を必要とするプログラムを書いているとしましょう。
-Gauche では、標準的には、以下のようにします。
-@c COMMON
-
-@example
-(use srfi-13)
-
-@c EN
-;; ... your program ...
-@c JP
-;; ... あなたのプログラム ...
-@c COMMON
-@end example
-
-@c EN
-However, the 'use' macro is Gauche specific and won't work
-on other Scheme implementations.  You can write instead:
-@c JP
-しかし、この 'use' マクロは Gauche 専用で、他の Scheme の実装では
-動作しません。代りに以下のように書くことができます。
-@c COMMON
-
-@example
-(cond-expand
-  (srfi-13
-@c EN
-    ;; ... your program ...
-@c JP
-    ;; ... あなたのプログラム ...
-@c COMMON
-  ))
-@end example
-
-@c EN
-If the implementation supports @code{srfi-13}, the form expands
-to your program.  Note that Gauche issues @code{(use srfi-13)}
-for you in this case.
-
-The above form signals an error if the implementation doesn't support
-srfi-13.  However, you might want to run your program on such implementations
-as well, by providing alternative library definitions.
-@c JP
-その実装が @code{srfi-13} をサポートしていれば、この形式は「あなたの
-プログラム」に展開されます。Gauche では、この場合に
-内部で@code{(use srfi-13)}を呼び出します。
-
-上記のフォームは実装がsrfi-13をサポートしていなければエラーとなります。
-そのような実装の上でもプログラムを走らせたい時は、
-代替となるライブラリ定義を提供すると良いでしょう。
-@c COMMON
-
-@example
-(cond-expand
- (srfi-13
-@c EN
-   ;; ... your program ...
-@c JP
-   ;; ... あなたのプログラム ...
-@c COMMON
- )
- (else
-   (load "my-srfi-13-implementation")
-@c EN
-   ;; ... your program ...
-@c JP
-   ;; ... あなたのプログラム ...
-@c COMMON
- ))
-@end example
-@end defmac
 
 @c ----------------------------------------------------------------------
-@node List library, Homogeneous vectors, Feature conditional, Library modules - SRFIs
+@node List library, Homogeneous vectors, Library modules - SRFIs, Library modules - SRFIs
 @section @code{srfi-1} - List library
+@c NODE リストライブラリ, @code{srfi-1} - リストライブラリ
 
 @deftp {Module} srfi-1
 @mdindex srfi-1
@@ -230,8 +81,8 @@ split-at split-at! iota
 @end deftp
 
 @menu
-* SRFI-1 List utilities::
-* SRFI-1 Set operations::
+* SRFI-1 List utilities::       
+* SRFI-1 Set operations::       
 @end menu
 
 @node SRFI-1 List utilities, SRFI-1 Set operations, List library, List library
@@ -341,32 +192,6 @@ The equality procedure must be consistent with @code{eq?}, i.e.
 
 @subsubheading List miscellaneous routines
 
-@defun concatenate list-of-lists
-@defunx concatenate! list-of-lists!
-@c EN
-[SRFI-1] Equivalent to @code{(apply append @var{list-of-lists})} and
-@code{(apply append! @var{list-of-lists})}, respectively.
-@c JP
-[SRFI-1] それぞれ、@code{(apply append @var{list-of-lists})} および
-@code{(apply append! @var{list-of-lists})} と同等です。
-@c COMMON
-@end defun
-
-@defun append-reverse rev-head tail
-@defunx append-reverse! rev-head tail
-[SRFI-1]
-@c EN
-@code{append-reverse} returns @code{(append (reverse rev-head) tail)}.
-@code{append-reverse!} is the linear-update variant.  These are equivalent
-to the two-argument @code{reverse} and
-@code{reverse!} (@xref{Other list procedures}).
-@c JP
-[SRFI-1] @code{append-reverse} は @code{(append (reverse rev-head) tail)} を
-返します。@code{append-reverse!} はその場で更新されるバージョンです。
-これらの手続きは2引数の@code{reverse}および@code{reverse!}と同等です
-(@ref{Other list procedures}参照)。
-@c COMMON
-@end defun
 
 @defun zip clist1 clist2 @dots{}
 [SRFI-1]
@@ -435,36 +260,6 @@ three elements of the lists, and so on.
 @end example
 @end defun
 
-@defun count pred clist1 clist2 @dots{}
-[SRFI-1]
-@c EN
-A procedure @var{pred} is applied to the @var{n}-th element
-of given lists, from @var{n} is zero to the length of the
-the shortest finite list in the given lists,
-and the count of times @var{pred} returned true is returned.
-@c JP
-@var{n} をゼロから与えられたリストのうち最も短いリストの
-長さまでとして、@var{pred} 手続きを与えられたリストの @var{n} 番目の要素に
-それぞれ適用します。
-@var{pred} が真を返した数が返ります。
-@c COMMON
-
-@example
-(count even? '(3 1 4 1 5 9 2 5 6)) @result{} 3
-(count < '(1 2 4 8) '(2 4 6 8 10 12 14 16)) @result{} 3
-@end example
-
-@c EN
-At least one of the argument lists must be finite:
-@c JP
-引数で与えられるリストの少くともひとつは有限でなければなりません。
-@c COMMON
-
-@example
-(count < '(3 1 4 1) (circular-list 1 10)) @result{} 2
-@end example
-@end defun
-
 @subsubheading List fold, unfold & map
 
 @defun pair-fold kons knil clist1 clist2 @dots{}
@@ -477,37 +272,6 @@ gets each @code{cdr} of the given @var{clist}s, instead of @code{car}.
 [SRFI-1]
 @code{fold} および @code{fold-right} と同様ですが、@var{kons} 手続き
 は与えられた @var{clist} の @code{car} ではなく、@code{cdr} をとります。
-@c COMMON
-@end defun
-
-@defun reduce f ridentity list
-@defunx reduce-right f ridentity list
-@c EN
-[SRFI-1]
-Variant of @code{fold} and @code{fold-right}.   @var{f} must be a
-binary operator, and @var{ridentity} is the value such that for
-any value @var{x} that is valid as @var{f}'s input,
-@c JP
-[SRFI-1]
-@code{fold} および @code{fold-right} の変形バージョンです。
-@var{f} は二項演算子でなければなりません。
-また、@var{ridentity} は @var{f} の入力として許される
-あらゆる値 @var{x} について以下を満していなければなりません。
-@c COMMON
-@example
- (f x ridentity) @equiv{} x
-@end example
-
-@c EN
-These functions effectively do the same thing as @code{fold} or
-@code{fold-right}, respectively, but omit the first
-application of @var{f} to @var{ridentity}, using the above nature.
-So @var{ridentity} is used only when @var{list} is empty.
-@c JP
-これらの関数は実質的に @code{fold} や @code{fold-right} と同じことを
-行いますが、@var{ridentity}には上記の性質があるため、
-@var{f}は@var{ridentity}には適用されません。
-@var{ridentity}が使われるのは@var{list}が空の場合だけです。
 @c COMMON
 @end defun
 
@@ -560,27 +324,6 @@ Defined by the following recursion.
 @end example
 @end defun
 
-@defun append-map f clist1 clist2 @dots{}
-@defunx append-map! f clist1 clist2 @dots{}
-@c EN
-[SRFI-1]
-Equivalent to
-@c JP
-[SRFI-1]
-以下と同等です。
-@c COMMON
-
-@example
-  (apply append (map @var{f} @var{clist1} @var{clist2} @dots{}))
-  (apply append! (map @var{f} @var{clist1} @var{clist2} @dots{}))
-@end example
-@c EN
-At least one of the list arguments must be finite.
-@c JP
-引数のリストのうち少くともひとつは有限でなければなりません。
-@c COMMON
-@end defun
-
 @defun map! f clist1 clist2 @dots{}
 @c EN
 [SRFI-1]
@@ -612,12 +355,17 @@ Gauche では @code{map} の実装はこの順になっているので、@code{m
 @defun pair-for-each f clist1 clist2 @dots{}
 @c EN
 [SRFI-1]
-Like @code{for-each}, but the procedure @var{f} is applied on each @code{cdr}
-of @var{clist}s.
+Like @code{for-each}, but the procedure @var{f} is applied on
+@var{clist}s themselves first, then each @code{cdr}s of them, and so on.
 @c JP
-@code{for-each} と似ていますが、手続き @var{f} は各リスト @var{clist} の
-@code{cdr} に適用されます。
+@code{for-each} と似ていますが、手続き @var{f} はまず @var{clist}自体に
+適用され、次ににそれらの@code{cdr} に適用され、となります。
 @c COMMON
+
+@example
+(pair-for-each write '(a b c))
+ @result{} @r{prints} (a b c)(b c)(c)
+@end example
 @end defun
 
 @subsubheading List partitioning
@@ -725,6 +473,10 @@ All procedures in this category takes a comparison procedure
 @var{elt=}, as the first argument, which is used to determine
 two elements in the given sets are the same.
 
+Since lists require linear time to search, those procedures aren't
+suitable to deal with large sets.  @xref{Sets and bags}, if you
+know your sets will contain more than a dozen items or so.
+
 See also @ref{Combination library}, which
 concerns combinations of elements in the set.
 @c JP
@@ -734,6 +486,11 @@ concerns combinations of elements in the set.
 この範疇にあるすべての手続きは、比較手続き @var{elt=} を最初の引数として
 とります。この比較手続きは与えられた二つの集合の要素が等しいかどうかを
 判定します。
+
+リストは検索に線形時間を必要とするため、ここに挙げた手続きは
+大きな集合を扱うには向いていません。もし対象となる集合が
+二桁以上の要素を持つことが分かっているなら、@ref{Sets and bags}を
+参照してください。
 
 集合の要素の組み合せについては @ref{Combination library}
 も参照してください。
@@ -1091,123 +848,6 @@ Gauche はそれぞれの @var{requirement} をひとつずつチェックし、
 @end deffn
 
 @c ----------------------------------------------------------------------
-@c @node Record types, Let-values, Feature-based program configuration language, Library modules - SRFIs
-@c @section @code{srfi-9} - Record types
-@c @c NODE レコード型, @code{srfi-9} - レコード型
-
-@c @deftp {Module} srfi-9
-@c @mdindex srfi-9
-@c @c EN
-@c Contains a macro to use record types.  A record type is implemented on
-@c top of Gauche's object system.
-
-@c The SRFI-9 record type is not as powerful as the object system, but
-@c it will be useful if you want your program to be portable.
-
-@c See also @ref{SLIB-compatible record type},
-@c which provides an SCM-compatible
-@c procedural interface of record types.
-@c @c JP
-@c このモジュールはレコード型を使うマクロを含んでいます。レコード型は
-@c Gauche のオブジェクトシステム上で実装されています。
-
-@c SRFI-9 のレコード型はオブジェクトシステムほどには強力ではありませんが、
-@c ポータブルなプログラムを書くときには役に立ちます。
-
-@c ちなみに、レコード型に対するSCMコンパチブルな
-@c 手続き的APIを提供する@ref{SLIB-compatible record type}モジュールもあります。
-@c @c COMMON
-@c @end deftp
-
-@c @defmac define-record-type name (constructor init-tag @dots{}) predicate (field accessor [modifier]) @dots{}
-@c @c EN
-@c Creates a record type and binds it to @var{name}.
-@c In Gauche, a record type is just a subclass of @code{<record>}.
-
-@c @var{constructor} is bound to a procedure that creates an instance
-@c of the record type,
-@c which takes as many arguments as @var{init-tag} @dots{}.  Each
-@c @var{init-tag} corresponds to one of the field name, and the fields
-@c of the created record instance is initialized accordingly.  Not all
-@c of fields need to appear in @var{init-tag}; uninitialized fields remain
-@c unbound.
-
-@c @var{predicate} is bound to a procedure that takes one argument, and
-@c returns #t if the argument is an instance of the defined record type,
-@c #f otherwise.
-
-@c Followings are field specifications.  The record has fields
-@c @var{field} @dots{}, and each field can be accessed by a method
-@c @var{accessor}.  If @var{modifier} is given to the field, it is bound
-@c to a method that sets the value to the field.
-
-@c Example:
-@c @c JP
-@c レコード型を作成し、それを @var{name} に束縛します。Gauche では、
-@c レコード型は @code{<record>} のサブクラスです。
-
-@c @var{constructor} はそのレコード型のインスタンスを作成する手続きに
-@c 束縛されており、@var{init-tag} @dots{} として多くの引数をとります。
-@c それぞれの @var{init-tag} はフィールド名に対応しており、作成された
-@c レコード型のインスタンスのフィールドはそれぞれの  @var{init-tag}
-@c にしたがって、初期化されます。@var{init-tag} には全てのフィールドが
-@c ある必要なはく、初期化されないフィールドは、未束縛のままになります。
-
-@c @var{predicate} は、一つの引数をとり、もしその引数が、定義された
-@c レコード型のインスタンスであれば、@code{#t} を返し、さもなければ、
-@c @code{#f} を返すような手続きに束縛されます。
-
-@c そのあとは、フィールドの仕様です。レコードはフィールド
-@c @var{field} @dots{} をもち、それぞれのフィールドはメソッド
-@c @var{accessor} によってアクセス可能です。そのフィールドに対して
-@c @var{modifier} が与えられていれば、それは、そのフィールドの
-@c 値をセットするメソッドに束縛されます。
-
-@c 例:
-@c @c COMMON
-@c @example
-@c (define-record-type pare
-@c   (kons x y) pare?
-@c   (x kar set-kar!)
-@c   (y kdr))
-@c  @result{} #<class pare>
-
-@c (pare? (kons 2 3)) @result{} #t
-@c (pare? (cons 2 3)) @result{} #f
-
-@c (kar (kons 2 3)) @result{} 2
-@c (kdr (kons 2 3)) @result{} 3
-
-@c (let ((x (kons 2 3)))
-@c   (set-kar! x -1)
-@c   (kar x)) @result{} -1
-@c @end example
-
-@c @c EN
-@c Conceptually, the above example is expanded into the following
-@c sequence of forms.
-@c @c JP
-@c 概念的には、上の例は以下の形式のならびに展開されます。
-@c @c COMMON
-@c @example
-@c (define-class pare (<record>) (x y))
-@c (define (kons x y)
-@c   (let ((obj (make pare)))
-@c     (slot-set! obj 'x x)
-@c     (slot-set! obj 'y y)
-@c     obj))
-@c (define (pare? obj) (is-a? obj pare))
-@c (define-method kar ((obj pare))
-@c   (slot-ref obj 'x))
-@c (define-method set-kar! ((obj pare) value)
-@c   (slot-set! obj 'x value))
-@c (define-method kdr ((obj pare))
-@c   (slot-ref obj 'y))
-@c @end example
-
-@c @end defmac
-
-@c ----------------------------------------------------------------------
 @node Let-values, String library, Feature-based program configuration language, Library modules - SRFIs
 @section @code{srfi-11} - Let-values
 
@@ -1339,20 +979,20 @@ Gaucheでは、一貫性のために``srfi-13''と名付けています。
 @end deftp
 
 @menu
-* SRFI-13 General conventions::
-* SRFI-13 String predicates::
-* SRFI-13 String Constructors::
-* SRFI-13 String Selection::
-* SRFI-13 String Comparison::
-* SRFI-13 String Prefixes & Suffixes::
-* SRFI-13 String searching::
-* SRFI-13 String case mapping::
-* SRFI-13 String reverse & append::
-* SRFI-13 String mapping::
-* SRFI-13 String rotation::
-* SRFI-13 other string operations::
-* SRFI-13 String filtering::
-* SRFI-13 Low-level string procedures::
+* SRFI-13 General conventions::  
+* SRFI-13 String predicates::   
+* SRFI-13 String Constructors::  
+* SRFI-13 String Selection::    
+* SRFI-13 String Comparison::   
+* SRFI-13 String Prefixes & Suffixes::  
+* SRFI-13 String searching::    
+* SRFI-13 String case mapping::  
+* SRFI-13 String reverse & append::  
+* SRFI-13 String mapping::      
+* SRFI-13 String rotation::     
+* SRFI-13 other string operations::  
+* SRFI-13 String filtering::    
+* SRFI-13 Low-level string procedures::  
 @end menu
 
 @node SRFI-13 General conventions, SRFI-13 String predicates, String library, String library
@@ -1555,11 +1195,13 @@ that the @var{end} argument is optional.
 @c EN
 [SRFI-13] Copies a string @var{s} into a string
 @var{target} from the position @var{tstart}.
+The @var{target} string must be mutable.
 Optional @var{start} and @var{end} arguments limits the range of @var{s}.
 If the copied string run over the end of @var{target}, an error is
 signaled.
 @c JP
 [SRFI-13] 文字列@var{s}を、文字列@var{target}の@var{tstart}番目以降へコピーします。
+@var{target}文字列は変更可能でなければなりません。
 オプションの引数@var{start}と@var{end}は、@var{s}の範囲を制限します。
 コピーされた文字列が@var{target}の終端を越えたらエラーが通知されます。
 @c COMMON
@@ -1568,6 +1210,14 @@ signaled.
 (string-copy! s 2 "ZZ")
 s @result{} "abZZe"
 @end example
+
+@c EN
+It is ok to pass the same string to @var{target} and @var{s}; this
+always work even if the regions of source and destination are overlapping.
+@c JP
+@var{target}と@var{s}に同じ文字列を渡しても構いません。コピー元とコピー先の
+領域が重なっていても、コピーは常に正しく行われます。
+@c COMMON
 @end defun
 
 @defun string-take s nchars
@@ -1670,6 +1320,22 @@ the substring of @var{s} is used as the source.
 @defun string-compare s1 s2 proc< proc= proc> :optional start1 end1 start2 end2
 @defunx string-compare-ci s1 s2 proc< proc= proc> :optional start1 end1 start2 end2
 [SRFI-13]
+Compares two strings @var{s1} and @var{s2} codepoint-wise.  When mismatch
+is first found, call either one of procedure @var{proc<}, @var{proc=} or
+@var{proc>}, depending on the mismatched codepoint, with the index
+in @var{s1} when mismatch occurs.  The optional arguments restricts
+the range of the input strings; however, the index passed to one 
+of the procedures is always an index from the beginning of @var{s1}.
+
+@example
+(string-compare "abc" "abz"
+                (^i `(< ,i)) (^i `(= ,i)) (^i `(> ,i)))
+  @result{} (< 2)
+@end example
+
+The case-insensitive variant, @var{string-compare-ci}, compares
+each codepoint with character-wise case-folding.  It won't consider
+special case folding such as German eszett.
 @end defun
 
 @defun string= s1 s2 :optional start1 end1 start2 end2
@@ -1704,6 +1370,9 @@ the substring of @var{s} is used as the source.
 @defunx string-prefix-length-ci s1 s2 :optional start1 end1 start2 end2
 @defunx string-suffix-length-ci s1 s2 :optional start1 end1 start2 end2
 [SRFI-13]
+Returns the length of the longest common prefix/suffix of two strings,
+@var{s1} and @var{s2}.  The optional arguments restrict the range of
+search.  The @code{*-ci} variations use case foling character comparison.
 @end defun
 
 @defun string-prefix? s1 s2 :optional start1 end1 start2 end2
@@ -1840,13 +1509,13 @@ the procedures with the same name in @code{text.unicode} module
 @c COMMON
 
 @c EN
-The linear-update version @code{string-titelcase!}, @code{string-upcase!}
+The linear-update version @code{string-titlecase!}, @code{string-upcase!}
 and @code{string-downcase!} destroys @var{s} to store the result.
 Note that in Gauche, using those procedures doesn't save anything,
 since string mutation is expensive by design.  They are provided merely
 for completeness.
 @c JP
-@code{string-titelcase!}、@code{string-upcase!}、
+@code{string-titlecase!}、@code{string-upcase!}、
 @code{string-downcase!}はその場で更新するバージョンで、@var{s}を破壊的に
 変更します。ただし、Gaucheでは文字列の変更は新たな文字列を作るのと効率的に
 何ら変わりがありません。これらの手続きは互換性のためだけに用意されています。
@@ -2048,9 +1717,56 @@ which provides similar features but different criteria.
 @subsection String filtering
 @c NODE 文字列のフィルタリング
 
-@defun string-filter s char/char-set/pred :optional start end
-@defunx string-delete s char/char-set/pred :optional start end
+@defun string-filter char/char-set/pred s :optional start end
+@defunx string-delete char/char-set/pred s :optional start end
 [SRFI-13]
+@c EN
+Returns a string consists of characters in a string @var{s} 
+that passes (or don't pass) the test indicated by @var{char/char-set/pred},
+respectively.  
+@c JP
+それぞれ、文字列@var{s}中の文字のうち@var{char/char-set/pred}で示される
+テストを通る、または通らない文字からなる文字列を返します。
+@c COMMON
+
+@example
+(string-filter char-upper-case? "Hello, World!")
+  @result{} "HW"
+
+(string-delete char-upper-case? "Hello, World!")
+  @result{} "ello, orld!"
+
+(string-delete #\l "Hello, World!")
+  @result{} "Heo, Word!"
+
+(string-filter #[\w] "Hello, World!")
+  @result{} "HelloWorld"
+@end example
+
+@c EN
+Note: Srfi-13 was revised after finalization to switch
+the order of arguments @var{char/char-set/pred} and @var{s} was.
+At the time of finalization, the order was
+@code{(string-filter s pred)} and Gauche implemented it accordingly.
+However, most existing implementations follows the revised order,
+since that was what the srfi-13 reference implementation had.
+
+So, from 0.9.4, we revised the API to comply the current
+srfi-13 spec, but we also accept the old order as well
+not to break the old code.
+We recommend the new code to use the new order.
+@c JP
+註: srfi-13は制定後に改訂され、引数@var{char/char-set/pred}と@var{s}の
+順序が逆になりました。制定時点では引数順は
+@code{(string-filter s pred)}で、Gaucheもそれに従って実装していました。
+しかし既存の実装のほとんどは@code{(string-filter pred s)}という順序に
+なっています。srfi-13の参照実装がそうだったからです。
+
+0.9.4からGaucheも現在のsrfi-13の実装に合わせましたが、
+以前の仕様で書かれたコードとの互換性を保つため、
+引数順を逆にしても動作するようになっています。
+新しく書かれるコードは、現在のsrfi-13の引数順を使うのが良いでしょう。
+@c COMMON
 @end defun
 
 @node SRFI-13 Low-level string procedures,  , SRFI-13 String filtering, String library
@@ -2119,12 +1835,12 @@ Gaucheでは@code{<char-set>}クラスは@code{<collection>}を継承し、
 @end deftp
 
 @menu
-* SRFI-14 Character-set constructors::
-* SRFI-14 Character-set comparison::
-* SRFI-14 Character-set iteration::
-* SRFI-14 Character-set query::
-* SRFI-14 Character-set algebra::
-* SRFI-14 Predefined character-set::
+* SRFI-14 Character-set constructors::  
+* SRFI-14 Character-set comparison::  
+* SRFI-14 Character-set iteration::  
+* SRFI-14 Character-set query::  
+* SRFI-14 Character-set algebra::  
+* SRFI-14 Predefined character-set::  
 @end menu
 
 @node SRFI-14 Character-set constructors, SRFI-14 Character-set comparison, Character-set library, Character-set library
@@ -2505,11 +2221,11 @@ Gaucheでは、timeオブジェクトは@code{<time>}クラスとして組み込
 @end deftp
 
 @menu
-* SRFI-19 Time types::
-* SRFI-19 Time queries::
-* SRFI-19 Time procedures::
-* SRFI-19 Date::
-* SRFI-19 Date reader and writer::
+* SRFI-19 Time types::          
+* SRFI-19 Time queries::        
+* SRFI-19 Time procedures::     
+* SRFI-19 Date::                
+* SRFI-19 Date reader and writer::  
 @end menu
 
 @node SRFI-19 Time types, SRFI-19 Time queries, Time data types and procedures, Time data types and procedures
@@ -3941,7 +3657,7 @@ It runs eagerly as the name suggests, that is, if it generates a list, it
 creates the entire list when evaluated, instead of generate the
 elements @emph{on demand}.  Thus it can't represent an infinite
 sequence, which Haskell's comprehension naturally does.  Gauche offers
-a few alternatives to deal with lazy, possibily infinite, sequences:
+a few alternatives to deal with lazy, possibly infinite, sequences:
 See @ref{Lazy sequences}, @ref{Generators} and @ref{Stream library}.
 @c JP
 この機構は名前の通り、先行評価的に走ります。すなわち、リストを生成する場合、評価時
@@ -4172,7 +3888,7 @@ Repeats @var{body} and collects the results into a list.
 [SRFI-42]
 @c EN
 Repeats @var{body}, which must yield a list.
-Returns a list which is the concatenation of all lists retured by @var{body}.
+Returns a list which is the concatenation of all lists returned by @var{body}.
 @c JP
 @var{body}を繰り返し、その結果のリストを結合して返します。
 @var{body}は必ずリストを返さなければなりません。
@@ -4607,14 +4323,50 @@ SRFI-43のいくつかの関数は組み込みになっています。@ref{Vecto
 
 @defun vector-unfold f length seed @dots{}
 [SRFI-43]
+Creates a vector of length @var{length}, filling elements
+left to right by calling @var{f} repeatedly.  
+
+The procedure @var{f} must take as many arguments as
+one plus number of seed values, and must return the same number
+of values.  The first argument is the index.  The first return
+value is used for the element of the result vector, and the
+rest of return values are passed to the next call of @var{f}.
+
+@example
+(vector-unfold (^[i x] (values (cons i x) (* x 2))) 8 1)
+ @result{} #((0 . 1) (1 . 2) (2 . 4) (3 . 8)
+    (4 . 16) (5 . 32) (6 . 64) (7 . 128))
+@end example
 @end defun
 
 @defun vector-unfold-right f length seed @dots{}
 [SRFI-43]
+Creates a vector of length @var{length}, filling elements
+right to left by calling @var{f} repeatedly.  
+
+The procedure @var{f} must take as many arguments as
+one plus number of seed values, and must return the same number
+of values.  The first argument is the index.  The first return
+value is used for the element of the result vector, and the
+rest of return values are passed to the next call of @var{f}.
+
+@example
+(vector-unfold-right (^[i x] (values (cons i x) (* x 2))) 8 1)
+ @result{} #((0 . 128) (1 . 64) (2 . 32) (3 . 16)
+    (4 . 8) (5 . 4) (6 . 2) (7 . 1))
+@end example
 @end defun
 
 @defun vector-reverse-copy vec :optional start end
 [SRFI-43]
+Copies the vector @var{vec} with reversing its elements.
+Optional @var{start} and @var{end} arguments can limit
+the range of the input.
+
+@example
+(vector-reverse-copy '#(a b c d e) 1 4)
+ @result{} #(d c b)
+@end example
 @end defun
 
 @defun vector-append vec @dots{}
@@ -4716,6 +4468,18 @@ store the result and returns @var{vec1}; hence @var{vec1} must be mutable.
  @result{} 3
 @end example
 
+Note: Gauche has builtin @code{vector-map}, @code{vector-map!} and
+@code{vector-for-each}, with slightly different API (no index is
+passed to @var{f}).  R7RS also defines @code{vector-map} and
+@code{vector-for-each} that doesn't pass index.  For new development,
+we recommend using R7RS/Gauche-native @code{vector-map} etc.
+If you want to use Gauche-native @code{vector-map} and @code{srfi-43}
+together, you can import @code{srfi-43} with 
+@code{:except (vector-map vector-map! vector-for-each)} option.
+Gauche provides builtin @code{vector-map-with-index} etc., which
+is the same as SRFI-43's @code{vector-map} etc.  @xref{Vectors},
+for the details.
+
 Note: The generic @code{map} and @code{for-each}
 in @code{gauche.collection} can be used
 on vectors, but the procedure is called without index, and the result
@@ -4746,7 +4510,7 @@ For @code{vector-index-right}, all the vectors must have the same length.
 [SRFI-43]
 Like @code{vector-index} and @code{vector-index-right}, except that
 the result of @var{pred} is negated.  That is, returns the index
-of the first or the last elements that don't sastisfy @var{pred}.
+of the first or the last elements that don't satisfy @var{pred}.
 @end defun
 
 @defun vector-binary-search vec value cmp :optional start end
@@ -4757,7 +4521,7 @@ Comparison of @var{value} and an element in @var{vec} is
 done by a procedure @var{cmp}, which takes two arguments,
 and should return a negative integer if the first argument is less than the
 second, 0 if they are the same, and a positive integer if the first
-is greater than tne second.
+is greater than the second.
 
 Elements in @var{vec} must be ordered from smaller to greater
 w.r.t. @var{cmp}.  Using that fact, this procedure performs
@@ -4789,7 +4553,7 @@ of @var{vec1} @var{vec2} @dots{} left to right.
 If all the elements (when the lengths of vectors differ, the
 first N elements where N is the length of the shortest) satisfy
 @var{pred}, returns the last result of @var{pred}.   Otherwise
-returns @code{#t}.
+returns @code{#f}.
 @end defun
 
 @c EN
@@ -4805,14 +4569,50 @@ Swaps vector @var{vec}'s @code{i}-th and @code{j}-th elements.
 
 @defun vector-reverse! vec :optional start end
 [SRFI-43]
+Reverse the elements of @var{vec}.  Returns an undefined value.
+Optional @var{start} and @var{end} arguments can limit
+the range of operation.
+
+@example
+(rlet1 v (vector 'a 'b 'c 'd 'e)
+  (vector-reverse! v 0 4))
+  @result{} #(d c b a e)
+@end example
+
 @end defun
 
 @defun vector-copy! target tstart source :optional sstart send
 [SRFI-43]
+Copies the content of @var{source} vector intto the @var{target} vector
+starting from @var{tstart} in the target.  The @var{target} vector
+must be immutable.
+Optional @var{sstart} and @var{send} limits the range of source
+vector.
+
+@example
+(rlet1 v (vector 'a 'b 'c 'd 'e)
+  (vector-copy! v 2 '#(1 2)))
+  @result{} #(a b 1 2 e)
+@end example
+
+It is ok to pass the same vector to @var{target} and @var{source};
+it always works even if the regions of source and destination are
+overlapping.
 @end defun
 
 @defun vector-reverse-copy! target tstart source :optional sstart send
 [SRFI-43]
+Like @code{vector-copy!}, but reverses the order of elements from @var{start}.
+
+@example
+(rlet1 v (vector 'a 'b 'c 'd 'e)
+  (vector-reverse-copy! v 2 '#(1 2)))
+  @result{} #(a b 2 1 e)
+@end example
+
+It is ok to pass the same vector to @var{target} and @var{source};
+it always works even if the regions of source and destination are
+overlapping.
 @end defun
 
 @c EN
@@ -4823,10 +4623,12 @@ Swaps vector @var{vec}'s @code{i}-th and @code{j}-th elements.
 
 @defun reverse-vector->list vec :optional start end
 [SRFI-43]
+Same as @code{(reverse (vector->list vec start end))}, but more efficient.
 @end defun
 
 @defun reverse-list->vector list :optional start end
 [SRFI-43]
+Same as @code{(reverse (list->vector list start end))}, but more efficient.
 @end defun
 
 @c ----------------------------------------------------------------------
@@ -4894,7 +4696,7 @@ For example, the following form:
 @end example
 
 @c EN
-Roughly correspons to Gauche's @code{use} forms:
+Roughly corresponds to Gauche's @code{use} forms:
 @c JP
 は以下の Gauche の @code{use} 形式にほぼ対応します。
 @c COMMON
@@ -4906,7 +4708,7 @@ Roughly correspons to Gauche's @code{use} forms:
 @end defmac
 
 @c ----------------------------------------------------------------------
-@node Integers as bits, Accessing environment variables, Requiring extensions, Library modules - SRFIs
+@node Integers as bits, Basic hash tables, Requiring extensions, Library modules - SRFIs
 @section @code{srfi-60} - Integers as bits
 @c NODE 整数に対するビット操作, @code{srfi-60} - 整数に対するビット操作
 
@@ -4915,7 +4717,7 @@ Roughly correspons to Gauche's @code{use} forms:
 This srfi provides bit operations on integers, regarding them
 as 2's complement representation.
 
-Most of the funcionalities in this module are already provided
+Most of the functionalities in this module are already provided
 as builtin procedures (@xref{Bitwise operations}).  This srfi
 defines popular aliases for many of those procedures, thus
 has better portability.  There are also several additional
@@ -5068,8 +4870,174 @@ each value as a binary digit.  If @var{n} is nonnegative integer,
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Accessing environment variables,  , Integers as bits, Library modules - SRFIs
-@section @code{srfi-98} - Accessing environemnt variables
+@node Basic hash tables, Accessing environment variables, Integers as bits, Library modules - SRFIs
+@section @code{srfi-69} - Basic hash tables
+@c NODE 基本的なハッシュテーブル, @code{srfi-69} - 基本的なハッシュテーブル
+
+@deftp {Module} srfi-69
+@mdindex srfi-69
+This module is a thin adaptor on Gauche's built-in hashtables
+(@xref{Hashtables}).  This is provided for the compatibility
+to the portable libraries; the hashtable object created by
+this module's @code{make-hash-table} is the same as the one
+created by Gauche's built-in, and you can pass the table to
+both APIs.
+@end deftp
+
+Here's a summary of difference between srfi-69 and Gauche's built-in
+hash table API:
+
+@itemize
+@item
+The constructor @code{make-hash-table}, as well as @code{alist->hash-table},
+takes equality predicate and hash function, instead of a single
+comparator argument.
+@item
+The hash function passed to @code{srfi-69}'s @code{make-hash-table}
+takes two arguments, an object to calculate a hash value,
+and a positive integer that limits the range of the hash value.
+@item
+@code{Srfi-69}'s primary hash table accessor is @code{hash-table-ref},
+which takes a thunk to be called when the table doesn't have an
+entry for the given key, while Gauche's @code{hash-table-get} takes
+a fallback value for that.
+@code{Srfi-69} also has @code{hash-table-ref/default},
+which takes a fallback value like Gauche's @code{hash-table-get},
+but the default value can't be omitted.
+@item
+The basic iterator of @code{srfi-69} is called @code{hash-table-walk},
+which is Gauche's @code{hash-table-for-each}.  The srfi name is chosen
+to avoid conflict with existing Scheme implementations.
+@end itemize
+
+The following procedures are the same as Gauche's built-in ones.
+@xref{Hashtables}, for the details.
+
+@example
+hash-table?       hash-table-delete!   hash-table-exists?
+hash-table-keys   hash-table-values    hash-table-fold
+hash-table->alist hash-table-copy 
+@end example
+
+
+@defun make-hash-table :optional eq-pred hash-proc :rest args
+[SRFI-69]
+Creates a new hashtable and returns it.  This is the same name
+as Gauche's built-in procedure, but the arguments are different.
+
+The @var{eq-pred} argument is an equality predicate; it takes
+two arguments and returns @code{#t} if two are the same,
+and @code{#f} if not.  When omitted, @code{equal?} is used.
+
+The @var{hash-proc} argument is a hash function.
+It takes two arguments: an object to hash, and a positive
+integer to limit the range of the hash value.  (Note that
+Gauche's native hash functions takes only one argument.)
+When omitted, Gauche tries to choose appropriate hash function
+if @code{eq-pred} is known one (@code{eq?}, @code{eqv?},
+@code{equal?}, @code{string=?} or @code{string-ci=?}).
+Otherwise we use Gauche's @code{hash} procedure, but there's
+no guarantee that it works appropriately; you should give
+suitable @var{hash-proc} if you pass custom @var{eq-pred}.
+
+The returned hash table is an instance of Gauche's native
+hash table.  You can pass it to Gauche's builtin procedures.
+
+@code{Srfi-69} allows implementation-specific arguments @var{args} to be
+passed to @code{make-hash-table}.  At this moment, Gauche
+ignores them.
+@end defun
+
+@defun alist->hash-table alist :optional eq-pred hash-fn :rest args
+[SRFI-69]
+Like Gauche's builtin @code{alist->hash-table}, but takes
+@var{eq-pred} and @var{hash-fn} separately,
+instead of a single comparator.
+
+The @var{alist} argument is a list of pairs.  The car of each
+pair is used for a key, and the cdr for its value.
+
+See @code{make-hash-table} above for the description of
+@var{eq-pred}, @var{hash-fn} and @var{args}.
+@end defun
+
+@defun hash-table-equivalence-function ht
+@defunx hash-table-hash-function ht
+[SRFI-69]
+Returns equivalence function and hash function of the
+hashtable @var{ht}.
+
+The hash function returned from @code{hash-table-hash-function}
+takes two arguments, an object to hash and bound, a positive exact integer.
+Note that the function returned by @code{hash-table-hash-function} may not
+be @code{eq?} to the one you gave to @code{make-hash-table}.
+@end defun
+
+@defun hash-table-ref ht key :optional thunk
+[SRFI-69]
+Looks up the value corresponding to @var{key} in a hash table @var{ht}.
+If there's no entry for @var{key}, @var{thunk} is called
+without arguments.  The default of @var{thunk} is to signal an error.
+@end defun
+
+@defun hash-table-ref/default ht key default
+[SRFI-69]
+Looks up the value corresponding to @var{key} in a hash table @var{ht}.
+This is like Gauche's @code{hash-table-get}, but @var{default} can't be
+omitted.
+@end defun
+
+@defun hash-table-set! ht key val
+[SRFI-69]
+This is the same as Gauche's @code{hash-table-put!}.
+@end defun
+
+@defun hash-table-update! ht key proc :optional thunk
+@defunx hash-table-update!/default ht key proc default
+[SRFI-69]
+@end defun
+
+@defun hash-table-size ht
+[SRFI-69]
+Returns the number of entries in a hash table @var{ht}.  The same as Gauche's
+@code{hash-table-num-entries}.
+@end defun
+          
+@defun hash-table-walk ht proc
+[SRFI-69]
+For each entry in a hash table @var{ht}, 
+calls @var{proc} with two arguments, a key and its value.
+It's the same as Gauche's @code{hash-table-for-each}.
+@end defun
+
+@defun hash-table-merge! ht1 ht2
+[SRFI-69]
+Add all entries in a hash table @var{ht2} into a hash table @var{ht1},
+and returns @var{ht1}.
+@end defun
+
+@defun hash obj :optional bound
+[SRFI-69]
+Like Gauche's @code{hash}, except this one can take bound argument;
+if provided, it must be a positive integer, and the return value
+is limited between 0 and @code{(- bound 1)}, inclusive.
+@end defun
+
+@defun string-hash obj :optional bound
+@defunx string-ci-hash obj :optional bound
+[SRFI-69]
+These are like @code{srfi-13}'s (@xref{String library}), except
+these don't take @var{start} and @var{end} argument.
+@end defun
+
+@defun hash-by-identity obj :optional bound
+[SRFI-69]
+This is Gauche's @code{eq-hash}, except this one can take bound argument.
+@end defun
+
+@c ----------------------------------------------------------------------
+@node Accessing environment variables, Basic socket interface, Basic hash tables, Library modules - SRFIs
+@section @code{srfi-98} - Accessing environment variables
 @c NODE 環境変数へのアクセス, @code{srfi-98} - 環境変数へのアクセス
 
 @deftp {Module} srfi-98
@@ -5124,6 +5092,1193 @@ the optional argument.
   @result{} (("PATH" . "/bin:/usr/sbin:/usr/bin")
         @dots{})
 @end example
+@end defun
+
+@c ----------------------------------------------------------------------
+@node Basic socket interface, Boxes, Accessing environment variables, Library modules - SRFIs
+@section @code{srfi-106} - Basic socket interface
+@c NODE 基本的なソケットインタフェース, @code{srfi-106} - 基本的なソケットインタフェース
+
+@deftp {Module} srfi-106
+@mdindex srfi-106
+@c EN
+A portable basic socket interface.
+
+Although comprehensive network API is provided by @code{gauche.net}
+(@xref{Networking}), it is Gauche-specific.  This srfi provides
+a small subset of socket operations, but it offers a portable way
+to create applications that needs simple networking.
+
+Note that some procedures have the same name as the ones in @code{gauche.net},
+but the interface may differ.
+
+A socket object created by this srfi's API is an instance
+of Gauche's @code{<socket>}, so it can be passed to the API
+in @code{gauche.net} and vice versa.
+@c JP
+ポータブルなソケットインタフェースです。
+
+Gaucheは@code{gauche.net}モジュールで包括的なネットワークAPIを提供しています
+(@ref{Networking}参照)。しかしそれはGauche特有のものです。
+このsrfiはソケット操作の小さなサブセットを提供し、
+簡単なネットワーキングを必要とするアプリケーションをポータブルに書けるようにします。
+
+@code{gauche.net}と同じ名前を持ち、インタフェースが異なる手続きがあることに注意してください。
+
+このsrfiのAPIで作られるソケットオブジェクトはGaucheの@code{<socket>}オブジェクト
+そのものなので、@code{gauche.net}のAPIに渡したり、またその逆も可能です。
+@c COMMON
+@end deftp
+
+@c EN
+@subheading Socket object
+@c JP
+@subheading ソケットオブジェクト
+@c COMMON
+
+@defun make-client-socket node service :optional ai-family ai-socktype ai-flags ai-protocol
+[SRFI-106]
+Returns a socket to
+communicate with the node @var{node} and @var{service}.
+If the socket type is connection-oriented (that is, @var{ai-socktype} is
+@code{*sock-stream*}, which is the default),
+the returned socket is already connected.
+
+Both @var{node} and @var{service} must be strings.
+A service name solely consists of decimal digits is interpreted as
+a port number.
+
+The default value of optional arguments are as follows:
+@code{*af-net*} for @var{ai-family},
+@code{*sock-stream} for @var{ai-socktype},
+@code{(socket-merge-flags *ai-v4mapped* *ai-addrconfig*)} for
+@var{ai-flags}, and @code{*ipproto-ip*} for @var{ai-protocol}.
+See below for valid flag values.
+
+This API differs from @code{make-client-socket} in @code{gauche.net}.
+
+@example
+(make-client-socket "127.0.0.1" "80")
+ @result{} a <socket> connected to port 80 of localhost
+@end example
+@end defun
+
+@defun make-server-socket service :optional ai-family ai-socktype ai-protocol
+[SRFI-106]
+Creates and resturns a server socket that binds and listens at
+the port specified by
+@var{service}, which must be a string.  A service name solely consists
+of decimal digits is interpreted as a port number.
+
+The default value of optional arguments are as follows:
+@code{*af-net*} for @var{ai-family},
+@code{*sock-stream} for @var{ai-socktype},
+and @code{*ipproto-ip*} for @var{ai-protocol}.
+See below for valid flag values.
+
+This API differs from @code{make-server-socket} in @code{gauche.net}.
+@end defun
+
+@defun socket? obj
+[SRFI-106]
+Equivalent to @code{(is-a? obj <socket>)}.
+@end defun
+
+@subheading Communication
+
+@defun socket-accept socket
+@defunx socket-shutdown socket how
+@defunx socket-input-port socket
+@defunx socket-output-port socket
+@defunx socket-close socket
+[SRFI-106]
+Same as the procedures provided in @code{gauche.net}.  @xref{Networking}.
+@end defun
+
+@defun socket-send socket u8vector :optional flags
+[SRFI-106]
+Almost same as @code{socket-send} in @code{gauche.net}, except that
+this procedure only accepts a u8vector as the message.
+(The one in @code{gauche.net} can take a string as well.)
+
+Returns the number of octets that are actually sent.
+@end defun
+
+@defun socket-recv socket size :optional flags
+[SRFI-106]
+This is like @code{socket-recv} in @code{gauche.net}, except that
+this procedure returns the received data in u8vector,
+instead of a string.  If the peer has shut down the connection,
+this procedure returns an empty u8vector, @code{#u8()}.
+
+The @var{size} argument specifies the maximum size of the receiving
+data.  The returned vector may be shorter if that much data is received.
+@end defun
+
+@subheading Flags
+
+The srfi provides common names for constants of typical socket flags,
+as well as macros that map symbolic name(s) to the flags.
+
+@defun socket-merge-flags flag @dots{}
+[SRFI-106]
+Merge bitwise flags.  This is simply @code{logior} in Gauche.
+@end defun
+
+@defun socket-purge-flags base-flag flag @dots{}
+[SRFI-106]
+Drop the bitwise flags in @var{base-flag} that are set
+in @var{flag} @dots{}.
+@end defun
+
+@subsubheading Address family
+
+@multitable {aaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaa}
+@vindex *af-inet*
+@vindex *af-inet6*
+@vindex *af-unspec*
+@item @code{*af-inet*} @tab @code{AF_INET}
+@item @code{*af-inet6*} @tab @code{AF_INET6}
+@item @code{*af-unspec*} @tab @code{AF_UNSPEC}
+@end multitable
+
+@defmac address-family name
+@var{Name} can be either one of symbols
+@code{inet}, @code{inet6}, or @code{unspec}, and
+the macro expands into the value of @code{*af-inet*},
+@code{*af-inet6*} or @code{*af-unspec*}, respectively.
+
+If @var{name} is other object, an error is signaled.
+@end defmac
+
+
+@subsubheading Socket domain
+
+@multitable {aaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaa}
+@vindex *sock-stream*
+@vindex *sock-dgram*
+@item @code{*sock-stream*} @tab @code{SOCK_STREAM}
+@item @code{*sock-dgram*} @tab @code{SOCK_DGRAM}
+@end multitable
+
+@defmac socket-domain name
+@var{Name} can be either one of symbols
+@code{stream} or @code{datagram}, and the macro
+expands into the value of @code{*sock-stream*} and
+@code{*sock-dgram*}, respectively.
+
+If @var{name} is other object, an error is signaled.
+@end defmac
+
+
+@subsubheading Address info
+
+@multitable {aaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaa}
+@vindex *ai-canonname*
+@vindex *ai-numerichost*
+@vindex *ai-v4mapped*
+@vindex *ai-all*
+@vindex *ai-addrconfig*
+@item @code{*ai-canonname*} @tab @code{AI_CANONNAME}
+@item @code{*ai-numerichost*} @tab @code{AI_NUMERICHOST}
+@item @code{*ai-v4mapped*} @tab @code{AI_V4MAPPED}
+@item @code{*ai-all*} @tab @code{AI_ALL}
+@item @code{*ai-addrconfig*} @tab @code{AI_ADDRCONFIG}
+@end multitable
+
+@defmac address-info name @dots{}
+Maps combination of names @code{canoname}, @code{numerichost},
+@code{v4mapped}, @code{all} and @code{addrconfig}
+to the combination of corresponding flags.
+
+An error is signaled if other symbols are passed.
+(Note: @code{canoname} for @code{*ai-canonname*}).
+@end defmac
+
+@subsubheading Protocol
+
+@multitable {aaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaa}
+@vindex *ipproto-ip*
+@vindex *ipproto-tcp*
+@vindex *ipproto-udp*
+@item @code{*ipproto-ip*} @tab @code{IPPROTO_IP}
+@item @code{*ipproto-tcp*} @tab @code{IPPROTO_TCP}
+@item @code{*ipproto-udp*} @tab @code{IPPROTO_UDP}
+@end multitable
+
+@defmac ip-protocol name
+Maps one of names @code{ip}, @code{tcp}, and @code{udp}
+to the corresponding flag value.  An error is signaled
+if other symbol is passed.
+@end defmac
+
+
+@subsubheading Message type
+
+@multitable {aaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaa}
+@vindex *msg-none*
+@vindex *msg-peek*
+@vindex *msg-oob*
+@vindex *msg-waitall*
+@item @code{*msg-none*} @tab 0
+@item @code{*msg-peek*} @tab  @code{MSG_PEEK}
+@item @code{*msg-oob*} @tab   @code{MSG_OOB}
+@item @code{*msg-waitall*} @tab @code{MSG_WAITALL}
+@end multitable
+
+@defmac message-type name @dots{}
+Maps combination of names @code{none}, @code{peek},
+@code{oob} and @code{wait-all}
+to the combination of corresponding flags.
+
+An error is signaled if other symbols are passed.
+(Note: @code{wait-all} for @code{*msg-waitall*}).
+@end defmac
+
+
+@subsubheading Shutdown method
+
+@multitable {aaaaaaaaaaaaaaaa} {aaaaaaaaaaaaaaaaaaaaaa}
+@vindex *shut-rd*
+@vindex *shut-wr*
+@vindex *shut-rdwr*
+@item @code{*shut-rd*} @tab @code{SHUT_RD}
+@item @code{*shut-wr*} @tab @code{SHUT_WR}
+@item @code{*shut-rdwr*} @tab @code{SHUT_RDWR}
+@end multitable
+
+@defmac shutdown-method name @dots{}
+Maps combination of names @code{read} and @code{write}
+to the combination of corresponding flags.
+
+An error is signaled if other symbols are passed.
+@end defmac
+
+
+@c ----------------------------------------------------------------------
+@node Boxes, Sets and bags, Basic socket interface, Library modules - SRFIs
+@section @code{srfi-111} - Boxes
+@c NODE ボックス, @code{srfi-111} - ボックス
+
+@deftp {Module} srfi-111
+@mdindex srfi-111
+This module defines the box datatype, which is a simple
+container that can hold one Scheme object.  It can be used
+as a minimal data storage, or a sort of mutable indirect
+``pointer''.
+
+Traditionally a pair (with ignoring its cdr) or a single-element vector
+has been used for this purpose; in modern Scheme you can also define
+a record type with one mutable field.  Nevertheless,
+a box is very common abstraction to describe various
+algorithms, and having common interface to it is useful.
+
+The srfi leaves some details to implementations.  Here are our choices:
+@itemize
+@item
+We don't support autoboxing; that is, it is an error to pass non-box
+value to the procedure expecting boxed value and vice versa.
+@item
+Comparing two boxes with @code{equal?} compares their contents when
+two are not @code{eqv?}.  In the spec, when two boxes are @code{eqv?}
+then they must also be @code{equal?} to each other, but it's up
+to the implementation when two are not @code{eqv?}.
+@end itemize
+@end deftp
+
+@defun box val
+Returns a fresh box object that contains the value @code{val}.
+@end defun
+
+@defun box? obj
+Returns @code{#t} iff @var{obj} is a box object.
+@end defun
+
+@defun unbox box
+Returns @var{box}'s content.
+@end defun
+
+@defun set-box! box val
+Mutate @var{box}'s content with @var{val}.  Returns unspecified value.
+@end defun
+
+@c ----------------------------------------------------------------------
+@node Sets and bags, Comparators, Boxes, Library modules - SRFIs
+@section @code{srfi-113} - Sets and bags
+@c NODE setとbag, @code{srfi-113} - setとbag
+
+@deftp {Module} srfi-113
+@mdindex srfi-113
+Sets and bags are unordered collection of Scheme values.
+A set doesn't count duplicates; if you add an item
+which is already in a set, you still have one item of the kind.
+A bag counts duplicates; if you add an item which
+is already in a bag, you have two items of the kind.
+
+To check whether the items are ``the same'', sets and bags
+takes a comparator at constrution time.  The comparator
+doesn't need to have a comparison procedure (we don't need
+to order the elements) but has to have a hash function.
+@end deftp
+
+@subheading Constructors
+
+@defun set comparator elt @dots{}
+@defunx bag comparator elt @dots{}
+Creates a new set and bag from given elements @var{elt} @dots{}.
+Given @var{comparator} will be used to compare equality of elements.
+
+@example
+(set->list (set eq-comparator 'a 'b 'a 'b))
+  @result{} (a b)
+
+(bag->list (bag eq-comparator 'a 'b 'a 'b))
+  @result{} (a a b b)
+@end example
+@end defun
+
+@defun set-unfold stop? mapper successor seed comparator
+@defunx bag-unfold stop? mapper successor seed comparator
+Procedurally creates a set or a bag.  The first three
+arguments, @var{stop?},  @var{mapper} and @var{successor},
+are all procedures that takes one argument, the current seed value.
+It may be easier to know their types:
+
+@example
+seed      :: Seed
+stop?     :: Seed -> Boolean
+mapper    :: Seed -> ElementType
+successor :: Seed -> Seed
+@end example
+
+The @code{stop?} procedure takes the current seed value and
+returns a boolean value - if it is true, iteration stops.
+
+The @code{mapper} procedure takes the current seed value
+and returns an item, which is to be included in the resulting set or bag.
+
+The @code{successor} procedure takes the current seed value
+and returns the next seed value.
+
+And the @code{seed} argument gives the initial seed value.
+
+@example
+(set->list (set-unfold (^s (= s 75))
+                       integer->char
+                       (^s (+ s 1))
+                       65
+                       eqv-comparator))
+ @result{} (#\D #\H #\A #\E #\I #\J #\B #\F #\C #\G)
+@end example
+@end defun
+
+@subheading Predicates
+
+@defun set-contains? set obj
+@defunx bag-contains? bag obj
+Check if @var{obj} is in the set or the bag.
+@end defun
+
+@defun set-empty? set
+@defunx bag-empty? bag
+Returns @code{#t} iff the given set or bag is empty.
+@end defun
+
+@defun set-disjoint? set1 set2
+@defunx bag-disjoint? bag1 bag2
+Returns @code{#t} iff the given arguments (sets or bags) don't have
+common items.  Both arguments must have the same comparator---otherwise
+an error is signaled.
+@end defun
+
+@subheading Accessors
+
+@defun set-member set obj default
+@defunx bag-member bag obj default
+Returns an element in the given set or bag which is equal to @var{obj}
+in terms of the set's or the bag's comparator.  If no such element is
+found, @var{default} will be returned.
+
+Note that the returned object doesn't need to be ``the same''
+as @var{obj} in a usual sense.  See the following example:
+
+@example
+(let s (set string-ci-comparator "abc" def")
+  (set-member s "ABC" #f))
+  @result{} "abc"
+@end example
+@end defun
+
+@defun set-element-comparator set
+@defunx bag-element-comparator bag
+Returns the comparator used to compare the elements for the set or the bag.
+@end defun
+
+@subheading Updaters
+
+@defun set-adjoin set elt @dots{}
+@defunx bag-adjoin bag elt @dots{}
+Returns a newly created set or bag that contains all the elements
+in the original set/bag, plus given elements.  The new set/bag's
+comparator is the same as the original set/bag's one.
+@end defun
+
+@defun set-replace set elt
+@defunx bag-replace bag elt
+Returns a newly created set/bag with the same comparator with
+the original set/bag, and the same elements, except that the elements
+equal to @var{elt} (in terms of set/bag's comparator) is replaced
+by @var{elt}.  If the original set/bag doesn't contain an element
+equal to @var{elt}, the original one is returned.
+
+@example
+(let ((s (set string-ci-comparator "ABC" "def")))
+  (set->list (set-replace s "abc")))
+  @result{} ("abc" "def")
+@end example
+@end defun
+
+@defun set-delete set elt @dots{}
+@defunx bag-delete bag elt @dots{}
+Returns a newly created set or bag that has the same comparator
+and the same elements in the original set/bag, except that the
+item which is equal to @var{elt}.
+@end defun
+
+@defun set-delete-all set elt-list
+@defunx bag-delete-all bag elt-list
+Returns a newly created set or bag with the same comparator of
+the original set/bag, with the elements of the original set/bag
+except the ones listed in @var{elt-list}.
+@end defun
+
+
+@defun set-adjoin! set elt @dots{}
+@defunx bag-adjoin! bag elt @dots{}
+@defunx set-replace! set elt
+@defunx bag-replace! bag elt
+@defunx set-delete! set elt @dots{}
+@defunx bag-delete! bag elt @dots{}
+@defunx set-delete-all! set elt-list
+@defunx bag-delete-all! bag elt-list
+These are the linear update versions of their counterparts.
+It works just like the ones without @code{!}, except that
+the original set/bag @emph{may} be reused to produce the result,
+instead of new one being allocated.
+
+Note that it's not guaranteed that the original
+set/bag is modified, so you should use the return value of them,
+instead of relying on the side effects.
+@end defun
+
+@defun set-search! set elt failure success
+@defunx bag-search! bag elt failure success
+Lookup-and-modify procedures.  The @var{failure} and @var{success}
+arguments are procedures.
+
+First, they search @var{elt} in the given set/bag.  
+If an item that matches @var{elt} is found, the @var{success} procedure
+is called with three arguments, as follows:
+@example
+(success item update remove)
+@end example
+The @var{update} argument is a procedure that takes two arguments,
+as @code{(update new-item retval)}.  It replaces the matching @var{item} in the
+set/bag with @var{new-item}, and returns @var{retval}.
+The @var{remove} argument is a procedure that takes one argument,
+as @code{(remove retval)}.  It removes the mathing @var{item} in
+the set/bag, and returns @var{retval}.
+
+If an item that matches @var{elt} is not found, the @var{failure} procedure
+is called with two arguments, as follows:
+@example
+(failure insert ignore)
+@end example
+The @var{insert} argument is a procedure that takes one argument,
+as @code{(insert retval)}.  It inserts @var{elt} into the set/bag, and
+returns @var{retval}.
+The @var{ignore} argument is a procedure that takes one argument,
+as @code{(ignore retval)}.  It just returns @var{retval}.
+
+The return values of @code{set-search!} and @code{bag-search!} is
+the modified set/bag (which may or may not be @code{eq?} to the passed one),
+and the value returned by @var{success} or @var{failure} procedures.
+
+Note that @var{retval} isn't used in this process; it is just to provide
+one of the return values of @code{set-search!}/@code{bag-search!}, for
+the procedures passed to @var{success} or @var{failure} are expected
+to be tail-called.
+
+If there are more than one item that matches @var{elt} in a bag,
+@code{bag-search!} only invokes @var{success} for the first item
+it finds.  You can recurse into @code{bag-search!} in the @var{failure}
+procedure to visit all matching items.  It is guaranteed that @var{success}
+and @var{failure} procedures are tail-called.
+@end defun
+
+@subheading The whole set
+
+@defun set-size set
+@defunx bag-size bag
+Returns the number of items in the set/bag.
+@end defun
+
+@defun set-find pred set failure
+@defunx bag-find pred bag failure
+Apply @var{pred} on each item in the set/bag, and returns the
+first item on which @var{pred} returns true.  Since sets and bags
+are unordered, if there are more than one items that satisfy @var{pred},
+you won't know which one will be returned.
+
+If there're no items that satisfy @var{pred}, a thunk @code{failure}
+is called and its result is returned.
+@end defun
+
+@defun set-count pred set
+@defunx bag-count pred bag
+Returns the number of items that satisfy @var{pred} in the set/bag.
+@end defun
+
+@defun set-any? pred set
+@defunx bag-any? pred bag
+Returns true iff any item in the set/bag satisfy @var{pred}.
+@end defun
+
+@defun set-every? pred set
+@defunx bag-every? pred bag
+Returns true iff every item in the set/bag satisfy @var{pred}.
+@end defun
+
+@subheading Mapping and folding
+
+@defun set-map comparator proc set
+@defunx bag-map comparator proc bag
+Create and return a new set/bag with the comparator @var{comparator},
+whose items are calculated by applying @var{proc} to each element
+in the original set/bag.
+@end defun
+
+@defun set-for-each proc set
+@defunx bag-for-each proc bag
+Apply @var{proc} to each element in the set/bag.   The result of @var{proc}
+is ignored.  Return value is undefined.
+@end defun
+
+@defun set-fold proc seed set
+@defunx bag-fold proc seed bag
+For each item in the set/bag, call @var{proc} with two arguments, an item
+and a seed value.  What @var{proc} returns becomes the next seed value.
+The @var{seed} argument gives the initial seed value, and the last return
+value of @var{proc} will be the result of @code{set-fold}/@code{bag-fold}.
+
+@example
+(bag-fold + 0 (bag eqv-comparator 1 1 2 2 3 3 4 4))
+  @result{} 20
+@end example
+@end defun
+
+@defun set-filter pred set
+@defunx bag-filter pred bag
+Returns a newly created set/bag with the same comparator of the original
+set/bag, and its content consists of items from the original set/bag
+that satisfy @var{pred}.
+
+@example
+(set->list (set-filter odd? (set eqv-comparator 1 2 3 4 5)))
+  @result{} (1 3 5)
+@end example
+@end defun
+
+@defun set-remove pred set
+@defunx bag-remove pred bag
+Returns a newly created set/bag with the same comparator of the original
+set/bag, and its content consists of items from the original set/bag
+that does not satisfy @var{pred}.
+
+@example
+(set->list (set-remove odd? (set eqv-comparator 1 2 3 4 5)))
+  @result{} (2 4)
+@end example
+@end defun
+
+@defun set-partition pred set
+@defunx bag-partition pred bag
+Returns two sets or bags, both have the same comparator of the original
+set or bag.  The first one consists of the items from the original set/bag
+that satisfy @var{pred}, and the second one consists of the items that don't.
+
+@example
+(receive (in out) (set-remove odd? (set eqv-comparator 1 2 3 4 5))
+  (values (set->list in)
+          (set->list out)))
+  @result{} (1 3 5) @r{and} (2 4)
+@end example
+@end defun
+
+@defun set-filter! pred set
+@defunx bag-filter! pred bag
+@defunx set-remove! pred set
+@defunx bag-remove! pred bag
+@defunx set-partition! pred set
+@defunx bag-partition! pred bag
+Linear update versions of their counterparts (the procedures without @code{!}).
+They work like their respective counterpart, but they are allowed (but not
+required) to reuse the original set/bag to produce the result(s).
+
+Note that it is not guaranteed that the original set/bag is modified, so
+you have to use the return value(s) instead of relying on the side effects.
+@end defun
+
+@subheading Copying and conversion
+
+@defun set-copy set
+@defunx bag-copy bag
+Returns a copy of the set/bag.
+@end defun
+
+@defun set->list set
+@defunx bag->list bag
+Returns a list of all items in the set/bag.
+Since sets and bags are unordered, there's no guarantee on the
+order of items.
+@end defun
+
+@defun list->set comparator elt-list
+@defunx list->bag comparator elt-list
+Creates a set or a bag with the given comparator, and
+the list of element.  Functionally equivalent to the followings:
+
+@example
+(apply set comparator elt-list)
+(apply bag comparator elt-list)
+@end example
+@end defun
+
+@defun list->set! set elt-list
+@defunx list->bag! bag elt-list
+Add items in @var{elt-list} to the existing set/bag, and returns
+the updated set/bag.  The original set/bag is also modified.
+Functionally equivalent to the followings:
+
+@example
+(apply set-adjoin! set elt-list)
+(apply bag-adjoin! bag elt-list)
+@end example
+@end defun
+
+@defun bag->set bag
+@defunx set->bag set
+Conversions between a bag and a set.  Returns a newly created bag or set,
+respectively.
+
+If @var{bag} has duplicated items, @code{bag->set} coerces them to one
+item.
+@end defun
+
+@defun set->bag! bag set
+Adds all items in @var{set} to @var{bag}, and returns @var{bag}.
+Both @var{bag} and @var{set} must have the same comparator.
+@end defun
+
+
+@defun bag->alist bag
+Returns a list of @code{(item . count)}, where @var{item} is
+an item in @var{bag}, and @var{count} is the number of that item
+in the bag.
+@end defun
+
+@defun alist->bag comparator alist
+Creates a new bag with @var{comparator}, and fills it according to
+@var{alist}, which must be a list of @code{(item . count)}.
+
+If there's duplicate items in @var{alist}, only fist one counts.
+@end defun
+
+@subheading Subsets
+
+@defun set=? set1 set2 @dots{}
+@defunx bag=? bag1 bag2 @dots{}
+Returns true iff all sets/bags have exactly same items.
+
+The comparators of the argument sets/bags are not checked, but assumed
+to be the same, in terms of the equality of items.
+@end defun
+
+@defun set<? set1 set2 @dots{}
+@defunx bag<? bag1 bag2 @dots{}
+@defunx set>? set1 set2 @dots{}
+@defunx bag>? bag1 bag2 @dots{}
+@defunx set<=? set1 set2 @dots{}
+@defunx bag<=? bag1 bag2 @dots{}
+@defunx set>=? set1 set2 @dots{}
+@defunx bag>=? bag1 bag2 @dots{}
+Returs true iff each preceding set/bag is a proper subset of, 
+a proper superset of, a subset of, or a superset of the following
+set/bags, respectively.
+
+Again, the comparators of the argument sets/bags are not checked, but assumed
+to be the same, in terms of the equality of items.
+@end defun
+
+@subheading Set theory operations
+
+@defun set-union set1 set2 @dots{}
+@defunx bag-union bag1 bag2 @dots{}
+Returns a newly allocated set or bag which is a union of all
+the sets/bags.
+@end defun
+
+@defun set-intersection set1 set2 @dots{}
+@defunx bag-intersection bag1 bag2 @dots{}
+Returns a newly allocated set or bag which is an intersection of
+all the sets/bags.
+@end defun
+
+@defun set-difference set1 set2 @dots{}
+@defunx bag-difference bag1 bag2 @dots{}
+Returns a newly created set or bag that contains items in @var{set1}/@var{bag1}
+except those are also in @var{set2}/@var{bag2} @dots{}.
+
+@example
+(sort (set->list (set-difference (set eqv-comparator 1 2 3 4 5 6 7)
+                                 (set eqv-comparator 3 5 7 9 11 13)
+                                 (set eqv-comparator 4 8 16 32))))
+  @result{} (1 2 6)
+@end example
+@end defun
+
+@defun set-xor set1 set2
+@defunx bag-xor bag1 bag2
+Returns a newly created set or bag that consists of items
+that are either in @var{set1}/@var{bag1} or @var{set2}/@var{bag2},
+but not in both.
+
+@example
+(sort (set->list (set-xor (set eqv-comparator 2 3 5 7 11 13 17)
+                          (set eqv-comparator 3 5 7 9 11 13 15))))
+  @result{} (2 9 15 17)
+@end example
+@end defun
+
+@defun set-union! set1 set2 @dots{}
+@defunx bag-union! bag1 bag2 @dots{}
+@defunx set-intersection! set1 set2 @dots{}
+@defunx bag-intersection! bag1 bag2 @dots{}
+@defunx set-difference! set1 set2 @dots{}
+@defunx bag-difference! bag1 bag2 @dots{}
+@defunx set-xor! set1 set2
+@defunx bag-xor! bag1 bag2
+Linear update versions of their corresponding procedures.
+Those procedures works like their @code{!}-less counterparts,
+except that they are allowed to, but not required to, reuse
+@var{set1}/@var{bag1} to produce the result.
+
+The caller should always use the returned set/bag instead of
+relying on the side effects.
+@end defun
+
+@subheading Bag-specific procedures
+
+@defun bag-sum bag1 bag2 @dots{}
+@defunx bag-sum! bag1 bag2 @dots{}
+Returns a bag that gathers all the items in given bags, counting
+duplicates.  The functional version @code{bag-sum} always
+creates new bag to return.
+The linear update version @code{bag-sum!} is allowed to,
+but not required to, modify @var{bag1} to produce the result.
+
+@example
+(sort (bag->list (bag-sum (bag eqv-comparator 1 1 2 4 5 5 6)
+                          (bag eqv-comparator 3 3 5 9))))
+  @result{} (1 1 2 3 3 4 5 5 5 6 9)
+@end example
+
+Note the difference from @code{bag-union}:
+
+@example
+(sort (bag->list (bag-union (bag eqv-comparator 1 1 2 4 5 5 6)
+                            (bag eqv-comparator 3 3 5 9))))
+  @result{} (1 1 2 3 3 4 5 5 6 9)
+@end example
+@end defun
+
+@defun bag-product n bag
+@defunx bag-product! n bag
+Returns a bag that contains every item as @var{n}-times
+many as the original bag.  A fresh bag is created and returned
+by @code{bag-product}, while @code{bag-product!} may reuse
+@var{bag} to produce the result.
+
+@example
+(sort (bag->list (bag-product 2 (bag eq-comparator 'a 'b 'r 'a))))
+  @result{} (a a a a b b r r)
+@end example
+@end defun
+
+@defun bag-unique-size bag
+Returns the number of unique elements in @var{bag}.
+
+@example
+(bag-unique-size (bag eqv-comparator 1 1 2 2 3 3 4))
+ @result{} 4
+@end example
+@end defun
+
+@defun bag-element-count bag elt
+Returns the number of specified element @var{elt} in @var{bag}.
+
+@example
+(bag-element-count (bag eqv-comparator 1 1 2 2 2 3 3) 2)
+ @result{} 3
+@end example
+@end defun
+
+@defun bag-for-each-unique proc bag
+For each unique item in @var{bag}, calls @code{proc} with two arguments:
+The item, and the count of the item in the bag.
+@end defun
+
+@defun bag-fold-unique proc seed bag
+For each unique item in @var{bag}, calls @var{proc} with three arguments:
+The item, the count of the item, and the previous seed value.
+The @var{seed} argument provides the initial seed value; the result
+of @var{proc} is used for the next seed value, and the last
+result of @code{proc} is returned from @code{bag-fold-unique}.
+
+@example
+(sort (bag-fold-unique acons '()
+        (bag equal-comparator "a" "a" "b" "b" "b" "c" "d"))
+      string<? car)
+ @result{} (("a" . 2) ("b" . 3) ("c" . 1) ("d" . 1))
+@end example
+@end defun
+
+@defun bag-increment! bag elt count
+@defunx bag-decrement! bag elt count
+Linear update @var{bag} to increase or decrease the count of @var{elt} in it
+by @var{count}, which must be an exact integer.  Note that the
+element count won't get below zero; if a bag has two @code{a}'s, and
+you call @code{(bag-decrement! bag 'a 100)}, you get a bag
+with zero @code{a}'s.
+@end defun
+
+@subheading Comparators
+
+@defvr {Comparator} set-comparator
+@defvrx {Comparator} bag-comparator
+Comparators to be used to compare sets or bags.  They don't provide
+comparison procedure, for you cannot define a total order among sets or bags.
+They do provide hash functions.
+@end defvr
+
+
+@c ----------------------------------------------------------------------
+@node Comparators,  , Sets and bags, Library modules - SRFIs
+@section @code{srfi-114} - Comparators
+@c NODE 比較器, @code{srfi-114} - 比較器
+
+@deftp {Module} srfi-114
+@mdindex srfi-114
+Gauche has built-in support of srfi-114-compatible comparators,
+but the core only provides basic APIs.  This module provides
+full set of srfi-114 procedures.
+@end deftp
+
+The following procedures are built-in.  @xref{Basic comparators}, for
+the detailed documentation.   Those are also exported from @code{srfi-114}
+for the compatibility.
+
+@table @asis
+@item Predicates
+@code{comparator?},
+@code{comparator-comparison-procedure?},
+@code{comparator-hash-function?},
+
+@item Standard comparators
+@code{boolean-comparator},
+@code{char-comparator},
+@code{char-ci-comparator},
+@code{string-comparator},
+@code{string-ci-comparator},
+@code{symbol-comparator},
+@code{exact-integer-comparator},
+@code{integer-comparator},
+@code{rational-comparator},
+@code{real-comparator},
+@code{complex-comparator},
+@code{number-comparator},
+@code{pair-comparator},
+@code{list-comparator},
+@code{vector-comparator},
+@code{bytevector-comparator},
+@code{uvector-comparator}
+
+@item The default comparator
+@code{default-comparator}
+
+@item Comparator constructors
+@code{make-comparator},
+@code{make-car-comparator},
+@code{make-cdr-comparator}
+
+@item Wrapped equality predicates
+@code{eq-comparator},
+@code{eqv-comparator},
+@code{equal-comparator}
+
+@item Accessors
+@code{comparator-type-test-procedure},
+@code{comparator-equality-predicate},
+@code{comparator-comparison-procedure},
+@code{comparator-hash-function}
+
+@item Primitive applicators
+@code{comparator-test-type},
+@code{comparator-check-type},
+@code{comparator-equal?},
+@code{comparator-compare},
+@code{comparator-hash}
+@end table
+
+@subsubheading Auxiliary comparator constructors
+
+@defun make-inexact-real-comparator epsilon rounding nan-handling
+Returns a comparator for inexact real numbers, taking into
+account of errors and NaNs.
+
+The basic idea is that we compare two finite real numbers
+after rounding them to @var{epsilon} interval, which must be
+a nonnegative real number.
+(Note that it's not to compare two numbers ``close enough'', as often
+being done to compare inexact numbers.  ``Close enough'' scheme
+won't be transitive.)
+
+The rounding mode is specified by the @var{rounding} argument.
+It can be either one of the symbols @code{round}, @code{ceiling},
+@code{floor} or @code{truncate}, or a procedure that takes
+two arguments, a real number and an epsilon, and returns
+the rounded result of the first argument according to the
+given epsilon.
+
+The @var{nan-handling} argument determines how to handle the
+case to compare NaN and non-NaN numbers.  (If both are NaNs,
+this comparator regards them as equal).  It can be either
+one of the followings:
+@table @asis
+@item @code{min}
+If it's a symbol @code{min}, NaN is compared as smaller than
+all other real numbers, even than @code{-inf.0}.
+@item @code{max}
+If it's a symbol @code{min}, NaN is compared as greater than
+all other real numbers, even than @code{+inf.0}.
+@item @code{error}
+If it's a symbol @code{error}, an error is signaled.
+@item a procedure taking one argument
+The procedure is invoked with the real number which is not NaN.
+If it ever returns, it must return eithr 1, 0 or -1, for
+it's used as the result of the comparison procedure of
+the comparator.  However, since the procedure doesn't know
+@emph{which} argument is non-NaN, it's hard to have consistent
+semantics; the best bet is to throw a custom error.
+@end table
+
+@example
+(define c (make-inexact-real-comparator 0.1 'round 'error))
+
+(comparator-compare c 0.112 0.098) @result{} 0
+(comparator-compare c 0.131 0.172) @result{} -1
+@end example
+
+Note: Rounding to the nearest epsilon interval would involve
+scaling inexact numbers, and that may reveal small difference
+between the actual number and its notation.  For example,
+an inexact real number denoted as @code{0.15} is actually
+slightly smaller than @code{15/100}, and rounding with epsilon
+@code{0.1} would result @code{0.1}, not @code{0.2}.
+@end defun
+
+@defun make-list-comparator element-comparator
+@defunx make-vector-comparator element-comparator
+@defunx make-bytevector-comparator element-comparator
+Returns a new comparator that compares lists, vectors and
+bytevectors element-wise using @var{element-comparator},
+respectively.  These are more general versions of
+@code{list-comparator}, @code{vector-comparator} and
+@code{bytevector-comparator}, which use @code{default-comparator}
+as @var{element-comparator}.
+
+For a list comparator, it is an error to pass improper lists.
+
+Note that comparing sequences of different lenghts is slightly
+different between lists and vector/bytevectors.  List comparator
+uses ``dictionary'' order, so @code{(1 3)} comes after @code{(1 2 3)},
+assuming elements are compared numerically.
+For vectors and bytevectors, shorter one always precedes the other,
+so @code{#(1 3)} comes before @code{#(1 2 3)}.
+@end defun
+
+@defun make-listwise-comparator type-test element-comparator empty? head tail
+More general version of @code{make-list-comparator}.
+Returns a comparator that compares structures which can be
+traversed using three procedures, @var{empty?}, @var{head} and @var{tail}.
+Each of those procedure receives a structure to be compared, and @var{empty?}
+must return @code{#t} iff the structure is empty, @var{head}
+must return the first element in the structure, and @var{tail}
+must return the same type of structure containing all the elements
+but the head.  The @var{type-test} predicate checks if the arguments
+passed to the comparator to be a suitable structure.
+
+That is, @code{make-list-comparator} can be written in
+@code{make-listwise-comparator} as follows.
+@example
+(make-list-compartator element-comparator)
+  @equiv{}
+  (make-listwise-comparator list? element-compartor null? car cdr)
+@end example
+
+This can be used to compare list-like structures.  For example,
+the following call returns a comparator that compares elements
+of two lazy streams (@xref{Stream library}).
+
+@example
+(make-listwise-comparator stream?
+                          element-comparator
+                          stream-null?
+                          stream-car
+                          stream-cdr)
+@end example
+@end defun
+
+@defun make-vectorwise-comparator type-test element-comparator length ref
+More general version of @code{make-vector-comparator}.
+Returns a comparator that compares structures which can be
+traversed using two procedures, @var{length} and @var{ref}.
+The @var{length} procedure must return the number of elements in the
+structure.  The @var{ref} procedure receives a structure and a nonnegative
+exact integer index @var{k}, and must return @var{k}-th element
+of the structure.
+
+That is, the following equivalence holds:
+@example
+(make-vector-comparator element-comparator)
+  @equiv{}
+  (make-vectorwise-comparator vector? element-comparator
+                              vector-length vector-ref)
+
+(make-bytevector-comparator element-comparator)
+  @equiv{}
+  (make-vectorwise-comparator u8vector? element-comparator
+                              u8vector-length u8vector-ref)
+@end example
+@end defun
+
+@defun make-pair-comparator car-comparator cdr-comparator
+Creates a comparator that compares pairs, with their cars
+by @var{car-comparator} and their cdrs by @var{cdr-comparator}.
+@end defun
+
+@defun make-improper-list-comparator element-comparator
+This may be understood as recursive pair comparator; if objects
+to be compared are pairs, we recurse their cars then their cdrs.
+If objects to be compared are not pairs, we use @var{element-comparator}
+to compare them.
+@end defun
+
+@defun make-selecting-comparator comparator1 comparator2 @dots{}
+This creates a comparator that works any one of the given comparators;
+the objects to be compared are type-tested with each of the comparators
+in order, and the first comparator that accepts all objects will be used.
+@end defun
+
+@defun make-refining-comparator comparator1 comparator2 @dots{}
+This is similar to @code{make-selecting-comparator}, except that
+if the first comparator that accepts given objects to compare finds
+they are equal (or 0 by the comparison procedure), it tries other
+comparators down the list, if any.
+@end defun
+
+@defun make-reverse-comparator comparator
+Returns a comparator that just reverses the comparison order of
+@var{comparator}.
+@end defun
+
+@defun make-debug-comparator comparator
+@end defun
+
+@subsubheading Comparison procedure constructors
+
+@defun make-comparison< lt-pred
+@defunx make-comparison> gt-pred
+@defunx make-comparison<= le-pred
+@defunx make-comparison>= ge-pred
+@defunx make-comparison=/< eq-pred lt-pred
+@defunx make-comparison=/> eq-pred gt-pred
+Utility procedures to create a comparison procedure (the one returns
+-1, 0, or 1) from the given predicate.  For example, 
+@code{make-comparison<} can be defined as follows:
+
+@example
+(define (make-comparison< pred)
+  (^[a b] (cond [(pred a b) -1]
+                [(pred b a) 1]
+                [else 0])))
+@end example
+@end defun
+
+@subsubheading Comparison syntax
+
+@defmac if3 expr less equal greater
+Three-way @code{if}: Evaluates @var{expr}, and then evaluates
+either one of @var{less}, @var{equal}, or @var{greater},
+depending on the value of @var{expr} is either less than zero,
+equal to zero, or greater than zero, respectively.
+@end defmac
+
+@defmac if=? expr consequent :optional alternate
+@defmacx if<? expr consequent :optional alternate
+@defmacx if>? expr consequent :optional alternate
+@defmacx if<=? expr consequent :optional alternate
+@defmacx if>=? expr consequent :optional alternate
+@defmacx if-not=? expr consequent :optional alternate
+@end defmac
+
+@subsubheading Comparison predicates
+
+@defun =? comparator obj1 obj2 obj3 @dots{}
+@defunx <? comparator obj1 obj2 obj3 @dots{}
+@defunx >? comparator obj1 obj2 obj3 @dots{}
+@defunx <=? comparator obj1 obj2 obj3 @dots{}
+@defunx >=? comparator obj1 obj2 obj3 @dots{}
+@end defun
+
+@subsubheading Comparison predicate constructors
+
+@defun make=? comparator
+@defunx make<? comparator
+@defunx make>? comparator
+@defunx make<=? comparator
+@defunx make>=? comparator
+@end defun
+
+@subsubheading Interval comparison predicates
+
+
+@defun in-open-interval? [comparator] obj1 obj2 obj3
+@end defun
+
+@defun in-closed-interval? [comparator] obj1 obj2 obj3
+@end defun
+
+@defun in-open-closed-interval? [comparator] obj1 obj2 obj3
+@end defun
+
+@defun in-closed-open-interval? [comparator] obj1 obj2 obj3
+@end defun
+
+@subsubheading Min/max comparison procedures
+
+@defun comparator-min comparator obj1 obj2 @dots{}
+@defunx comparator-max comparator obj1 obj2 @dots{}
 @end defun
 
 

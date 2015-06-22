@@ -1,7 +1,7 @@
 /*
  * termios.c - termios interface
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -143,25 +143,22 @@ ScmObj Scm_ForkptyAndExec(ScmString *file, ScmObj args, ScmObj iomap,
                           ScmObj slaveterm, ScmSysSigset *mask)
 {
     int argc = Scm_Length(args);
-    char **argv;
-    const char *program;
-    int *fds;
-    int master;
-    pid_t pid;
     struct termios *term = NULL;
 
     if (argc < 1) {
         Scm_Error("argument list must have at least one element: %S", args);
     }
-    argv = Scm_ListToCStringArray(args, TRUE, NULL);
-    program = Scm_GetStringConst(file);
+    char **argv = Scm_ListToCStringArray(args, TRUE, NULL);
+    const char *program = Scm_GetStringConst(file);
 
     if (SCM_SYS_TERMIOS_P(slaveterm)) {
         term = &SCM_SYS_TERMIOS(slaveterm)->term;
     }
 
-    fds = Scm_SysPrepareFdMap(iomap);
+    int *fds = Scm_SysPrepareFdMap(iomap);
 
+    int master;
+    pid_t pid;
     if ((pid = forkpty(&master, NULL, term, NULL)) < 0) {
         Scm_SysError("forkpty failed");
     }
@@ -185,14 +182,10 @@ ScmObj Scm_ForkptyAndExec(ScmString *file, ScmObj args, ScmObj iomap,
  * Initializaion
  */
 
-extern void Scm_Init_termiolib(ScmModule *mod);
-
-SCM_EXTENSION_ENTRY void Scm_Init_gauche__termios(void)
+void Scm_Init_termios(void)
 {
-    ScmModule *mod;
     SCM_INIT_EXTENSION(gauche__termios);
-    mod = SCM_FIND_MODULE("gauche.termios", SCM_FIND_MODULE_CREATE);
-    Scm_Init_termiolib(mod);
+    ScmModule *mod = SCM_FIND_MODULE("gauche.termios", SCM_FIND_MODULE_CREATE);
 
 #if !defined(GAUCHE_WINDOWS)
     Scm_InitStaticClass(&Scm_SysTermiosClass, "<sys-termios>", mod,

@@ -1,67 +1,24 @@
-*** /home/shiro/src/axTLS/ssl/tls1.c	Thu May 24 22:54:46 2012
---- axTLS/ssl/tls1.c	Wed Jun  6 22:37:17 2012
+*** /home/shiro/src/axtls-code/ssl/tls1.h	Mon Oct 27 00:30:33 2014
+--- axTLS/ssl/tls1.h	Sat Nov  8 20:06:21 2014
 ***************
-*** 2160,2166 ****
-  EXP_FUNC SSL * STDCALL ssl_client_new(SSL_CTX *ssl_ctx, int client_fd, const
-          uint8_t *session_id, uint8_t sess_id_size)
-  {
-!     printf(unsupported_str);
-      return NULL;
-  }
+*** 41,47 ****
   #endif
---- 2160,2166 ----
-  EXP_FUNC SSL * STDCALL ssl_client_new(SSL_CTX *ssl_ctx, int client_fd, const
-          uint8_t *session_id, uint8_t sess_id_size)
-  {
-!     printf("%s", unsupported_str);
-      return NULL;
-  }
+  
+  #include "version.h"
+! #include "config.h"
+  #include "os_int.h"
+  #include "crypto.h"
+  #include "crypto_misc.h"
+--- 41,47 ----
   #endif
-***************
-*** 2168,2187 ****
-  #if !defined(CONFIG_SSL_CERT_VERIFICATION)
-  EXP_FUNC int STDCALL ssl_verify_cert(const SSL *ssl)
-  {
-!     printf(unsupported_str);
-      return -1;
-  }
   
-  
-  EXP_FUNC const char * STDCALL ssl_get_cert_dn(const SSL *ssl, int component)
-  {
-!     printf(unsupported_str);
-      return NULL;
-  }
-  
-  EXP_FUNC const char * STDCALL ssl_get_cert_subject_alt_dnsname(const SSL *ssl, int index)
-  {
-!     printf(unsupported_str);
-      return NULL;
-  }
-  
---- 2168,2187 ----
-  #if !defined(CONFIG_SSL_CERT_VERIFICATION)
-  EXP_FUNC int STDCALL ssl_verify_cert(const SSL *ssl)
-  {
-!     printf("%s", unsupported_str);
-      return -1;
-  }
-  
-  
-  EXP_FUNC const char * STDCALL ssl_get_cert_dn(const SSL *ssl, int component)
-  {
-!     printf("%s", unsupported_str);
-      return NULL;
-  }
-  
-  EXP_FUNC const char * STDCALL ssl_get_cert_subject_alt_dnsname(const SSL *ssl, int index)
-  {
-!     printf("%s", unsupported_str);
-      return NULL;
-  }
-  
-*** /home/shiro/src/axTLS/ssl/test/ssltest.c	Fri Jun 24 03:13:05 2011
---- axTLS/ssl/test/ssltest.c	Wed Jun  6 23:35:16 2012
+  #include "version.h"
+! #include "../config/config.h"
+  #include "os_int.h"
+  #include "crypto.h"
+  #include "crypto_misc.h"
+*** /home/shiro/src/axtls-code/ssl/test/ssltest.c	Fri Oct 31 00:47:35 2014
+--- axTLS/ssl/test/ssltest.c	Sat Nov  8 20:08:44 2014
 ***************
 *** 758,776 ****
   static int client_socket_init(uint16_t port)
@@ -218,8 +175,8 @@
           goto cleanup;
   
 ***************
-*** 2226,2236 ****
---- 2249,2265 ----
+*** 2226,2231 ****
+--- 2249,2258 ----
   
       system("sh ../ssl/test/killopenssl.sh");
   
@@ -227,18 +184,11 @@
 +     } /*have_openssl_p*/
 +     /*</SK>*/
 + 
-+ #if 0
-      if (header_issue())
-      {
-          printf("Header tests failed\n"); TTY_FLUSH();
-          goto cleanup;
-      }
-+ #endif
-  
-      ret = 0;        /* all ok */
-      printf("**** ALL TESTS PASSED ****\n"); TTY_FLUSH();
-*** /home/shiro/src/axTLS/ssl/test/killopenssl.sh	Tue Dec 28 22:06:26 2010
---- axTLS/ssl/test/killopenssl.sh	Wed Jun  6 22:37:17 2012
+      //if (header_issue())
+      //{
+      //    printf("Header tests failed\n"); TTY_FLUSH();
+*** /home/shiro/src/axtls-code/ssl/test/killopenssl.sh	Mon Oct 27 00:30:32 2014
+--- axTLS/ssl/test/killopenssl.sh	Sat Nov  8 20:06:29 2014
 ***************
 *** 1,2 ****
   #!/bin/sh
@@ -247,8 +197,8 @@
   #!/bin/sh
 ! awk '{print $1}' "../ssl/openssl.pid" | xargs kill -9
 ! rm -f ../ssl/openssl.pid
-*** /home/shiro/src/axTLS/ssl/test/killgnutls.sh	Fri May  6 14:12:41 2011
---- axTLS/ssl/test/killgnutls.sh	Wed Jun  6 22:37:17 2012
+*** /home/shiro/src/axtls-code/ssl/test/killgnutls.sh	Mon Oct 27 00:30:32 2014
+--- axTLS/ssl/test/killgnutls.sh	Sat Nov  8 20:06:29 2014
 ***************
 *** 1,2 ****
   #!/bin/sh
@@ -256,11 +206,11 @@
 --- 1,2 ----
   #!/bin/sh
 ! #ps -ef|grep gnutls-serv | /usr/bin/awk '{print $2}' |xargs kill -9
-*** /home/shiro/src/axTLS/ssl/os_port.h	Fri Jan 14 13:13:14 2011
---- axTLS/ssl/os_port.h	Wed Jun  6 22:37:17 2012
+*** /home/shiro/src/axtls-code/ssl/os_port.h	Mon Oct 27 00:30:33 2014
+--- axTLS/ssl/os_port.h	Sat Nov  8 20:06:29 2014
 ***************
-*** 58,63 ****
---- 58,65 ----
+*** 59,64 ****
+--- 59,66 ----
   
   #ifdef WIN32
   
@@ -270,47 +220,24 @@
   #if defined(_WIN32_WCE)
   #include <basetsd.h>
 ***************
-*** 114,119 ****
---- 116,122 ----
-  #pragma comment(lib, "WS2_32.lib")
-  #pragma comment(lib, "AdvAPI32.lib")
+*** 118,125 ****
+--- 120,133 ----
+  typedef int socklen_t;
   
-+ #ifndef __MINGW32__
-  typedef UINT8 uint8_t;
-  typedef INT8 int8_t;
-  typedef UINT16 uint16_t;
-***************
-*** 122,132 ****
-  typedef INT32 int32_t;
-  typedef UINT64 uint64_t;
-  typedef INT64 int64_t;
-- typedef int socklen_t;
-  
-- EXP_FUNC void STDCALL gettimeofday(struct timeval* t,void* timezone);
+  EXP_FUNC void STDCALL gettimeofday(struct timeval* t,void* timezone);
++ #if !defined(__MINGW32__)
   EXP_FUNC int STDCALL strcasecmp(const char *s1, const char *s2);
   EXP_FUNC int STDCALL getdomainname(char *buf, int buf_size);
-  
-  #else   /* Not Win32 */
-  
---- 125,140 ----
-  typedef INT32 int32_t;
-  typedef UINT64 uint64_t;
-  typedef INT64 int64_t;
-  
-  EXP_FUNC int STDCALL strcasecmp(const char *s1, const char *s2);
-  EXP_FUNC int STDCALL getdomainname(char *buf, int buf_size);
-+ #else  /* __MINGW32__ */
-+ #include <inttypes.h>
-+ #include <malloc.h>
-+ #endif /* __MINGW32__ */
++ #endif /*!defined(__MINGW32__)*/
 + 
-+ typedef int socklen_t;
-+ EXP_FUNC void STDCALL gettimeofday(struct timeval* t,void* timezone);
++ #if defined(__MINGW32__)
++ #include <malloc.h>
++ #endif /*defined(__MINGW32__)*/
   
   #else   /* Not Win32 */
   
-*** /home/shiro/src/axTLS/ssl/os_port.c	Sat Jan  1 21:49:03 2011
---- axTLS/ssl/os_port.c	Wed Jun  6 22:37:17 2012
+*** /home/shiro/src/axtls-code/ssl/os_port.c	Mon Oct 27 00:30:33 2014
+--- axTLS/ssl/os_port.c	Sat Nov  8 20:06:29 2014
 ***************
 *** 56,61 ****
 --- 56,62 ----
@@ -331,61 +258,65 @@
   #endif
   
   #undef malloc
-*** /home/shiro/src/axTLS/ssl/loader.c	Sat Feb 11 01:34:56 2012
---- axTLS/ssl/loader.c	Wed Jun  6 22:37:17 2012
+*** /home/shiro/src/axtls-code/crypto/os_int.h	Mon Oct 27 00:30:28 2014
+--- axTLS/crypto/os_int.h	Sat Nov  8 20:06:34 2014
 ***************
-*** 82,88 ****
-  #ifdef CONFIG_SSL_HAS_PEM
-          ret = ssl_obj_PEM_load(ssl_ctx, obj_type, ssl_obj, password);
-  #else
-!         printf(unsupported_str);
-          ret = SSL_ERROR_NOT_SUPPORTED;
+*** 41,47 ****
+  extern "C" {
   #endif
-      }
---- 82,88 ----
-  #ifdef CONFIG_SSL_HAS_PEM
-          ret = ssl_obj_PEM_load(ssl_ctx, obj_type, ssl_obj, password);
-  #else
-!         printf("%s", unsupported_str);
-          ret = SSL_ERROR_NOT_SUPPORTED;
+  
+! #if defined(WIN32)
+  typedef UINT8 uint8_t;
+  typedef INT8 int8_t;
+  typedef UINT16 uint16_t;
+--- 41,47 ----
+  extern "C" {
   #endif
-      }
+  
+! #if defined(WIN32) && !defined(__MINGW32__)
+  typedef UINT8 uint8_t;
+  typedef INT8 int8_t;
+  typedef UINT16 uint16_t;
+*** /home/shiro/src/axtls-code/crypto/crypto_misc.c	Mon Oct 27 00:30:29 2014
+--- axTLS/crypto/crypto_misc.c	Sat Nov  8 20:06:34 2014
 ***************
-*** 93,99 ****
-      ssl_obj_free(ssl_obj);
-      return ret;
-  #else
-!     printf(unsupported_str);
-      return SSL_ERROR_NOT_SUPPORTED;
-  #endif /* CONFIG_SSL_SKELETON_MODE */
-  }
---- 93,99 ----
-      ssl_obj_free(ssl_obj);
-      return ret;
-  #else
-!     printf("%s", unsupported_str);
-      return SSL_ERROR_NOT_SUPPORTED;
-  #endif /* CONFIG_SSL_SKELETON_MODE */
-  }
+*** 48,54 ****
+  static HCRYPTPROV gCryptProv;
+  #endif
+  
+! #if (!defined(CONFIG_USE_DEV_URANDOM) && !defined(CONFIG_WIN32_USE_CRYPTO_LIB))
+  /* change to processor registers as appropriate */
+  #define ENTROPY_POOL_SIZE 32
+  #define ENTROPY_COUNTER1 ((((uint64_t)tv.tv_sec)<<32) | tv.tv_usec)
+--- 48,54 ----
+  static HCRYPTPROV gCryptProv;
+  #endif
+  
+! #if (!defined(CONFIG_USE_DEV_URANDOM) && !defined(CONFIG_WIN32_USE_CRYPTO_LIB)) || !defined(ENTROPY_POOL_SIZE) /* The last condition added to compile on MinGW */
+  /* change to processor registers as appropriate */
+  #define ENTROPY_POOL_SIZE 32
+  #define ENTROPY_COUNTER1 ((((uint64_t)tv.tv_sec)<<32) | tv.tv_usec)
+*** /home/shiro/src/axtls-code/crypto/crypto.h	Mon Oct 27 00:30:29 2014
+--- axTLS/crypto/crypto.h	Sat Nov  8 20:06:34 2014
 ***************
-*** 150,156 ****
-              break;
+*** 39,45 ****
+  extern "C" {
   #endif
-          default:
-!             printf(unsupported_str);
-              ret = SSL_ERROR_NOT_SUPPORTED;
-              break;
-      }
---- 150,156 ----
-              break;
+  
+! #include "config.h"
+  #include "bigint_impl.h"
+  #include "bigint.h"
+  
+--- 39,45 ----
+  extern "C" {
   #endif
-          default:
-!             printf("%s", unsupported_str);
-              ret = SSL_ERROR_NOT_SUPPORTED;
-              break;
-      }
-*** /home/shiro/src/axTLS/crypto/bigint_impl.h	Sat Jan  1 21:45:25 2011
---- axTLS/crypto/bigint_impl.h	Wed Jun  6 22:37:17 2012
+  
+! #include "../config/config.h"
+  #include "bigint_impl.h"
+  #include "bigint.h"
+  
+*** /home/shiro/src/axtls-code/crypto/bigint_impl.h	Mon Oct 27 00:30:28 2014
+--- axTLS/crypto/bigint_impl.h	Sat Nov  8 20:06:34 2014
 ***************
 *** 61,67 ****
   typedef uint32_t long_comp;     /**< A double precision component. */
@@ -403,11 +334,11 @@
   #define COMP_RADIX          4294967296i64         
   #define COMP_MAX            0xFFFFFFFFFFFFFFFFui64
   #else
-*** /home/shiro/src/axTLS/config/config.h	Wed Dec 31 14:00:00 1969
---- axTLS/config/config.h	Wed Jun  6 22:37:17 2012
+*** /home/shiro/src/axtls-code/config/config.h	Wed Dec 31 14:00:00 1969
+--- axTLS/config/config.h	Sat Nov  8 20:10:24 2014
 ***************
 *** 0 ****
---- 1,142 ----
+--- 1,143 ----
 + /*
 +  * In original axTLS, this file is automatically generated.
 +  * To include in Gauche, we hand-edited this file, so be careful
@@ -517,8 +448,9 @@
 + #undef CONFIG_INTEGER_16BIT
 + #undef CONFIG_INTEGER_8BIT
 + 
-+ /* The following macros rename APIs in crypto/*.  This is to avoid build-time
-+    problems when those names conflict with system-provided ones. */
++ /* The following macros rename APIs defined in the files under crypto
++    directory. This is to avoid build-time problems when those names
++    conflict with system-provided ones. */
 + #define AES_set_key       AES_set_key__axtls
 + #define AES_cbc_encrypt   AES_cbc_encrypt__axtls
 + #define AES_cbc_decrypt   AES_cbc_decrypt__axtls

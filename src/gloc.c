@@ -1,7 +1,7 @@
 /*
  * gloc.c - gloc implementation
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -45,7 +45,11 @@ static void gloc_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
                g->name,
                (Scm_GlocConstP(g)
                 ? " const"
-                : (Scm_GlocInlinableP(g) ? " inlinable" : "")));
+                : (Scm_GlocInlinableP(g)
+                   ? " inlinable"
+                   : (SCM_GLOC_PHANTOM_BINDING_P(g)
+                      ? " phantom"
+                      : ""))));
 }
 
 SCM_DEFINE_BUILTIN_CLASS_SIMPLE(Scm_GlocClass, gloc_print);

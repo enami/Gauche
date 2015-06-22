@@ -1,7 +1,7 @@
 /*
  * pthread.h - pthread primitives
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -124,5 +124,8 @@ typedef pthread_mutex_t ScmInternalFastlock;
 #define SCM_INTERNAL_FASTLOCK_UNLOCK(fl) SCM_INTERNAL_MUTEX_UNLOCK(fl)
 #define SCM_INTERNAL_FASTLOCK_DESTROY(fl) SCM_INTERNAL_MUTEX_DESTROY(fl)
 #endif /*!HAVE_PTHREAD_SPINLOCK_T*/
+
+/* Issues a full memory barrier */
+#define SCM_INTERNAL_SYNC()                 __sync_synchronize()
 
 #endif /* GAUCHE_PTHREAD_H */

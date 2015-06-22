@@ -154,6 +154,13 @@
 (test* "base-35 reader" '(#t #t) (radix-tester 35))
 (test* "base-36 reader" '(#t #t) (radix-tester 36))
 
+(test* "Gauche extended format" #x123456789
+       (string->number "#x1_2345_6789"))
+(test* "Gauche extended format" #x-123456789
+       (string->number "#x-123_456_789"))
+(test* "Gauche extended format" #f
+       (string->number "123_456_789"))
+
 ;;------------------------------------------------------------------
 (test-section "rational reader")
 
@@ -279,6 +286,13 @@
 (test* "flonum reader (minimum denormalized number -5.0e-324)" #t
        (let1 x (- (expt 2.0 -1074))
          (= x (string->number (number->string x)))))
+
+(test* "flonum reader lots of digits" 1.0
+       (read-from-string
+        "1.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"))
+(test* "flonum reader lots of digits" 1.0e308
+       (read-from-string
+        "1.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001e308"))
 
 ;; This hanged in 0.9.1.  See Jens Thiele's message in gauche-devel
 ;; in Feb. 2011.
@@ -493,6 +507,22 @@
        (expt 2 1/2)
        (lambda (x y) (nearly=? 10e7 x y))) ;; NB: pa$ will be tested later
 
+(let ()
+  (define (exact-expt-tester x y)
+    (let1 x^y (expt x y)
+      (test* "exact expt (non-integral power)" x (expt x^y (/ y)))
+      (test* "exact expt (non-integral power)" (* x x) (expt x^y (/ 2 y)))
+      (test* "exact expt (non-integral power, inexact fallback)"
+             (expt (+ x^y 1.0) (/ y)) (expt (+ x^y 1) (/ y)))
+      ))
+
+  (exact-expt-tester 3 7)
+  (exact-expt-tester 5 3)
+  (exact-expt-tester 13 17)
+  (exact-expt-tester 101 103)
+  (exact-expt-tester 11/13 23)
+  )
+             
 ;; expt-mod
 (define (test-expt-mod base mod)
   ;; NB: we haven't tested iota.
@@ -599,7 +629,7 @@
 (test* "expt (ratnum with large denom and numer) with inexact conversion 3"
        1.0e-308 (exact->inexact (/ (expt 10 20) (expt 10 328))))
 (test* "expt (ratnum with large denom and numer) with inexact conversion 4"
-       0.0 (exact->inexact (/ (expt 10 20) (expt 10 329))))
+       1.0e-310 (exact->inexact (/ (expt 10 20) (expt 10 330))))
 (test* "expt (ratnum with large denom and numer) with inexact conversion 5"
        1.0e308 (exact->inexact (/ (expt 10 328) (expt 10 20))))
 (test* "expt (ratnum with large denom and numer) with inexact conversion 6"
@@ -610,6 +640,29 @@
        -inf.0 (exact->inexact (/ (expt 10 329) (- (expt 10 20)))))
 (test* "expt (ratnum with large denom and numer) with inexact conversion 9"
        +inf.0 (exact->inexact (/ (expt -10 329) (- (expt 10 20)))))
+;; denormalized range
+(let ()
+  (define data '(5.0e-324   ; minimum positive denormalized flonum
+                 -5.0e-324
+                 1.0e-323
+                 1.5e-323
+                 2.0e-323
+                 1.0e-322
+                 1.04e-322
+                 1.1e-322))
+  (dolist [d data]
+    (test* #"inexact conversion in subnormal range ~d" d
+           (inexact (exact d)))))
+;; close to inifinity (but not quite)
+(test* "ratnum -> flonum, close to infinity 1" 1.0e308
+       (inexact (/ (+ (expt 10 309) 1) 10)))
+(test* "ratnum -> flonum, close to infinity 2" 1.0e308
+       (inexact (/ (+ (expt 10 310) 1) 100)))
+
+;; this exhibits a bug fixed on 9/12/2013.
+(test* "real->rational" '(1/3 2/3)
+       (list (real->rational 3/10 1/10 1/10)
+             (real->rational 24/35 4/35 4/35)))
 
 (test* "rationalize (edge cases)" '(#t #t #t +inf.0 -inf.0 0.0)
        (list (nan? (rationalize +nan.0 0))
@@ -807,7 +860,7 @@
         (mm (list (- a) (- b))))
     (define (test4 op opname rev results)
       (for-each (lambda (result comb args)
-                  (test* #`",|msg| ,(if rev 'rev \"\") ,opname(,comb)" result
+                  (test* #"~msg ~(if rev 'rev \"\") ~opname(~comb)" result
                          (apply op (if rev (reverse args) args))))
                 results '(++ +- -+ --) (list pp pm mp mm)))
     (test4 =  '=  #f (list eq #f #f eq))
@@ -845,11 +898,11 @@
 ;; up to 4 args in stack and the rest by list, so we want to test the
 ;; boundary case.
 (define (numcmp-multiarg-test lis eq lt le gt ge)
-  (test* #`"=,lis" eq (apply = lis))
-  (test* #`"<,lis" lt (apply < lis))
-  (test* #`"<=,lis" le (apply <= lis))
-  (test* #`">,lis" gt (apply > lis))
-  (test* #`">=,lis" ge (apply >= lis)))
+  (test* #"=~lis" eq (apply = lis))
+  (test* #"<~lis" lt (apply < lis))
+  (test* #"<=~lis" le (apply <= lis))
+  (test* #">~lis" gt (apply > lis))
+  (test* #">=~lis" ge (apply >= lis)))
 
 ;;                                      =  <  <= >  >=
 (numcmp-multiarg-test '(1 2 3 4)        #f #t #t #f #f)
@@ -884,6 +937,19 @@
 (test* "fixnum/ratnum comparison" #f
        (= -98781233389595723930250385525631360344437602649022271391716773162526352115087074898920261954897888235939429993829738630297052776667061779065100945771127020439712527398509771853491319737304616607041615012797134365574007368603232768089410097730646360760856052946465578073788924743642391638455649511108051053789425902013657106523269224045822294981391380222050223141347787674321888089837786284947870569165079491411110074602544203383038299901291952931113248943344436935596614205784436844912243069019367149526328612664067719765890897558075277707055756274228634652905751880612235340874976952880431555921814590049070979276358637989837532124647692152520447680373275200239544449293834424643702763974403094033892112967196087310232853165951285609426599617479356206218697586025251765476179158153123631158173662488102357611674821528467825910806391548770908013608889792001203039243914696463472490444573930050190716726220002151679336252008777326482398042427845860796285369622627679324605214987983884122808994422164327311297556122943400093231935477754959547620500784989043704825777186301417894825200797719289692636286337716705491307686644214213732116277102140558505945554566856673724837541141206267647285222293953181717113434757149921850120377706206012113994795124049471433490016083401216757825264766474891405185591236321448744678896448941259668731597494947127423662646933419809756274038044752395708014998820826196523041220918922611359697502638594907608648168849193813197790291360087857093790119162389573209640804111261616771827989939551840471235079945175327536638365874717775169210186608268924244639016270610098894971732892267642318266405837012482726627199088381027028630711279130575230815976484191675172279903609489448225149181063260231957171204855841611039996959582465138269247794842445177715476581512709861409446684911276158067098438009067149531119008707418601627426255891/2063950098473886055933596136103014753954685977787179797499441692283103642150668140884348149132839387663291870239435604463778573480782766958396423322880804442523056530013282118705429274303746421980903580754656364533869319744640130831962767797772323836293079599182477171562218297208495122660799328579852852969560730744211066545295945803939271680397511478811389399527913043145952054883289558914237172406636283114284363301999238526952309439259354223729114988806937903509692118585280437646676248013406270664905997291670857985754768850507766359973207600149782819306010561088246502918148146264806947375101624011387317921439210509902170092173796154464078297852707797984007992277904626058467143192149921546030028316990855470478894515952884526783686210401408859364838148201339959570732480920969000913791571631154267939054105878236201498477027265774680071188764947522112650857013491135901945605796776829525789886482760578142306057177990048751864852763036720112071475134369179525117161001517868525821398753039187062869247457336940152614866298628205010037695017885878296140891234142925514925051385440766473260338168038302226808098439763889250948602137806546736025439919604390464712793474019469457135856879584745805794574609707742445431851999335443724488636749987837445626810087003490329257105472274738811579817454656532496370562155449815456374456838912258383282154811001588175608617475540639254689723629881619252699580383612847920348111900440075645703960104081690968807839189109040568288972353424306876947127635585164905071821419089229871978994388197349499565628906992171901547121903117815637249359328193980583892566359962066242217169190169986105579733710057404319381685578470983838597020624234209884597110721892707818651210378187525863009879314177842634871978427592746452643603586344401223449546482306838947819060455178762434166799996220143825677025686435609179225302671777326568324855229172912876656233006785717920665743720753617646617017219230313226844735567400507490772935145894670445831971526014183234960075574401616682479457962912905141754252265169682318523572680657053374002911007741991220001444440319448034755483178790032581428679303588017268970 0))
 
+(let ()
+  (define (test-minmax mi ma data)
+    (test* (format "min, max ~s" data)
+           (list mi ma)
+           (list (apply min data) (apply max data))))
+  (test-minmax 0 10 '(3 10 2 0 5))
+  (test-minmax -1/3 99/5 '(2 6 99/5 0 -1/6 -1/3))
+  (test-minmax -10.0 10.0 '(3 10 2.0 -10 5))
+  (test-minmax -inf.0 +inf.0 '(5 -inf.0 2 +inf.0 1))
+  (test-minmax +nan.0 +nan.0 '(5 -inf.0 +nan.0 +inf.0 1))
+  (test-minmax +nan.0 +nan.0 '(+nan.0 -inf.0 3 +inf.0 1))
+  )
+
 ;;==================================================================
 ;; Fixnum stuff
 ;;
@@ -900,9 +966,9 @@
 (test* "fixnum? least-1"     #f (fixnum? (- (least-fixnum) 1)))
 
 (test* "greatest fixnum & width" (greatest-fixnum)
-       (- (ash 1 (fixnum-width)) 1))
+       (- (ash 1 (- (fixnum-width) 1)) 1))
 (test* "least fixnum & width" (least-fixnum)
-       (- (ash 1 (fixnum-width))))
+       (- (ash 1 (- (fixnum-width) 1))))
 
 ;;==================================================================
 ;; Arithmetics
@@ -1276,6 +1342,25 @@
          (and (nan? (real-part r))
               (= (imag-part r) +inf.0))))
 
+;; See if we don't fold exact divide-by-zero case.  If compile blindly
+;; fold constant division, the following causes compile-time error
+;; rather than runtime error.
+(let ()
+  (define (recip x) (or x (/ 0)))
+  (define (two x) (or x (/ 2 0)))
+  (define (three x) (or x (/ 2 4 0)))
+  (define (four x) (or x (/ 2 0 4 3)))
+
+  (define (tests exp arg)
+    (test* "div-by-zero constant folding 1" exp (recip arg))
+    (test* "div-by-zero constant folding 2" exp (two arg))
+    (test* "div-by-zero constant folding 3" exp (three arg))
+    (test* "div-by-zero constant folding 4" exp (four arg)))
+
+  (tests 10 10)
+  (tests (test-error) #f)
+  )
+
 (define (almost=? x y)
   (define (flonum=? x y)
     (let ((ax (abs x)) (ay (abs y)))
@@ -1628,150 +1713,95 @@
 ;;------------------------------------------------------------------
 (test-section "logical operations")
 
-(test* "ash (fixnum)" #x408000           ;fixnum
-      (ash #x81 15))
-(test* "ash (fixnum)" #x81
-      (ash #x408000 -15))
-(test* "ash (fixnum)" #x01
-      (ash #x408000 -22))
-(test* "ash (fixnum)" 0
-      (ash #x408000 -23))
-(test* "ash (fixnum)" 0
-      (ash #x408000 -24))
-(test* "ash (fixnum)" 0
-      (ash #x408000 -100))
-(test* "ash (fixnum)" #x81
-      (ash #x81 0))
-(test* "ash (neg. fixnum)" #x-408000  ;negative fixnum
-      (ash #x-81 15))
-(test* "ash (neg. fixnum)" #x-81      ;nagative fixnum
-      (ash #x-408000 -15))
-(test* "ash (fixnum)" -2
-      (ash #x-408000 -22))
-(test* "ash (fixnum)" -1
-      (ash #x-408000 -23))
-(test* "ash (fixnum)" -1
-      (ash #x-408000 -24))
-(test* "ash (fixnum)" -1
-      (ash #x-408000 -100))
-(test* "ash (fixnum)" #x-408000
-      (ash #x-408000 0))
+;; covers
+(define bitwise-tester-x 0)
+(define bitwise-tester-y 0)
 
-(test* "ash (fixnum->bignum)" #x81000000
-      (ash #x81 24))
-(test* "ash (fixnum->bignum)" #x4080000000
-      (ash #x81 31))
-(test* "ash (fixnum->bignum)" #x8100000000
-      (ash #x81 32))
-(test* "ash (fixnum->bignum)" #x8100000000000000
-      (ash #x81 56))
-(test* "ash (fixnum->bignum)" #x408000000000000000
-      (ash #x81 63))
-(test* "ash (fixnum->bignum)" #x810000000000000000
-      (ash #x81 64))
-(test* "ash (neg.fixnum->bignum)" #x-81000000
-      (ash #x-81 24))
-(test* "ash (neg.fixnum->bignum)" #x-4080000000
-      (ash #x-81 31))
-(test* "ash (neg.fixnum->bignum)" #x-8100000000
-      (ash #x-81 32))
-(test* "ash (neg.fixnum->bignum)" #x-8100000000000000
-      (ash #x-81 56))
-(test* "ash (neg.fixnum->bignum)" #x-408000000000000000
-      (ash #x-81 63))
-(test* "ash (neg.fixnum->bignum)" #x-810000000000000000
-      (ash #x-81 64))
+(define-macro (ash-tester msg expect x y)
+  `(begin
+     (set! bitwise-tester-x ,x)
+     (set! bitwise-tester-y ,y)
+     (test* ,(format "ash (~a) compile-time constant, inlined, generic1, generic2" msg)
+            (list ,expect ,expect ,expect ,expect)
+            (list (ash ,x ,y)
+                  (ash bitwise-tester-x ,y)
+                  (ash ,x bitwise-tester-y)
+                  (ash bitwise-tester-x bitwise-tester-y)))))
 
-(test* "ash (bignum->fixnum)" #x81
-      (ash  #x81000000 -24))
-(test* "ash (bignum->fixnum)" #x40
-      (ash  #x81000000 -25))
-(test* "ash (bignum->fixnum)" 1
-      (ash  #x81000000 -31))
-(test* "ash (bignum->fixnum)" 0
-      (ash  #x81000000 -32))
-(test* "ash (bignum->fixnum)" 0
-      (ash  #x81000000 -100))
-(test* "ash (bignum->fixnum)" #x81
-      (ash #x4080000000 -31))
-(test* "ash (bignum->fixnum)" #x81
-      (ash #x8100000000 -32))
-(test* "ash (bignum->fixnum)" #x40
-      (ash #x8100000000 -33))
-(test* "ash (bignum->fixnum)" 1
-      (ash #x8100000000 -39))
-(test* "ash (bignum->fixnum)" 0
-      (ash #x8100000000 -40))
-(test* "ash (bignum->fixnum)" 0
-      (ash #x8100000000 -100))
-(test* "ash (bignum->fixnum)" #x81
-      (ash #x8100000000000000 -56))
-(test* "ash (bignum->fixnum)" #x81
-      (ash #x408000000000000000 -63))
-(test* "ash (bignum->fixnum)" #x40
-      (ash #x408000000000000000 -64))
-(test* "ash (bignum->fixnum)" #x20
-      (ash #x408000000000000000 -65))
-(test* "ash (bignum->fixnum)" 1
-      (ash #x408000000000000000 -70))
-(test* "ash (bignum->fixnum)" 0
-      (ash #x408000000000000000 -71))
-(test* "ash (bignum->fixnum)" 0
-      (ash #x408000000000000000 -100))
+(ash-tester "fixnum" #x408000 #x81 15)
+(ash-tester "fixnum" #x81 #x408000 -15)
+(ash-tester "fixnum" #x01 #x408000 -22)
+(ash-tester "fixnum" 0 #x408000 -23)
+(ash-tester "fixnum" 0 #x408000 -24)
+(ash-tester "fixnum" 0 #x408000 -100)
+(ash-tester "fixnum" #x81 #x81 0)
+(ash-tester "neg. fixnum" #x-408000 #x-81 15)
+(ash-tester "neg. fixnum" #x-81 #x-408000 -15)
+(ash-tester "fixnum" -2 #x-408000 -22)
+(ash-tester "fixnum" -1 #x-408000 -23)
+(ash-tester "fixnum" -1 #x-408000 -24)
+(ash-tester "fixnum" -1 #x-408000 -100)
+(ash-tester "fixnum" #x-408000 #x-408000 0)
 
-(test* "ash (neg.bignum->fixnum)" #x-81
-      (ash #x-81000000 -24))
-(test* "ash (neg.bignum->fixnum)" #x-41
-      (ash #x-81000000 -25))
-(test* "ash (neg.bignum->fixnum)" #x-21
-      (ash #x-81000000 -26))
-(test* "ash (neg.bignum->fixnum)" -2
-      (ash #x-81000000 -31))
-(test* "ash (neg.bignum->fixnum)" -1
-      (ash #x-81000000 -32))
-(test* "ash (neg.bignum->fixnum)" -1
-      (ash #x-81000000 -33))
-(test* "ash (neg.bignum->fixnum)" -1
-      (ash #x-81000000 -100))
-(test* "ash (neg.bignum->fixnum)" #x-81
-      (ash #x-4080000000 -31))
-(test* "ash (neg.bignum->fixnum)" #x-41
-      (ash #x-4080000000 -32))
-(test* "ash (neg.bignum->fixnum)" #x-21
-      (ash #x-4080000000 -33))
-(test* "ash (neg.bignum->fixnum)" -2
-      (ash #x-4080000000 -38))
-(test* "ash (neg.bignum->fixnum)" -1
-      (ash #x-4080000000 -39))
-(test* "ash (neg.bignum->fixnum)" -1
-      (ash #x-4080000000 -100))
-(test* "ash (neg.bignum->fixnum)" #x-81
-      (ash #x-408000000000000000 -63))
-(test* "ash (neg.bignum->fixnum)" #x-41
-      (ash #x-408000000000000000 -64))
-(test* "ash (neg.bignum->fixnum)" #x-21
-      (ash #x-408000000000000000 -65))
-(test* "ash (neg.bignum->fixnum)" -2
-      (ash #x-408000000000000000 -70))
-(test* "ash (neg.bignum->fixnum)" -1
-      (ash #x-408000000000000000 -71))
-(test* "ash (neg.bignum->fixnum)" -1
-      (ash #x-408000000000000000 -72))
+(ash-tester "fixnum->bignum" #x81000000 #x81 24)
+(ash-tester "fixnum->bignum" #x4080000000 #x81 31)
+(ash-tester "fixnum->bignum" #x8100000000 #x81 32)
+(ash-tester "fixnum->bignum" #x8100000000000000 #x81 56)
+(ash-tester "fixnum->bignum" #x408000000000000000 #x81 63)
+(ash-tester "fixnum->bignum" #x810000000000000000 #x81 64)
+(ash-tester "neg.fixnum->bignum" #x-81000000 #x-81 24)
+(ash-tester "neg.fixnum->bignum" #x-4080000000 #x-81 31)
+(ash-tester "neg.fixnum->bignum" #x-8100000000 #x-81 32)
+(ash-tester "neg.fixnum->bignum" #x-8100000000000000 #x-81 56)
+(ash-tester "neg.fixnum->bignum" #x-408000000000000000 #x-81 63)
+(ash-tester "neg.fixnum->bignum" #x-810000000000000000 #x-81 64)
 
-(test* "ash (bignum->bignum)" #x12345678123456780
-      (ash #x1234567812345678 4))
-(test* "ash (bignum->bignum)" #x1234567812345678000000000000000
-      (ash #x1234567812345678 60))
-(test* "ash (bignum->bignum)" #x12345678123456780000000000000000
-      (ash #x1234567812345678 64))
-(test* "ash (bignum->bignum)" #x123456781234567
-      (ash #x1234567812345678 -4))
-(test* "ash (bignum->bignum)" #x12345678
-      (ash #x1234567812345678 -32))
-(test* "ash (neg.bignum->bignum)" #x-123456781234568
-      (ash #x-1234567812345678 -4))
-(test* "ash (bignum->bignum)" #x-12345679
-      (ash #x-1234567812345678 -32))
+(ash-tester "bignum->fixnum" #x81  #x81000000 -24)
+(ash-tester "bignum->fixnum" #x40  #x81000000 -25)
+(ash-tester "bignum->fixnum" 1  #x81000000 -31)
+(ash-tester "bignum->fixnum" 0  #x81000000 -32)
+(ash-tester "bignum->fixnum" 0  #x81000000 -100)
+(ash-tester "bignum->fixnum" #x81 #x4080000000 -31)
+(ash-tester "bignum->fixnum" #x81 #x8100000000 -32)
+(ash-tester "bignum->fixnum" #x40 #x8100000000 -33)
+(ash-tester "bignum->fixnum" 1 #x8100000000 -39)
+(ash-tester "bignum->fixnum" 0 #x8100000000 -40)
+(ash-tester "bignum->fixnum" 0 #x8100000000 -100)
+(ash-tester "bignum->fixnum" #x81 #x8100000000000000 -56)
+(ash-tester "bignum->fixnum" #x81 #x408000000000000000 -63)
+(ash-tester "bignum->fixnum" #x40 #x408000000000000000 -64)
+(ash-tester "bignum->fixnum" #x20 #x408000000000000000 -65)
+(ash-tester "bignum->fixnum" 1 #x408000000000000000 -70)
+(ash-tester "bignum->fixnum" 0 #x408000000000000000 -71)
+(ash-tester "bignum->fixnum" 0 #x408000000000000000 -100)
+
+(ash-tester "neg.bignum->fixnum" #x-81 #x-81000000 -24)
+(ash-tester "neg.bignum->fixnum" #x-41 #x-81000000 -25)
+(ash-tester "neg.bignum->fixnum" #x-21 #x-81000000 -26)
+(ash-tester "neg.bignum->fixnum" -2 #x-81000000 -31)
+(ash-tester "neg.bignum->fixnum" -1 #x-81000000 -32)
+(ash-tester "neg.bignum->fixnum" -1 #x-81000000 -33)
+(ash-tester "neg.bignum->fixnum" -1 #x-81000000 -100)
+(ash-tester "neg.bignum->fixnum" #x-81 #x-4080000000 -31)
+(ash-tester "neg.bignum->fixnum" #x-41 #x-4080000000 -32)
+(ash-tester "neg.bignum->fixnum" #x-21 #x-4080000000 -33)
+(ash-tester "neg.bignum->fixnum" -2 #x-4080000000 -38)
+(ash-tester "neg.bignum->fixnum" -1 #x-4080000000 -39)
+(ash-tester "neg.bignum->fixnum" -1 #x-4080000000 -100)
+(ash-tester "neg.bignum->fixnum" #x-81 #x-408000000000000000 -63)
+(ash-tester "neg.bignum->fixnum" #x-41 #x-408000000000000000 -64)
+(ash-tester "neg.bignum->fixnum" #x-21 #x-408000000000000000 -65)
+(ash-tester "neg.bignum->fixnum" -2 #x-408000000000000000 -70)
+(ash-tester "neg.bignum->fixnum" -1 #x-408000000000000000 -71)
+(ash-tester "neg.bignum->fixnum" -1 #x-408000000000000000 -72)
+
+(ash-tester "bignum->bignum" #x12345678123456780 #x1234567812345678 4)
+(ash-tester "bignum->bignum" #x1234567812345678000000000000000 #x1234567812345678 60)
+(ash-tester "bignum->bignum" #x12345678123456780000000000000000 #x1234567812345678 64)
+(ash-tester "bignum->bignum" #x123456781234567 #x1234567812345678 -4)
+(ash-tester "bignum->bignum" #x12345678 #x1234567812345678 -32)
+(ash-tester "neg.bignum->bignum" #x-123456781234568 #x-1234567812345678 -4)
+(ash-tester "bignum->bignum" #x-12345679 #x-1234567812345678 -32)
 
 (test* "lognot (fixnum)" -1 (lognot 0))
 (test* "lognot (fixnum)" 0 (lognot -1))
@@ -1782,105 +1812,69 @@
 (test* "lognot (bignum)" #x1000000000000000000
       (lognot #x-1000000000000000001))
 
-(test* "logand (+fix & 0)" 0
-      (logand #x123456 0))
-(test* "logand (+big & 0)" 0
-      (logand #x1234567812345678 0))
-(test* "logand (+fix & -1)" #x123456
-      (logand #x123456 -1))
-(test* "logand (+big & -1)" #x1234567812345678
-      (logand #x1234567812345678 -1))
-(test* "logand (+fix & +fix)" #x2244
-      (logand #xaa55 #x6666))
-(test* "logand (+fix & +big)" #x2244
-      (logand #xaa55 #x6666666666))
-(test* "logand (+big & +fix)" #x4422
-      (logand #xaa55aa55aa #x6666))
-(test* "logand (+big & +big)" #x2244224422
-      (logand #xaa55aa55aa #x6666666666))
-(test* "logand (+big & +big)" #x103454301aaccaa
-      (logand #x123456789abcdef #xfedcba987654321fedcba987654321fedcba))
-(test* "logand (+big & +big)" #x400000
-      (logand #xaa55ea55aa #x55aa55aa55))
-(test* "logand (+fix & -fix)" #x8810
-      (logand #xaa55 #x-6666))
-(test* "logand (+fix & -big)" #x8810
-      (logand #xaa55 #x-6666666666))
-(test* "logand (+big & -fix)" #xaa55aa118a
-      (logand #xaa55aa55aa #x-6666))
-(test* "logand (+big & -big)" #x881188118a
-      (logand #xaa55aa55aa #x-6666666666))
-(test* "logand (+big & -big)" #x20002488010146
-      (logand #x123456789abcdef #x-fedcba987654321fedcba987654321fedcba))
-(test* "logand (-fix & +fix)" #x4422
-      (logand #x-aa55 #x6666))
-(test* "logand (-fix & +big)" #x6666664422
-      (logand #x-aa55 #x6666666666))
-(test* "logand (-big & +fix)" #x2246
-      (logand #x-aa55aa55aa #x6666))
-(test* "logand (-big & +big)" #x4422442246
-      (logand #x-aa55aa55aa #x6666666666))
-(test* "logand (-big & +big)" #xfedcba987654321fedcba884200020541010
-      (logand #x-123456789abcdef #xfedcba987654321fedcba987654321fedcba))
-(test* "logand (-fix & -fix)" #x-ee76
-      (logand #x-aa55 #x-6666))
-(test* "logand (-fix & -big)" #x-666666ee76
-      (logand #x-aa55 #x-6666666666))
-(test* "logand (-big & -fix)" #x-aa55aa77ee
-      (logand #x-aa55aa55aa #x-6666))
-(test* "logand (-big & -big)" #x-ee77ee77ee
-      (logand #x-aa55aa55aa #x-6666666666))
-(test* "logand (-big & -big)" #x-fedcba987654321fedcba9a76567a9ffde00
-      (logand #x-123456789abcdef #x-fedcba987654321fedcba987654321fedcba))
+(define-macro (logop-tester op msg expect x y)
+  `(begin
+     (set! bitwise-tester-x ,x)
+     (set! bitwise-tester-y ,y)
+     (test* (format "~a (~a)" ',op ,msg)
+            (list ,expect ,expect ,expect ,expect ,expect ,expect)
+            (list (,op ,x ,y)
+                  (,op bitwise-tester-x ,y)
+                  (,op ,x bitwise-tester-y)
+                  (,op bitwise-tester-x bitwise-tester-y)
+                  (,op bitwise-tester-x ,y bitwise-tester-x)
+                  (,op ,x bitwise-tester-x ,y bitwise-tester-y)))))
 
-(test* "logior (+fix | 0)" #x123456
-      (logior #x123456 0))
-(test* "logior (+big | 0)" #x1234567812345678
-      (logior #x1234567812345678 0))
-(test* "logior (+fix | -1)" -1
-      (logior #x123456 -1))
-(test* "logior (+big | -1)" -1
-      (logior #x1234567812345678 -1))
-(test* "logior (+fix | +fix)" #xee77
-      (logior #xaa55 #x6666))
-(test* "logior (+fix | +big)" #x666666ee77
-      (logior #xaa55 #x6666666666))
-(test* "logior (+big | +fix)" #xaa55aa77ee
-      (logior #xaa55aa55aa #x6666))
-(test* "logior (+big | +big)" #xee77ee77ee
-      (logior #xaa55aa55aa #x6666666666))
-(test* "logior (+big | +big)" #xfedcba987654321fedcba9a76567a9ffddff
-      (logior #x123456789abcdef #xfedcba987654321fedcba987654321fedcba))
-(test* "logior (+fix | -fix)" #x-4421
-      (logior #xaa55 #x-6666))
-(test* "logior (+fix | -big)" #x-6666664421
-      (logior #xaa55 #x-6666666666))
-(test* "logior (+big | -fix)" #x-2246
-      (logior #xaa55aa55aa #x-6666))
-(test* "logior (+big | -big)" #x-4422442246
-      (logior #xaa55aa55aa #x-6666666666))
-(test* "logior (+big | -big)" #x-fedcba987654321fedcba884200020541011
-      (logior #x123456789abcdef #x-fedcba987654321fedcba987654321fedcba))
-(test* "logior (-fix | +fix)" #x-8811
-      (logior #x-aa55 #x6666))
-(test* "logior (-fix | +big)" #x-8811
-      (logior #x-aa55 #x6666666666))
-(test* "logior (-big | +fix)" #x-aa55aa118a
-      (logior #x-aa55aa55aa #x6666))
-(test* "logior (-big | +big)" #x-881188118a
-      (logior #x-aa55aa55aa #x6666666666))
-(test* "logior (-big | +big)" #x-20002488010145
-      (logior #x-123456789abcdef #xfedcba987654321fedcba987654321fedcba))
-(test* "logior (-fix | -fix)" #x-2245
-      (logior #x-aa55 #x-6666))
-(test* "logior (-fix | -big)" #x-2245
-      (logior #x-aa55 #x-6666666666))
-(test* "logior (-big | -fix)" #x-4422
-      (logior #x-aa55aa55aa #x-6666))
-(test* "logior (-big | -big)" #x-2244224422
-      (logior #x-aa55aa55aa #x-6666666666))
-(test* "logior (-big | -big)" #x-103454301aacca9
-      (logior #x-123456789abcdef #x-fedcba987654321fedcba987654321fedcba))
+(logop-tester logand "+fix & 0" 0 #x123456 0)
+(logop-tester logand "+big & 0" 0 #x1234567812345678 0)
+(logop-tester logand "+fix & -1" #x123456 #x123456 -1)
+(logop-tester logand "+big & -1" #x1234567812345678 #x1234567812345678 -1)
+(logop-tester logand "+fix & +fix" #x2244 #xaa55 #x6666)
+(logop-tester logand "+fix & +big" #x2244 #xaa55 #x6666666666)
+(logop-tester logand "+big & +fix" #x4422 #xaa55aa55aa #x6666)
+(logop-tester logand "+big & +big" #x2244224422 #xaa55aa55aa #x6666666666)
+(logop-tester logand "+big & +big" #x103454301aaccaa #x123456789abcdef #xfedcba987654321fedcba987654321fedcba)
+(logop-tester logand "+big & +big" #x400000 #xaa55ea55aa #x55aa55aa55)
+(logop-tester logand "+fix & -fix" #x8810 #xaa55 #x-6666)
+(logop-tester logand "+fix & -big" #x8810 #xaa55 #x-6666666666)
+(logop-tester logand "+big & -fix" #xaa55aa118a #xaa55aa55aa #x-6666)
+(logop-tester logand "+big & -big" #x881188118a #xaa55aa55aa #x-6666666666)
+(logop-tester logand "+big & -big" #x20002488010146 #x123456789abcdef #x-fedcba987654321fedcba987654321fedcba)
+(logop-tester logand "-fix & +fix" #x4422 #x-aa55 #x6666)
+(logop-tester logand "-fix & +big" #x6666664422 #x-aa55 #x6666666666)
+(logop-tester logand "-big & +fix" #x2246 #x-aa55aa55aa #x6666)
+(logop-tester logand "-big & +big" #x4422442246 #x-aa55aa55aa #x6666666666)
+(logop-tester logand "-big & +big" #xfedcba987654321fedcba884200020541010 #x-123456789abcdef #xfedcba987654321fedcba987654321fedcba)
+(logop-tester logand "-fix & -fix" #x-ee76 #x-aa55 #x-6666)
+(logop-tester logand "-fix & -big" #x-666666ee76 #x-aa55 #x-6666666666)
+(logop-tester logand "-big & -fix" #x-aa55aa77ee #x-aa55aa55aa #x-6666)
+(logop-tester logand "-big & -big" #x-ee77ee77ee #x-aa55aa55aa #x-6666666666)
+(logop-tester logand "-big & -big" #x-fedcba987654321fedcba9a76567a9ffde00 #x-123456789abcdef #x-fedcba987654321fedcba987654321fedcba)
+
+(logop-tester logior "+fix | 0" #x123456 #x123456 0)
+(logop-tester logior "+big | 0" #x1234567812345678 #x1234567812345678 0)
+(logop-tester logior "+fix | -1" -1 #x123456 -1)
+(logop-tester logior "+big | -1" -1 #x1234567812345678 -1)
+(logop-tester logior "+fix | +fix" #xee77 #xaa55 #x6666)
+(logop-tester logior "+fix | +big" #x666666ee77 #xaa55 #x6666666666)
+(logop-tester logior "+big | +fix" #xaa55aa77ee #xaa55aa55aa #x6666)
+(logop-tester logior "+big | +big" #xee77ee77ee #xaa55aa55aa #x6666666666)
+(logop-tester logior "+big | +big" #xfedcba987654321fedcba9a76567a9ffddff #x123456789abcdef #xfedcba987654321fedcba987654321fedcba)
+(logop-tester logior "+fix | -fix" #x-4421 #xaa55 #x-6666)
+(logop-tester logior "+fix | -big" #x-6666664421 #xaa55 #x-6666666666)
+(logop-tester logior "+big | -fix" #x-2246 #xaa55aa55aa #x-6666)
+(logop-tester logior "+big | -big" #x-4422442246 #xaa55aa55aa #x-6666666666)
+(logop-tester logior "+big | -big" #x-fedcba987654321fedcba884200020541011 #x123456789abcdef #x-fedcba987654321fedcba987654321fedcba)
+(logop-tester logior "-fix | +fix" #x-8811 #x-aa55 #x6666)
+(logop-tester logior "-fix | +big" #x-8811 #x-aa55 #x6666666666)
+(logop-tester logior "-big | +fix" #x-aa55aa118a #x-aa55aa55aa #x6666)
+(logop-tester logior "-big | +big" #x-881188118a #x-aa55aa55aa #x6666666666)
+(logop-tester logior "-big | +big" #x-20002488010145 #x-123456789abcdef #xfedcba987654321fedcba987654321fedcba)
+(logop-tester logior "-fix | -fix" #x-2245 #x-aa55 #x-6666)
+(logop-tester logior "-fix | -big" #x-2245 #x-aa55 #x-6666666666)
+(logop-tester logior "-big | -fix" #x-4422 #x-aa55aa55aa #x-6666)
+(logop-tester logior "-big | -big" #x-2244224422 #x-aa55aa55aa #x-6666666666)
+(logop-tester logior "-big | -big" #x-103454301aacca9 #x-123456789abcdef #x-fedcba987654321fedcba987654321fedcba)
 
 ;; regression test for incorrect check till 0.9.1
 (test* "lognot (error)" (test-error) (lognot 1/2))
@@ -1916,9 +1910,9 @@
     (loop (+ b 1) (+ b b 1) (+ b b 3) (+ n 1))))
 
 (test* "logbit?" '(#f #t #t #f #t #f #f)
-              (map (lambda (i) (logbit? i #b10110)) '(0 1 2 3 4 5 6)))
+              (map (^i (logbit? i #b10110)) '(0 1 2 3 4 5 6)))
 (test* "logbit?" '(#f #t #f #t #f #t #t)
-              (map (lambda (i) (logbit? i #b-10110)) '(0 1 2 3 4 5 6)))
+              (map (^i (logbit? i #b-10110)) '(0 1 2 3 4 5 6)))
 
 (test* "copy-bit" #b11010110
       (copy-bit 4 #b11000110 #t))
@@ -1933,11 +1927,11 @@
       (bit-field #b1101101010 4 9))
 
 (test* "copy-bit-field" #b1101100000
-      (copy-bit-field #b1101101010 0 4 0))
+      (copy-bit-field #b1101101010 0 0 4))
 (test* "copy-bit-field" #b1101101111
-      (copy-bit-field #b1101101010 0 4 -1))
+      (copy-bit-field #b1101101010 -1 0 4))
 (test* "copy-bit-field" #b1111111111101010
-      (copy-bit-field #b1101101010 5 16 -1))
+      (copy-bit-field #b1101101010 -1 5 16))
 
 (test* "integer-length" 8 (integer-length #b10101010))
 (test* "integer-length" 4 (integer-length #b1111))
@@ -2067,12 +2061,25 @@
 (test* "exact-integer-sqrt 1.0" (test-error) (exact-integer-sqrt 1.0))
 (test* "exact-integer-sqrt 1/4" (test-error) (exact-integer-sqrt 1/4))
 
+;; try to cover various paths in sqrt of exact numbers
 (test* "sqrt, exact" 0 (sqrt 0) eqv?)
 (test* "sqrt, exact" 4 (sqrt 16) eqv?)
+(test* "sqrt, exact" (expt 2 64) (sqrt (expt 2 128)) eqv?)
+
 (test* "sqrt, inexact" 4.0 (sqrt 16.0) eqv?)
 (test* "sqrt, inexact" +4.0i (sqrt -16.0) eqv?)
+(test* "sqrt, inexact" (%sqrt (- (expt 2 64) 1))
+       (sqrt (- (expt 2 64) 1)) eqv?)
+
 (test* "sqrt, exact" 1/4 (sqrt 1/16) eqv?)
+(test* "sqrt, exact" (/ 1 (expt 2 64)) (sqrt (/ 1 (expt 2 128))) eqv?)
+(test* "sqrt, exact" (/ (expt 2 64) 3) (sqrt (/ (expt 2 128) 9)) eqv?)
+(test* "sqrt, exact" (/ (expt 2 64) (expt 3 30))
+       (sqrt (/ (expt 2 128) (expt 3 60))) eqv?)
+
 (test* "sqrt, inexact" 0.25 (sqrt (exact->inexact 1/16)) eqv?)
+(test* "sqrt, inexact" (%sqrt (/ (- (expt 2 64) 1) (expt 3 30)))
+       (sqrt (/ (- (expt 2 64) 1) (expt 3 30))) eqv?)
 
 ;;------------------------------------------------------------------
 (test-section "posix math functions")
@@ -2097,7 +2104,7 @@
 ;; system's tgamma and lgamma.
 '(let ()
   (define (test-gamma name fn0 fn1)
-    (test* #`"alt-,name" #f
+    (test* #"alt-~name" #f
            (any (^[x] (let* ([y0 (fn0 x)]
                              [y1 (fn1 x)]
                              [e  (/ (abs (- y0 y1)) y0)])
@@ -2112,6 +2119,40 @@
               (with-module gauche.internal %lgamma)
               (with-module gauche.internal %alt-lgamma))
   )
+
+;; log on huge number - naive use of Scm_GetDouble overflows
+(let-syntax ([log-tester
+              (syntax-rules ()
+                [(_ input)
+                 (let1 factor (expt 2 (integer-length input))
+                   (test* (write-to-string '(log input))
+                          (+ (log factor) (log (/ input factor)))
+                          (log input)))])])
+  (log-tester (expt 2 2048))
+  (log-tester (- (expt 2 2048)))
+  (log-tester (+ (expt 3 2048) (expt 3 2047)))
+  (log-tester (- (expt 7 7715)))
+  )
+
+;;------------------------------------------------------------------
+(test-section "sinpi, cospi, tanpi")
+
+(let ()
+  (define (check trig trig-pi)
+    (let loop ([x -4])
+      (if (> x 4)
+        #f
+        (let ([t0 (trig (* x 3.141592653589793))]
+              [t1 (trig-pi x)])
+          (if (or (and (> (abs t0) 1e15)
+                       (> (abs t1) 1e15))
+                  (< (abs (- t0 t1)) 1e-10))
+            (loop (+ x 1/16))
+            `(((,trig (* pi ,x)) ,t0)
+              ((,trig-pi ,x) ,t1)))))))
+  (test* "sin vs sinpi" #f (check %sin %sinpi))
+  (test* "cos vs cospi" #f (check %cos %cospi))
+  (test* "tan vs tanpi" #f (check %tan %tanpi)))
 
 ;;------------------------------------------------------------------
 (test-section "ffx optimization")
@@ -2194,17 +2235,17 @@
 ;; may reorder or change operations based on the assumption of the
 ;; normal definition of those arithmetic operations.
 
-(define-method object-+ ((a <string>) b) #`",|a|+,|b|")
-(define-method object-+ (a (b <string>)) #`",|a|+,|b|")
-(define-method object-- ((a <string>) b) #`",|a|-,|b|")
-(define-method object-- (a (b <string>)) #`",|a|-,|b|")
-(define-method object-* ((a <string>) b) #`",|a|*,|b|")
-(define-method object-* (a (b <string>)) #`",|a|*,|b|")
-(define-method object-/ ((a <string>) b) #`",|a|/,|b|")
-(define-method object-/ (a (b <string>)) #`",|a|/,|b|")
+(define-method object-+ ((a <string>) b) #"~|a|+~|b|")
+(define-method object-+ (a (b <string>)) #"~|a|+~|b|")
+(define-method object-- ((a <string>) b) #"~|a|-~|b|")
+(define-method object-- (a (b <string>)) #"~|a|-~|b|")
+(define-method object-* ((a <string>) b) #"~|a|*~|b|")
+(define-method object-* (a (b <string>)) #"~|a|*~|b|")
+(define-method object-/ ((a <string>) b) #"~|a|/~|b|")
+(define-method object-/ (a (b <string>)) #"~|a|/~|b|")
 
-(define-method object-- ((a <string>)) #`"-,|a|")
-(define-method object-/ ((a <string>)) #`"/,|a|")
+(define-method object-- ((a <string>)) #"-~|a|")
+(define-method object-/ ((a <string>)) #"/~|a|")
 
 (test* "object-+" "a+b" (+ "a" "b"))
 (test* "object-+" "a+b" (+ "a" 'b))

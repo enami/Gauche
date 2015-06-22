@@ -1,7 +1,7 @@
 ;;;
 ;;; parse.scm - utilities to parse input
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -43,10 +43,8 @@
 ;; at any time.)
 
 (define-module text.parse
-  (use srfi-1)
   (use srfi-13)
   (use srfi-14)
-  (use gauche.experimental.lamb)
   (use util.match)
   (export find-string-from-port?
           assert-curr-char
@@ -271,15 +269,11 @@
   (next-token-of/common (cut pred char-list <>) port))
 
 
-;; read-line is built in Gauche.
+;; read-line is built-in.
 
-;; READ-STRING <n> :optional <port>
+;; this is slightly different from built-in read-string
 (define (read-string n :optional (port (current-input-port)))
-  (define o (open-output-string :private? #t))
-  (let loop ((i 0))
-    (if (>= i n)
-      (get-output-string o)
-      (let1 c (read-char port)
-        (if (eof-object? c)
-          (get-output-string o)
-          (begin (write-char c o) (loop (+ i 1))))))))
+  (let1 s ((with-module gauche read-string) n port)
+    (if (eof-object? s)
+      ""
+      s)))

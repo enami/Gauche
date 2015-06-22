@@ -11,6 +11,12 @@
 * A common job descriptor for control modules::  control.job
 * Thread pools::                control.thread-pool
 * Password hashing::            crypt.bcrypt
+* Cache::                       data.cache
+* Heap::                        data.heap
+* Queue::                       data.queue
+* Random data generators::      data.random
+* Sparse data containers::      data.sparse
+* Trie::                        data.trie
 * Database independent access layer::  dbi
 * Generic DBM interface::       dbm
 * File-system dbm::             dbm.fsdbm
@@ -55,16 +61,14 @@
 * Unicode utilities::           text.unicode
 * Combination library::         util.combinations
 * Message digester framework::  util.digest
+* Calculate dominator tree::    util.dominator
 * Determine isomorphism::       util.isomorph
 * The longest common subsequence::  util.lcs
 * Pattern matching::            util.match
-* Queue::                       util.queue
 * Red black tree::              util.rbtree
 * SLIB-compatible record type::  util.record
 * Relation framework::          util.relation
-* Sparse data containers::      util.sparse
 * Stream library::              util.stream
-* Trie::                        util.trie
 * Topological sort::            util.toposort
 * CGI Utility::                 www.cgi
 * CGI testing::                 www.cgi.test
@@ -1516,7 +1520,7 @@ better to give some time for the thread to finish the executing jobs.
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Password hashing, Database independent access layer, Thread pools, Library modules - Utilities
+@node Password hashing, Cache, Thread pools, Library modules - Utilities
 @section @code{crypt.bcrypt} - Password hashing
 @c NODE パスワードハッシュ, @code{crypt.bcrypt} - パスワードハッシュ
 
@@ -1648,8 +1652,2696 @@ bcryptアルゴリズムでは少なくとも16バイトの長さが必要です
 @end defun
 
 @c ----------------------------------------------------------------------
+@node Cache, Heap, Password hashing, Library modules - Utilities
+@section @code{data.cache} - Cache
+@c NODE キャッシュ, @code{data.cache} - キャッシュ
 
-@node Database independent access layer, Generic DBM interface, Password hashing, Library modules - Utilities
+@deftp {Module} data.cache
+@mdindex data.cache
+A cache is similar to a dictionary, associating keys to values,
+but its entries may dissapear according to the policy of the cache
+algorithm.  This module defines
+a common protocol for cache datatypes, and also provides several
+typical cache implementations.
+@end deftp
+
+@subheading Examples
+
+Let's start from simple examples to get the idea.
+
+Suppose you want to read files frequently and you want to
+cache the frequently read files.  The following code defines
+a cached version of @code{file->string}:
+
+@example
+(use data.cache)
+(use file.util)
+
+(define file->string/cached
+  (let1 file-cache (make-lru-cache 10 :comparator string-comparator)
+    (^[path] (cache-through! file-cache path file->string))))
+@end example
+
+The procedure closes a variable @code{file-cache},
+which is an LRU (least recently used) cache that associates
+string pathnames to the file contents.
+The actual logic is in @code{cache-through!}, which first consults the
+cache if it has an entry for the @code{path}.  If the cache has
+the entry, its value (the file content) is returned.  If not,
+it calls @var{file->string} with the @var{path} to fetch the file content,
+register it to the cache, and return it.  The capacity of cache is
+set to 10 (the first argument of @code{make-lru-cache}), so when the
+11th file is read, the least recently used file will be purged from the
+cache.
+
+The effect of cache isn't very visible in the above example.  You
+can insert some print stubs to see the cache is actually in action:
+
+@example
+(define file->string/cached
+  (let1 file-cache (make-lru-cache 10 :comparator string-comparator)
+    (^[path]
+      (print #"file->string/cached called on ~path")
+      (cache-through! file-cache path
+                      (^[path]
+                        (print #"cache miss.  fetching ~path")
+                        (file->string path))))))
+@end example
+
+Caveat: A cache itself isn't MT-safe.  If you are using it in
+multithreaded programs, you have to wrap it with an atom
+(@xref{Synchronization primitives}):
+
+@example
+(use data.cache)
+(use file.util)
+(use gauche.threads)
+
+(define file->string/cached
+  (let1 file-cache (atom (make-lru-cache 10 :comparator string-comparator))
+    (^[path]
+      (atomic file-cache (cut cache-through! <> path file->string)))))
+@end example
+
+
+@subheading Common properties of caches
+
+A cache of any kind has a comparator and a storage.
+The comparator is used to compare keys; in the example above,
+we use @code{string-comparator} to compare string pathnames
+(@xref{Basic comparators}, for more about comparators).
+
+The storage is a dictionary that maps keys to internal
+structures of the cache.  By default, a hashtable is
+created automatically using the given comparator (or,
+if a comparator is omitted, using @code{default-comparator}).
+The comparator must have hash function.
+
+Alternatively, you can give a pre-filled dictionary
+(copied from another instance of the same kind of cache) 
+to start cache with some data already in it.  Note that
+what the cache keeps in the dictionary totally depends on the
+cache algorithm, so you can't just pass a random dictionary;
+it has to be created by the same kind of cache.
+If you pass in the storage, the comparator is taken from it.
+
+Thus, the comparator constructors uniformly take keyword arguments
+@code{comparator} and @code{storage}; you can specify either one,
+or omit both to use the defaults.
+
+@subheading Predefined caches
+
+For @code{storage} and @code{comparator} keyword arguments, see above.
+
+@defun make-fifo-cache capacity :key storage comparator
+Creates and returns a FIFO (first-in, first-out) cache that can
+hold up to @var{capacity} entries.
+If the number of entries exceeds @var{capacity}, the oldest entry
+is removed.
+@end defun
+
+@defun make-lru-cache capacity :key storage comparator
+Creates and returns an LRU (least recently used) cache that can
+hold up to @var{capacity} entries.
+If the number of entries exceeds @var{capacity}, the least recently used
+entry is removed.
+@end defun
+
+@defun make-ttl-cache timeout :key storage comparator timestamper
+Creates and returns a TTL (time to live) cache with the timeout value
+@var{timeout}.
+Each entry is timestamped when it's inserted, and it is removed
+when the current time passes @var{timeout} unit from the timestamp.
+The actual entry removal is done when the cache is accessed.
+
+By default, the Unix system time (seconds from Epoch) is used
+as a timestamp, and @var{timeout} is in seconds.  It may not be
+fine-grained enough if you add multiple entries in shorter intervals
+than seconds.   You can customize
+it by giving a thunk to @var{timestamper}; the thunk is called to
+obtain a timestamp, which can be any monotonically increasing real number.
+If yuo give @var{timestamper}, the unit of @var{timeout} value should
+be the same as whatever @var{timestamper} returns.
+@end defun
+
+@defun make-ttlr-cache timeout :key storage comparator timestamper
+A variation of TTL cache, but the entry's timestamp is updated
+(refreshed) whenever the entry is read.  Hence we call it TTL with refresh
+(TTLR).  But you can also think it as a variation of LRU cache with
+timeout.
+
+The unit of timeout, and the role of @var{timestamper} argument, are
+the same as @code{make-ttl-cache}.
+@end defun
+
+
+@subheading Common operations of caches
+
+The following APIs are for the users of a cache.
+
+@defun cache-lookup! cache key :optional default
+Look for an entry with @var{key} in @var{cache}, and returns its
+value if it exists.  If there's no entry, the procedure returns @var{default}
+if it is provided, or throws an error otherwise.
+
+Some types of cache algorithms update @var{cache} by this operation, hence
+the bang is in the name.
+@end defun
+
+@defun cache-through! cache key value-fn
+Look for an entry with @var{key} in @var{cache}, and returns its
+value if it exists.  If there's no entry, a procedure @var{value-fn}
+is called with @var{key} as the argument, and its return value
+is inserted into @var{cache} and also returned.
+@end defun
+
+@deffn {Generic function} cache-write! cache key value
+This inserts association of @var{key} and @var{value} into @var{cache}.
+If there's already an entry with @var{key}, it is overwritten.
+Otherwise a new entry is created.
+
+The same effect can be achieved by calling @code{cache-evict!} then
+@code{cache-through!}, but cache algorithms may provide efficient
+way through this method.
+@end deffn
+
+@deffn {Generic function} cache-evict! cache key
+Removes an entry with @var{key} from @var{cache}, if it exists.
+@end deffn
+
+@deffn {Generic function} cache-clear! cache
+Removes all entries from @var{cache}.
+@end deffn
+
+
+@subheading Implementing a cache algorithm
+
+Each cache algorithm must define a class inheriting @code{<cache>},
+and implement the following two essential methods.
+The higher-level API calls them.
+
+@deffn {Generic function} cache-check! cache key
+Looks for an entry with @var{key} in @var{cache}.
+If it exists, returns a pair of @var{key} and the associated value.
+Otherwise, returns @code{#f}.  It may update the cache,
+for example, the timestamp of the entry for being read.
+@end deffn
+
+@deffn {Generic function} cache-register! cache key value
+Add an entry with @var{key} and associated @var{value} into @var{cache}.
+This is called after @var{key} is confirmed not being in @var{cache}.
+@end deffn
+
+Additionally, the implementation should consider the following points.
+
+@itemize @bullet
+@item
+The initialize method must call @code{next-method} first, which sets up
+the @code{comparator} and @code{storage} slots.  You should check
+if @code{storage} has pre-filled entries, and if so, set up other
+internal structures appropriately.
+@item
+The default methods of @code{cache-evict!} and @code{cache-clear!} only
+takes care of the storage of the cache.  You should implement them
+if your auxiliary structure needs to be taken care of.
+@item
+The default method of @code{cache-write!} is just @code{cache-evict!}
+followed by @code{cache-register!}.  You may provide alternative method
+if you can do it more efficiently, which is often the case.
+@end itemize
+
+There are several procedures that help implementing cache subclasses:
+
+@defun cache-comparator cache
+@defunx cache-storage cache
+Returns the comparator and the storage of the cache, respectively.
+@end defun
+
+Typical caches may be constructed with a storage (dictionary) and
+a queue, where the storage maps keys to @code{(<n> . <value>)},
+and queues holds @code{(<key> . <n>)}, @code{<n>} being a number
+(timestamp, counter, etc.)  Here are some common operations work
+on this queue-and-dictionary scheme:
+
+@defun cache-populate-queue! queue storage
+You can call this in the @code{initialize} method to set up the
+queue.  This procedure walks storage to construct @code{(<key> . <n>)}
+pairs, sorts it in increasing order of @code{<n>}, and pushes them
+into the queue.
+@end defun
+
+@defun cache-compact-queue! queue storage
+The queue may contain multiple pairs with the same key.  Sometimes the
+queue gets to have too many duplicated entries (e.g. the same entry
+is read repeatedly).  This scans the queue and removes duplicated entries
+but the up-to-date one.  After this operation, the length of the queue
+and the number of entries in the storage should match.
+@end defun
+
+@defun cache-renumber-entries! queue storage
+This procedure renumbers @code{<n>}s in the queue and the storage
+starting from 0, without changing their order, and returns the
+maximum @code{<n>}.  The duplicated entries in the queue is removed
+as in @code{cache-compact-queue!}.
+
+When you're using monotonically increasing counter for @code{<n>} and
+you don't want @code{<n>} to get too big (i.e. bignums), you can
+call this procedure occasionally to keep @code{<n>}'s in reasonable
+range.
+@end defun
+
+
+@c ----------------------------------------------------------------------
+@node Heap, Queue, Cache, Library modules - Utilities
+@section @code{data.heap} - Heap
+@c NODE ヒープ, @code{data.heap} - ヒープ
+
+@deftp {Module} data.heap
+@mdindex data.heap
+@c EN
+A heap is a data container that allows efficient retrieval of
+the minimum or maximum entry.  Unlike a @code{<tree-map>}
+(@xref{Treemaps}), which always keeps all entries in order,
+a heap only cares the minimum or the maximum of the current set;
+the other entries are only partially ordered, and reordered
+when the minimu/maximum entry is removed.  Hence it is more
+efficient than a treemap if all you need is minimum/maximum value.
+Besides binary heaps can store entries in packed, memory-efficient way.
+@c JP
+ヒープは最小値また最大値を効率よく取り出せるデータコンテナです。
+@code{<tree-map>}は全てのエントリの順序を常に保っていますが (@ref{Treemaps}参照)、
+ヒープは最小値/最大値以外については部分的にしか順序を保持していません。
+最小値/最大値が取り除かれる時点で内部を再構成して、次の最小値/最大値を見つけます。
+したがって、最小値/最大値のみが必要な場合、treemapより効率が良いです。
+さらに、バイナリヒープでは値をメモリ効率の良い詰められた形で保持できます。
+@c COMMON
+@end deftp
+
+@deftp {Class} <binary-heap>
+@clindex binary-heap
+@c EN
+An implementation of a binary heap.  Internally it uses min-max heap,
+so that you can find both minimum and maximum value in O(1).
+Pushing a new value and popping the minimum/maximum value are both O(log n).
+
+It also stores its values in a flat vector, a lot more compact
+than a general tree structure that needs a few pointers per node.
+By default it uses a sparse vector for the backing storage, allowing
+virtually unlimited capacity (@xref{Sparse vectors}).
+But you can use an ordinal vector
+or a uniform vector as a backing storage instead.
+@c JP
+バイナリヒープの実装です。内部的にmin-maxヒープを使っており、
+最大値と最小値のどちらにもO(1)でアクセスできます。新たな値をpushしたり、
+最大最小値をpopするのはO(log n)です。
+
+バイナリヒープはまた、値をフラットなベクタに格納します。一般的なツリー構造が
+ノードあたりいくつかのポインタを必要とするのに比べずっとコンパクトです。
+デフォルトでは疎なベクタ (@ref{Sparse vectors}) がバッキングストレージとして使われ、
+事実上上限なしでデータを格納できますが、通常のベクタやユニフォームベクタを
+バッキングストレージとして指定することもできます。
+@c COMMON
+
+@c EN
+A binary heap isn't MT-safe structure; you must put it in atom
+or use mutexes if multiple threads can access to it
+(@xref{Synchronization primitives}).
+@c JP
+バイナリヒープはスレッドセーフではありません。複数のスレッドでアクセスする
+可能性がある場合は、atomに入れるか、mutexを適切に使ってください(@ref{Synchronization primitives}参照)。
+@c COMMON
+@end deftp
+
+@defun make-binary-heap :key comparator storage key
+@c EN
+Creates and returns a new binary heap.
+
+The @var{comparator} keyword argument specifies how to compare the
+entries.  It must have comparison procedure.  The default is
+@code{default-comparator}.  @xref{Basic comparators}, for the details of
+comparators.
+
+The @var{storage} keyword argument gives alternative
+backing storage.  It must be either a vector, a uniform vector,
+or an instance of a sparse vector (@xref{Sparse vectors}).
+The default is an instance of @code{<sparse-vector>}.
+If you pass a vector or a uniform vector, it determines
+the maximum number of elements the heap can hold.
+The heap won't be extend the storage once it gets full.
+
+The @var{key} keyword argument must be a procedure; it is applied
+on each entry before comparison.  Using key procedure allows you to
+store auxiliary data other than the actual value to be compared.
+The following example shows the entries are compared by their @code{car}'s:
+@c JP
+新しいバイナリヒープを作って返します。
+
+@var{comparator}キーワード引数は、エントリの比較方法を指定する比較器です。
+比較手続きを持っていなければなりません。省略時は@code{default-comparator}が
+使われます。比較器について詳しくは@ref{Basic comparators}を参照してください。
+
+@var{storage}キーワード引数には、データの格納に使うデータ構造を渡します。引数は
+ベクタ、ユニフォームベクタ、あるいは疎ベクタ(@ref{Sparse vectors}参照)の
+インスタンスでなければなりません。省略時は@code{<sparse-vector>}の
+インスタンスが使われます。
+
+ベクタまたはユニフォームベクタを渡した場合、そのベクタの大きさが
+ヒープが格納できる要素の最大数を決めます。
+それが一杯になった時に自動的に拡張されることはありません。
+
+@var{key}キーワード引数は手続きでなければならず、要素の比較の前に各要素に適用されます。
+この手続きを使って、実際に比較される値に付随するデータを格納しておくことができます。
+次の例では、データの@code{car}を使って比較しています。
+@c COMMON
+
+@example
+(define *heap* (make-binary-heap :key car))
+(binary-heap-push! *heap* (cons 1 'a))
+(binary-heap-push! *heap* (cons 3 'b))
+(binary-heap-push! *heap* (cons 1 'c))
+
+(binary-heap-find-min *heap*) @result{} (1 . c)
+(binary-heap-find-max *heap*) @result{} (3 . b)
+@end example
+@end defun
+
+@defun build-binary-heap storage :key comparator key num-entries
+@c EN
+Create a heap from the data in @var{storage}, and returns it.
+(Sometimes this operation is called @emph{heapify}.)
+This allows you to create a heap without allocating a new storage.
+The @var{comparator} and @var{key} arguments are the same as
+@code{make-binary-heap}.
+
+@var{Storage} must be either a vector, a uniform vector,
+or an instance of a sparse vector.  The storage is modified
+to satisfy the heap property, and will be used as the backing
+storage of the created heap.  Since the storage will be owned
+by the heap, you shouldn't modify the storage later.
+
+The storage supposed to have keys from index 0 below
+@var{num-entries}.
+If @var{num-entries} is omitted or @code{#f}, entire vector or
+uniform vector, or up to @code{sparse-vector-num-entries} on
+the sparse vector, is heapified.
+@c JP
+@var{storage}に入っているデータを使ってヒープを作り返します。
+(この操作はしばしばヒープ化(@emph{heapify})と呼ばれます。)
+データ格納場所を新たにアロケートせずにヒープを作ることが可能です。
+@var{comparator}および@var{key}引数は@code{make-binary-heap}と同じです。
+
+@var{storage}はベクタ、ユニフォームベクタ、疎ベクタのインスタンスでなければ
+なりません。このデータはヒープの属性を満たすために変更され、さらには
+作られたヒープのデータ格納場所となります。ヒープの一部になるので、
+@var{storage}を後から変更してはなりません。
+
+@var{storage}の要素のうち、先頭から@var{num-entries}までの要素が
+有効であるとしてヒープ化されます。@var{num-entries}が省略されるか
+@code{#f}であれば、ベクタおよびユニフォームベクタはその全てが、
+疎ベクタは@code{sparse-vector-num-entries}までの要素がヒープ化されます。
+@c COMMON
+@end defun
+
+@defun binary-heap-copy heap
+@c EN
+Copy the heap.  The backing storage is also copied.
+@c JP
+ヒープをコピーして返します。データ格納場所も全てコピーされます。
+@c COMMON
+@end defun
+
+@defun binary-heap-clear! heap
+@c EN
+Empty the heap.
+@c JP
+ヒープを空にします。
+@c COMMON
+@end defun
+
+@defun binary-heap-num-entries heap
+@c EN
+Returns the current number of entries in the heap.
+@c JP
+ヒープ中の要素数を返します。
+@c COMMON
+@end defun
+
+@defun binary-heap-empty? heap
+@c EN
+Returns @code{#t} if the heap is empty, @code{#f} otherwise.
+@c JP
+ヒープが空なら@code{#t}を、そうでなければ@code{#f}を返します。
+@c COMMON
+@end defun
+
+@defun binary-heap-push! heap item
+@c EN
+Insert @var{item} into the @var{heap}.  If the heap is already full,
+an error is raised.
+@c JP
+@var{item}を@var{heap}に挿入します。ヒープが既に一杯であった場合はエラーが通知されます。
+@c COMMON
+@end defun
+
+@defun binary-heap-find-min heap :optional fallback
+@defunx binary-heap-find-max heap :optional fallback
+@c EN
+Returns the minimum and maximum entry of the heap, respectively.
+The heap will be unmodified.
+
+If the heap is empty, @var{fallback} is returned when it is provided,
+or an error is signaled.
+@c JP
+それぞれヒープ中の最小および最大の要素を返します。ヒープ自体は変更されません。
+
+ヒープが空の場合、@var{fallback}が与えられればそれが返され、
+そうでなければエラーが通知されます。
+@c COMMON
+@end defun
+
+@defun binary-heap-pop-min! heap
+@defunx binary-heap-pop-max! heap
+@c EN
+Removes the minimum and maximum entry of the heap and returns it,
+respectively.  If the heap is empty, an error is signaled.
+@c JP
+それぞれヒープから最小および最大の要素を取り除き、取り除いた要素を返します。
+ヒープが空ならエラーが通知されます。
+@c COMMON
+@end defun
+
+@c EN
+The following procedures are not heap operations, but provided
+for the convenience.
+@c JP
+以下の手続きは一般的なデータ構造としてのヒープの操作には含まれませんが、
+便利なので用意してあります。
+@c COMMON
+
+@defun binary-heap-swap-min! heap item
+@defunx binary-heap-swap-max! heap item
+@c EN
+These are operationally equivalent to the followings, respectively:
+@c JP
+これらはそれぞれ以下のコードと操作的には等価です。
+@c COMMON
+
+@example
+(begin0 (binary-heap-pop-min! heap)
+  (binary-heap-push! heap item))
+
+(begin0 (binary-heap-pop-max! heap)
+  (binary-heap-push! heap item))
+@end example
+
+@c EN
+However, those procedures are slightly efficient, 
+using heap property maintaining procedure only once per function call.
+@c JP
+ただしこれらの手続きは、
+ヒープ特性を維持するための手続きを呼び出し毎に1回しか行わないので、
+やや効率的です。
+@c COMMON
+@end defun
+
+
+
+@defun binary-heap-find heap pred
+@c EN
+Returns an item in the heap that satisfies @var{pred}.
+If there are more than one item that satisfy @var{pred},
+any one of them can be returned.  If no item satisfy @var{pred},
+@code{#f} is returned.
+@c JP
+ヒープの中で、述語@var{pred}を満たす要素を返します。@var{pred}を満たす要素が
+複数ある場合にどれが返るかは不定です。@var{pred}を満たす要素が無ければ
+@code{#f}が返ります。
+@c COMMON
+@end defun
+
+@defun binary-heap-remove! heap pred
+@c EN
+Remove all items in the heap that satisfy @var{pred}.
+@c JP
+@var{pred}を満たす要素を全てヒープから取り除きます。
+@c COMMON
+@end defun
+
+@defun binary-heap-delete! heap item
+@c EN
+Delete all items in the heap that are equal to @var{item},
+in terms of the heap's comparator and key procedure.
+
+Note that the key procedure is applied to @var{item} as well
+before comparison.
+@c JP
+@var{item}に等しい要素を全てヒープから取り除きます。「等しい」の判定には
+ヒープの比較器およびキー手続きが使われます。
+
+キー手続きは、比較の前に@var{item}にも適用されます。
+@c COMMON
+@end defun
+
+@c ----------------------------------------------------------------------
+@node Queue, Random data generators, Heap, Library modules - Utilities
+@section @code{data.queue} - Queue
+@c NODE キュー, @code{data.queue} - キュー
+
+@deftp {Module} data.queue
+@mdindex data.queue
+@c EN
+Provides a queue (FIFO).  You can create a simple queue,
+which is lightweight but not thread-safe, or an MTqueue,
+a thread-safe queue.  Basic queue operations work on
+both type of queues.  When an mtqueue is passed to the
+procedures listed in this section, each operation is
+done in atomic way, unless otherwise noted.
+
+There are also a set of procedures for mtqueues that
+can be used for thread synchronization; for example,
+you can let the consumer thread block if an
+mtqueue is empty, and/or the producer thread block if the number
+of items in the mtqueue reaches a specified limit.
+Using these procedures allows the program to use an mtqueue
+as a @emph{channel}.
+
+The simple queue API is a superset of SLIB's queue implementation.
+@c JP
+キュー(FIFO)機能を提供します。
+極めて軽量ですがスレッドセーフでないシンプルなキューと、
+スレッドセーフなmtqueueがあります。基本的なキュー操作手続きは
+どちらのキューに対しても使うことができます。本節で説明されている
+手続きをmtqueueに適用した場合、特に断りが無い限り、操作は
+アトミックに行われます。
+
+また、スレッド間同期に使えるmtqueue用の手続きも用意されています。
+例えばキューが空の時に読み出しスレッドをブロックさせたり
+キューの長さが指定値に達した場合に書き込みスレッドをブロックさせることができ、
+いわゆる「チャネル」としてキューを使うことができます。
+
+シンプルキューのAPIはSLIBのキュー実装の上位互換になっています。
+@c COMMON
+@end deftp
+
+@deftp {Class} <queue>
+@clindex queue
+@c EN
+A class of simple queue.
+@c JP
+シンプルなキューのクラスです。
+@c COMMON
+
+@defivar {<queue>} length
+@c EN
+A read-only slot that returns the number of items in the queue.
+@c JP
+キュー中の要素の数を返す、読み取り専用のスロットです。
+@c COMMON
+@end defivar
+@end deftp
+
+@deftp {Class} <mtqueue>
+@clindex mtqueue
+@c EN
+A class of mtqueue.  Inherits @code{<queue>}.
+@c JP
+mtqueueのクラスです。@code{<queue>}を継承しています。
+@c COMMON
+
+@defivar {<mtqueue>} max-length
+@c EN
+The upper bound of the number of items in the queue.
+@c JP
+キュー中の要素数の上限を示します。
+@c COMMON
+
+@c EN
+If this slot is zero, the queue cannot hold any items, but
+works as a synchronization device.
+A writer will block until a reader appears to take the item;
+a reader will block until a writer appears to give the item.
+@c JP
+このスロットが0の場合、キューは要素を中に持つことはできませんが、同期デバイスとして動作します。
+書き込みスレッドは、その要素を受け取る読み出しスレッドが現れるまでブロックし、
+読み出しスレッドは、要素を渡してくれる書き込みスレッドが現れるまでブロックします。
+@c COMMON
+@end defivar
+@end deftp
+
+@defun make-queue
+@c EN
+Creates and returns an empty simple queue.
+@c JP
+空のシンプルなキューを作って返します。
+@c COMMON
+@end defun
+
+@defun make-mtqueue &key max-length
+@c EN
+Creates and returns an empty mtqueue.  When an integer is given
+to the keyword argument @var{max-length}, it is used to
+initialize the @code{max-length} slot.
+@c JP
+空のmtqueueを作って返します。整数が@var{max-length}に与えられた場合は、
+それが@code{max-length}スロットの値となります。
+@c COMMON
+@end defun
+
+@defun queue? obj
+@c EN
+Returns @code{#t} if @var{obj} is a queue (either a simple queue
+or an mtqueue).
+@c JP
+@var{obj}がキューであれば(シンプルなキューでもmtqueueでも)@code{#t}を返します。
+@c COMMON
+@end defun
+
+@defun mtqueue? obj
+@c EN
+Returns @code{#t} if @var{obj} is an mtqueue.
+@c JP
+@var{obj}がmtqueueであれば@code{#t}を返します。
+@c COMMON
+@end defun
+
+@defun queue-empty? queue
+@c EN
+Returns @code{#t} if @var{obj} is an empty queue.
+@c JP
+@var{obj}が空のキューであれば@code{#t}を返します。
+@c COMMON
+@end defun
+
+@defun queue-length queue
+@c EN
+Returns the number of the items in the queue.
+@c JP
+キューの中にある要素の数を返します。
+@c COMMON
+@end defun
+
+@defun mtqueue-max-length mtqueue
+@c EN
+Returns the maximum number of items the mtqueue can hold.
+If the queue doesn't have a limit, @code{#f} is returned.
+@c JP
+キューが保持できる要素の最大数を返します。限度がない場合は@code{#f}が返ります。
+@c COMMON
+@end defun
+
+@defun mtqueue-room mtqueue
+@c EN
+Returns the number of elements the mtqueue can accept at this moment
+before it hits its maximum length.   For example, if the queue
+already has the maximum number of elements, 0 is returned.
+If the queue doesn't have the limit, @code{+inf.0} is returned.
+@c JP
+保持できる最大容量に達するまであといくつ要素を受け入れることができるかを
+示す整数を返します。例えば、既にキューがいっぱいであれば0が返ります。
+キューに最大容量が設定されていなければ@code{+inf.0}が返ります。
+@c COMMON
+
+@c EN
+Note that even if this returns a non-zero finite value, subsequent 
+@code{enqueue!} may throw an error because of the queue being full.
+It's because another thread may put an item to the queue
+between this procedure call and @code{enqueue!}.  To avoid
+this situation, use @code{enqueue/wait!} to insert item
+to mtqueue with finite max-length.
+@c JP
+この手続きが0以外有限値を返した場合でも、続く@code{enqueue!}の呼び出し時点で
+キューがいっぱいになっている可能性があることに注意してください。
+この手続きの呼び出しと@code{enqueue!}の
+呼び出しの間に、他のスレッドがキューに要素を入れるかもしれないからです。
+有限長のmtqueueに確実に要素を挿入したい場合は@code{enqueue/wait!}を使ってください。
+@c COMMON
+@end defun
+
+
+@defun copy-queue queue
+@c EN
+Returns a copy of the queue.
+@c JP
+キューqueueのコピーを返します。
+@c COMMON
+@end defun
+
+@defun enqueue! queue obj :optional more-objs @dots{}
+@c EN
+Add @var{obj} to the end of @var{queue}.  You may give more than
+one object, and each of them are enqueued in order.
+@c JP
+@var{obj}をキュー@var{queue}の末尾に追加します。
+一つ以上の@var{obj}を与えることができ、その場合はそれらが順にenqueueされます。
+@c COMMON
+
+@c EN
+If @var{queue} is an mtqueue, all the objects are enqueued
+atomically; no other objects from other threads can be inserted
+between the objects given to a single @code{enqueue!} call.
+Besides, if the value of its @code{max-length} slot
+has a positive finite value, and adding @var{obj}s makes the number of
+elements in @var{queue} exceeds @code{max-length},
+an error is signaled and @var{queue} won't be modified.
+(If @code{max-length} is zero, this procedure always fail.
+Use @code{enqueue/wait!} below.)
+@c JP
+@var{queue}がmtqueueの場合、渡されたオブジェクト全ての追加は
+アトミックに行われます。すなわち、途中に別スレッドが要素を挿入する
+ことはありません。さらに、@code{max-length}スロットが正の有限値を
+持っており、この@code{enqueue!}の実行によってキューの要素数が
+@code{max-length}を越えることになる場合は、@var{queue}は
+変更されずエラーとなります。
+(@code{max-length}がゼロの場合、この手続きは常にエラーとなります。
+下に説明する@code{enqueue/wait!}を使ってください。)
+@c COMMON
+@end defun
+
+@defun queue-push! queue obj :optional more-objs @dots{}
+@c EN
+Add @var{obj} in front of @var{queue}.  You may give more than
+one object, and each of them are pushed in order.
+
+Like @code{enqueue!}, when @var{queue} is an mtqueue,
+all objects are added atomically, and the value of
+@code{max-length} slot is checked.  See @code{enqueue!} above
+for the details.
+@c JP
+@var{obj}をキュー@var{queue}の先頭に追加します。
+一つ以上の@var{obj}を与えることができ、その場合はそれらが順にpushされます。
+
+@code{enqueue!}と同様に、@var{queue}がmtqueueの場合は
+全てのオブジェクトはアトミックに追加され、また@code{max-length}の値も
+チェックされます。詳しくは上の@code{enqueue!}の説明を参照してください。
+@c COMMON
+@end defun
+
+@defun enqueue-unique! queue eq-proc obj :optional more-objs @dots{}
+@defunx queue-push-unique! queue eq-proc obj :optional more-objs @dots{}
+@c EN
+Like @code{enqueue!} and @code{queue-push!}, respectively, except that these
+don't modify @var{queue} if it already contains @var{obj}
+(elements are compared by two-argument procedure @var{eq-proc}).
+
+When @var{queue} is an mtqueue, all objects are added atomically,
+and the value of
+@code{max-length} slot is checked.  See @code{enqueue!} above
+for the details.
+@c JP
+@var{obj}が既に@var{queue}の中に含まれている場合には@var{queue}を
+変更しないことを以外には、@code{enqueue!}および@code{queue-push!}と同じ
+動作をします。@var{obj}が含まれているかどうかの検査は
+2引数の関数@var{eq-proc}で行います。
+
+@var{queue}がmtqueueの場合は
+全てのオブジェクトはアトミックに追加され、また@code{max-length}の値も
+チェックされます。詳しくは上の@code{enqueue!}の説明を参照してください。
+@c COMMON
+@end defun
+
+@defun dequeue! queue :optional fallback
+@defunx queue-pop! queue :optional fallback
+@c EN
+Take one object from the front of the queue @var{queue} and returns it.
+Both function works the same, but @code{queue-pop!} may be used to
+emphasize it works with @code{queue-push!}.
+
+If @var{queue} is empty, @var{fallback} is returned if given,
+otherwise an error is signaled.
+
+If @var{queue} is an mtqueue and its @code{max-length} is zero,
+the queue is always empty.  Use @code{dequeue/wait!} to use
+such a queue as an synchronization device.
+@c JP
+キュー@var{queue}の先頭からひとつ要素を取って返します。
+二つの手続きは全く同じ動作をします。@code{queue-pop!}は@code{queue-push!}と
+ペアで使われていることを強調したいときに使うと良いでしょう。
+
+キューが空の場合は、@var{fallback}が与えられていればそれが返され、
+そうでなければエラーが報告されます。
+
+キューがmtqueueでその@code{max-length}がゼロの場合、
+キューは常に空であるとみなされます。ゼロ長のキューを同期デバイスとして
+使う場合は@code{dequeue/wait!}を使ってください。
+@c COMMON
+@end defun
+
+@defun dequeue-all! queue
+@c EN
+Returns the whole content of the queue by a list, with emptying
+@var{queue}.   If @var{queue} is already empty, returns an empty list.
+See also @code{queue->list} below.
+@c JP
+キューの全ての内容をリストにして返します。キューそのものは空になります。
+キューが既に空の場合は空リストが返されます。
+下の@code{queue->list}も参照してください。
+@c COMMON
+@end defun
+
+@defun queue-front queue :optional fallback
+@defunx queue-rear queue :optional fallback
+@c EN
+Peek the head or the tail of the queue and returns the object, respectively.
+The queue itself is not modified.
+If @var{queue} is empty, @var{fallback} is returned if it is given,
+otherwise an error is signaled.
+@c JP
+キュー@var{queue}の先頭もしくは末尾の要素を返します。キューそのものは変更されません。
+キューが空の場合、@var{fallback}が与えられていればその値を返し、
+そうでなければエラーを報告します。
+@c COMMON
+@end defun
+
+@defun list->queue list :optional class :rest initargs
+@c EN
+Returns a new queue whose content is the elements in @var{list},
+in the given order.
+
+By default the created queue is a simple queue, but you
+can create mtqueue or instances of other subclasses of @code{<queue>}
+by giving the class to the optional @var{class} arguments.
+The optional @var{initargs} arguments are passed to the constructor
+of @var{class}.
+@c JP
+与えられたリスト@var{list}の各要素をその順で持つようなキューを作成して返します。
+
+デフォルトではシンプルキューが作られますが、@var{class}に@code{<class>}の
+サブクラスを渡すことで他のキュークラスのインスタンスを作ることができます。
+@var{initargs}は@var{class}のコンストラクタに渡されます。
+@c COMMON
+@end defun
+
+@defun queue->list queue
+@c EN
+Returns a list whose content is the items in the queue in order.
+Unlike @code{dequeue-all!}, the content of @var{queue} remains intact.
+
+In Gauche, @code{queue->list} copies the content of the queue to a
+freshly allocated list, while @code{dequeue-all!} doesn't copy but
+directly returns the queue's internal list.   There are some Scheme
+systems that has @code{queue->list} but doesn't guarantee the content
+is copied, so if you're planning to share the code among these
+implementations, it's better not to rely on the fact that
+@code{queue->list} copies the content.
+@c JP
+キュー@var{queue}の内容をリストにして返します。
+@code{dequeue-all!}と異なり、キューそのものの内容は変化しません。
+
+Gaucheでは@code{queue->list}は新しいリストをアロケートしてキューの
+内容をコピーします (@code{dequeue-all!}はコピーをせずにキューの内部の
+リストをそのまま返します)。組込みで@code{queue->list}を持っているScheme
+実装がいくつかありますが、その中には@code{queue->list}がキューの
+内容をコピーすることを保証していないものがあるので、それらの処理系と
+共有するコードでは@code{queue->list}がリストをコピーすることを
+あてにしない方が良いでしょう。
+@c COMMON
+@end defun
+
+@defun find-in-queue pred queue
+@c EN
+Returns the first item in @var{queue} that satisfies a
+predicate @var{pred}.  The order of arguments follows
+@code{find} (@xref{Other list procedures}).
+@c JP
+キュー内の要素のうち述語@var{pred}を満たす最初の要素を返します。
+引数の順序は@code{find}に揃えました (@ref{Other list procedures}参照)。
+@c COMMON
+@end defun
+
+@defun any-in-queue pred queue
+@c EN
+Like @code{any} in SRFI-1, apply @var{pred} on each item
+in @var{queue} until it evaluates true, and returns that
+true value (doesn't necessarily be @code{#t}).  If no
+items in the queue satisfies @var{pred}, @code{#f} is returned.
+@c JP
+SRFI-1の@code{any}のように、@var{queue}中の各要素に
+順に@var{pred}を適用し、それが真の値 (@code{#t}である必要はありません) に
+評価されたらその値を返します。@var{pred}を満たす要素が無ければ@code{#f}が
+返ります。
+@c COMMON
+@end defun
+
+@defun every-in-queue pred queue
+@c EN
+Like @code{every} in SRFI-1, apply @var{pred} on each item
+in @var{queue}.  If @var{pred} returns @code{#f}, stops
+iteration and returns @code{#f} immediately.
+Otherwise, returns the result of the application of
+@var{pred} on the last item of the queue.  If the queue
+is empty, @code{#t} is returned.
+@c JP
+SRFI-1の@code{every}のように、@var{queue}中の各要素に
+順に@var{pred}を適用し、それが@code{#f}を返したらすぐ@code{#f}を返します。
+@var{pred}に対し@code{#f}を返す要素が無ければ、最後の要素に@var{pred}を
+適用した結果が返ります。キューが空なら@code{#f}が返ります。
+@c COMMON
+@end defun
+
+@defun remove-from-queue! pred queue
+@c EN
+Removes all items in the queue that satisfies @var{pred}.
+Returns @code{#t} if any item is removed.  Otherwise returns @code{#f}.
+The order of arguments follows
+@code{remove} in SRFI-1 (@xref{SRFI-1 List utilities}).
+@c JP
+キューから、述語@var{pred}を満たす要素を全て取り除きます。
+要素が削除された場合は@code{#t}が、そうでなければ@code{#f}が返されます。
+引数の順序はSRFI-1の@code{remove}に揃えました (@ref{SRFI-1 List utilities}参照)。
+@c COMMON
+@end defun
+
+@c EN
+Note on portability:
+Scheme48 has @code{delete-from-queue!}, which takes object to remove
+rather than predicate, and also takes arguments in reversed order
+(i.e. queue comes first).   Avoid conflicting with that I intentionally
+left out @code{delete-from-queue!}; it's easy to write one in either
+Scheme48 compatible way or consistent to SRFI-1 argument order.
+@c JP
+移植性に関する註：Scheme48には、述語ではなく削除するオブジェクトそのものを取る
+@code{delete-from-queue!}がありますが、引数の順序が逆(キューが先)になっています。
+まぎらわしい衝突を避けるため、敢えて@code{delete-from-queue!}は
+提供しませんでした。@code{remove-from-queue!}を使えば、Scheme48互換の方法でも、
+あるいはSRFI-1と一貫性のある方法でも@code{delete-from-queue!}を簡単に書けるでしょう。
+@c COMMON
+
+@defun enqueue/wait! mtqueue obj :optional timeout timeout-val
+@defunx queue-push/wait! mtqueue obj :optional timeout timeout-val
+@defunx dequeue/wait! mtqueue :optional timeout timeout-val
+@defunx queue-pop/wait! mtqueue :optional timeout timeout-val
+@c EN
+These synchronizing variants work on an mtqueue and
+make the caller thread block when the mtqueue has reached
+its maximum length (for @code{enqueue/wait!} and @code{queue-push/wait!}),
+or the mtqueue is empty (for @code{dequeue/wait!} and
+@code{queue-pop/wait!}).   The blocked caller thread is unblocked
+either when the blocking condition is resolved, or the timeout
+condition is met.
+
+The optional @var{timeout} argument specifies the timeout condition.
+If it is @code{#f}, those procedures wait indefinitely.
+If it is a real number, they wait at least the given number of
+seconds.  If it is a @code{<time>} object (@xref{Time}),
+they wait until the absolute point of time the argument specifies.
+
+In case the call is blocked then timed out, the value of
+@var{timeout-val} is returned, which defaults to @code{#f}.
+
+When @code{enqueue/wait!} and @code{queue-push/wait!} succeeds
+without hitting timeout, they return @code{#t}.
+@c JP
+これらの手続きは@var{mtqueue}に対して使うことができ、
+スレッド間同期を実現できます。
+@code{enqueue/wait!}と@code{queue-push/wait!}は、
+キューの要素数が@var{max-length}を越える場合に、キューに空きができるまで、
+@code{dequeue/wait!}と@code{queue-pop/wait!}は、
+キューが空の場合に、キューに要素が追加されるまで、
+呼び出しスレッドをブロックします。
+
+@var{timeout}引数で、ブロックされたスレッドのタイムアウトを指定することができます。
+@code{#f}は指定しなかった場合と同じで、キューの状態が変化するまで
+無期限に待ちます。実数が渡された場合はそれが秒数と解釈され、最低限
+その時間経過するまでは待ちます。渡されたのが@code{<time>}オブジェクト
+(@ref{Time}参照)である場合は、そのオブジェクトが指定する絶対時刻を
+経過するまで待ちます。
+
+タイムアウトによりブロックが解かれた場合は、@var{timeout-val}で
+指定した値が返されます。@var{timeout-val}の省略時値は@code{#f}です。
+
+@code{enqueue/wait!}と@code{queue-push/wait!}は、
+タイムアウトせずに操作が成功した場合は@code{#t}を返します。
+@c COMMON
+@end defun
+
+
+@c ----------------------------------------------------------------------
+
+@node Random data generators, Sparse data containers, Queue, Library modules - Utilities
+@section @code{data.random} - Random data generators
+@c NODE ランダムデータの生成, @code{data.random} - ランダムデータの生成
+
+@deftp {Module} data.random
+@mdindex data.random
+@c EN
+This module defines a set of generators and generator makers
+that yield random data of specific type and distribution.
+@c JP
+このモジュールは、特定のデータ型や、特定の値の分布を持つランダムなデータを
+生成するジェネレータ、およびそういったジェネレータを作り出すジェネレータ構築器を
+提供します。
+@c COMMON
+@end deftp
+
+@c EN
+A naming convention: Procedures that takes parameters and returns
+a generator is suffixed by @code{$} (e.g. @code{integer$}).
+Procedures that are generators themselves are not (e.g. @code{fixnums}).
+Procedures that are combinators, that is, the ones that take
+one or more generators and returns a generator, generally ends
+with a preposition (e.g. @code{list-of}).
+@c JP
+名前付けの規則：パラメータを受け取り、それにそったジェネレータを返す
+手続きにはサフィックス@code{$}がついています (例: @code{integer$})。
+それ自体がジェネレータである手続きにはサフィックスがつきません (例: @code{fixnums})。
+コンビネータ、つまり複数のジェネレータを取ってジェネレータを返す手続きの名前は、
+通常前置詞で終わります (例: @code{list-of})。
+@c COMMON
+
+@c EN
+@subheading Global state
+@c JP
+@subheading グローバルな状態
+@c COMMON
+
+@c EN
+All the generators in this module shares a global random state.
+The random seed is initialized by a fixed value when the module
+is loaded.
+You can get and set the random seed by
+the following procedure.
+@c JP
+このモジュールのジェネレータはすべて一つのグローバルな乱数状態を共有します。
+モジュールがロードされた時点で、固定のシードによりこの状態は初期化されます。
+次の手続きでグローバルな乱数状態のシードを読み出したり、新たな値に
+設定することができます。
+@c COMMON
+
+@defun random-data-seed
+@defunx {(setter random-data-seed)} seed-value
+@c EN
+Calling @code{random-data-seed} (without arguments)
+returns the random seed value used to initialize the current random state.
+
+It can be used with generic setter, to reinitialize the random state
+with @var{seed-value}.
+@c JP
+引数無しで@code{random-data-seed}を呼ぶと、現在の乱数状態を初期化した
+シード値が返されます。
+
+ジェネリックなセッターと一緒に使えば、乱数状態を@var{seed-value}をシードとして
+再初期化することができます。
+@c COMMON
+
+@example
+(random-data-seed)  @result{} @r{integer}
+
+; @r{reinitialize the random state with a new random seed.}
+(set! (random-data-seed) 1) 
+@end example
+
+@c EN
+Note: This procedure doesn't have parameter interface (alter the global
+value by giving the new value as an argument), since it doesn't work
+like a parameter (@xref{Parameters}).
+You can get the random seed value, but you can't
+get the current random state itself---if you restore the
+random seed value again, the internal state is reset, instead
+of restoring the state at the time you called @code{random-data-seed}.
+@c JP
+註: この手続きはパラメータインタフェース (引数として値を与えるとそれを新たな
+値に設定し、以前の値を返す) にはなっていません。本質的に、パラメータとは
+相容れないからです (@ref{Parameters}参照)。
+得られるのは現在の乱数状態の出発点となるシード値であって、
+現在の乱数状態そのものではありません。一旦別のシード値に切り替えて、
+その後元のシード値に戻した場合、乱数状態は切り替えた時点に戻るのではなく、
+あらためて初期化されます。
+@c COMMON
+
+@c EN
+If you want to use different random state temporarily, and ensure to
+restore original state afterwards, use @code{with-random-data-seed} below.
+@c JP
+乱数状態を一時的に切り替えて、その後で切り替えた時点の状態を確実に回復したい場合は、
+次に示す@code{with-random-data-seed}を使ってください。
+@c COMMON
+@end defun
+
+@defun with-random-data-seed seed thunk
+@c EN
+Saves the current global random state, initializes the random state with
+@var{seed}, then executes @var{thunk}.  If @var{thunk} returns or
+the control exits out of @var{thunk}, the state at the time
+@code{with-random-data-seed} was called is restored.
+@c JP
+現在のグローバルな乱数状態を保存し、乱数状態を@var{seed}で初期化して
+@var{thunk}を実行します。@var{thunk}から帰ってくるか、
+制御が@var{thunk}を抜け出した場合、乱数状態は@code{with-random-data-seed}が
+呼び出された時点の状態に戻されます。
+@c COMMON
+@end defun
+
+@c EN
+Since the default random seed value is fixed, you can get deterministic
+output when you call the random data generators below without altering
+the random seed explicitly.
+@c JP
+デフォルトのランダムシードが固定なのは、何もしなければ再現可能な振る舞いが得られる
+からです。
+@c COMMON
+
+@c EN
+@subheading Generators of primitive data types
+@c JP
+@subheading プリミティブデータ型のジェネレータ
+@c COMMON
+
+@c EN
+Those generators generate uniformly distributed data.
+@c JP
+以下のジェネレータは特に断りが無い限り、一様分布するデータを生成します。
+@c COMMON
+
+@c EN
+In the following examples, we use @code{generator->list} to show
+some concrete data from the generators.  It is provided
+in @code{gauche.generator} module.  @xref{Generators}, for more
+utilities work on generators.
+@c JP
+例の中では、生成された値を具体的に示すために
+@code{gauche.generator}モジュールの@code{generator->list}を
+使っています。ジェネレータを扱うユーティリティについては
+@ref{Generators}を参照してください。
+@c COMMON
+
+@defun integers$ size :optional (start 0)
+@defunx integers-between$ lower-bound upper-bound
+@c EN
+Create exact integer generators.  The first one, @code{integers$}, creates
+a generator that generats integers from start (inclusive) below
+start+size (exclusive) uniformly.  The second one, @code{integers-between$},
+creates a generator that generates integers between
+@var{lower-bound} and @var{upper-bound} (both inclusive) unformly.
+@c JP
+正確な整数のジェネレータを作成します。
+@code{integer$}が返すジェネレータは、
+@var{start} 以上 @var{start} + @var{size} 未満の整数を一様に発生させます。
+@code{integers-between$}はが返すジェネレータは、@var{lower-bound}以上、
+@var{upper-bound}以下の整数を一様に発生させます。
+@c COMMON
+
+@example
+@c EN
+;; A dice roller
+@c JP
+;; サイコロ
+@c COMMON
+(define dice (integers$ 6 1))
+
+@c EN
+;; Roll the dice 10 times
+@c JP
+;; サイコロを10回振ってみる
+@c COMMON
+(generator->list dice 10)
+ @result{} (6 6 2 4 2 5 5 1 2 2)
+@end example
+@end defun
+
+@defun fixnums
+@defunx int8s
+@defunx uint8s
+@defunx int16s
+@defunx uint16s
+@defunx int32s
+@defunx uint32s
+@defunx int64s
+@defunx uint64s
+@c EN
+Uniform integer generators.  Generate integers in fixnum range, and
+8/16/32/64bit signed and unsigned integers, respectively.
+@c JP
+固定範囲の一様整数ジェネレータです。
+それぞれ、fixnumおよび8/16/32/64ビットの符号つき/符号無し整数を生成します。
+@c COMMON
+
+@example
+(generator->list int8s 10)
+ @result{} (20 -101 50 -99 -111 -28 -19 -61 39 110)
+@end example
+@end defun
+
+@defun booleans
+@c EN
+Generates boolean values (@code{#f} and @code{#t}) in equal probability.
+@c JP
+真偽値(@code{#f}と@code{#t})を等確率で生成します。
+@c COMMON
+
+@example
+(generator->list booleans 10)
+ @result{} (#f #f #t #f #f #t #f #f #f #f)
+@end example
+@end defun
+
+@defun chars$ :optional char-set
+@c EN
+Creates a generator that generates characters in @var{char-set} uniformly.
+The default @var{char-set} is @code{#[A-Za-z0-9]}.
+@c JP
+@var{char-set}にある文字を一様分布で生成するジェネレータを作ります。
+@var{char-set}が省略された場合は@code{#[A-Za-z0-9]}が使われます。
+@c COMMON
+
+@example
+(define alphanumeric-chars (chars$))
+
+(generator->list alphanumeric-chars 10)
+ @result{} (#\f #\m #\3 #\S #\z #\m #\x #\S #\l #\y)
+@end example
+@end defun
+
+@defun reals$ :optional size start
+@defunx reals-between$ lower-bound upper-bound
+@c EN
+Create a generator that generates real numbers uniformly with given range.
+The first procedure, @code{reals$}, returns reals between start
+and start+size, inclusively.  The default of size is 1.0 and start is 0.0.
+The second procedure, @code{reals-between$}, returns reals between
+lower-bound and upper-bound, inclusively.
+@c JP
+与えられた範囲の実数値を一様に生成するジェネレータを返します。
+@code{reals$}の返すジェネレータは、
+@var{start} 以上 @var{start} + @var{size} 以下の実数値を生成します。
+@var{size}のデフォルト値は@code{1.0}、@var{start}のデフォルト値は@code{0.0}です。
+@code{reals-between$}の返すジェネレータは、
+@var{lower-bound}以上@var{upper-bound}以下の実数値を生成します。
+@c COMMON
+
+@example
+(define uniform-100 (reals$ 100))
+
+(generator->list uniform-100 10)
+ @result{} (81.67965004942268 81.84927577572596 53.02443813660833)
+@end example
+
+@c EN
+Note that a generator from @code{reals$} can generate the upper-bound
+value start+size, as opposed to @code{integers$}.  If you need to exclude
+the bound value, just discard the bound value; @code{gfilter} may come
+handy.
+@c JP
+@code{reals$}の返すジェネレータは、@code{integer$}と違って
+上限の値を生成し得ることに注意してください。限界値を除外したい場合は、
+@code{gfilter}等を使ってその値を棄却します。
+@c COMMON
+
+@example
+(define generate-from-0-below-1
+  (gfilter (^r (not (= r 1.0))) (reals$ 1.0 0.0)))
+@end example
+@end defun
+
+@c EN
+@subheading Nonuniform distributions
+@c JP
+@subheading 非一様分布
+@c COMMON
+
+@defun reals-normal$ :optional mean deviation
+@c EN
+Creates a generator that yields real numbers from normal distribution
+with @var{mean} and @var{deviation}.  The default of @var{mean} is 0.0
+and @var{deviation} is 1.0.
+@c JP
+期待値@var{mean}、標準偏差@var{deviation}の正規分布に従って実数値を生成する
+ジェネレータを作ります。省略時は@var{mean}が0.0、@var{deviation}が
+1.0になります。
+@c COMMON
+@end defun
+
+@defun reals-exponential$ mean
+@c EN
+Creates a generator that yields real numbers from exponential distribution
+with @var{mean}.
+@c JP
+期待値@var{mean}の指数分布に従って実数値を生成するジェネレータを作ります。
+@c COMMON
+@end defun
+
+@defun integers-geometric$ p
+@c EN
+Creates a generator that yields integers from geometric distribution
+with success probability @var{p} (0 <= p <= 1).  The mean is @code{1/p} and
+variance is @code{(1-p)/p^2}.
+@c JP
+成功確率@var{p} (0 ≦ p ≦ 1) である幾何分布に従って
+非負整数値を生成するジェネレータを作ります。
+期待値は@code{1/p}、分散は@code{(1-p)/p^2}になります。
+@c COMMON
+@end defun
+
+@defun integers-poisson$ L
+@c EN
+Creates a generator that yields integers from poisson distribution with
+mean @var{L}, variance @var{L}.
+@c JP
+期待値@var{L}のポアソン分布に従う非負整数値を生成するジェネレータを作ります。
+分散も@var{L}になります。
+@c COMMON
+@end defun
+
+@c EN
+@subheading Aggregate data generators
+@c JP
+@subheading 複合データ型のジェネレータ
+@c COMMON
+
+@defun samples-from generators
+@c EN
+Takes a finite sequence of generators
+(sequence in the sense of @code{gauche.sequence}),
+and returns a generator.  Every time the resulting generator is called,
+it picks one of the input generators in equal probability, then
+calls it to get a value.
+@c JP
+ジェネレータの有限シーケンス (ここでは@code{gauche.sequence}がシーケンスとして
+扱うもの) を取り、新たなジェネレータを返します。
+返されたジェネレータは、値を必要とする度に、
+入力となるジェネレータのどれかを等確率で選んで、その入力ジェネレータから値を取ります。
+@c COMMON
+
+@example
+(define g (samples-from (list uint8s (chars$ #[a-z]))))
+
+(generator->list g 10)
+ @result{} (207 107 #\m #\f 199 #\o #\b 57 #\j #\e)
+@end example
+@end defun
+
+@defun weighted-samples-from weight&gens
+@c EN
+The argument is a list of pairs of a nonnegative real number and a generator.
+The real number determines the weight, or the relative probability
+that the generator is chosen.  The sum of weight doesn't need to
+be 1.0.
+@c JP
+引数は、非負の実数値とジェネレータのペアのリストです。
+実数値が「重み」、すなわちペアとなっているジェネレータが選ばれる相対確率を決定します。
+重みの総和が1.0である必要はありません。
+@c COMMON
+
+@c EN
+The following example chooses the uint8 generator four times frequently
+than the character generator.
+@c JP
+次の例では、@code{uint8}ジェネレータは文字ジェネレータより4倍頻繁に使われます。
+@c COMMON
+
+@example
+(define g (weighted-samples-from
+           `((4.0 . ,uint8s)
+             (1.0 . ,(chars$)))))
+
+(generator->list g 10)
+ @result{} (195 97 #\j #\W #\5 72 49 143 19 164)
+@end example
+@end defun
+
+@defun pairs-of car-gen cdr-gen
+@c EN
+Returns a generator that yields pairs,
+whose car is generated from @var{car-gen}
+and whose cdr is generated from @var{cdr-gen}.
+@c JP
+ペアを生成するジェネレータを作ります。
+各ペアのcarはジェネレータ@var{car-gen}、
+cdrはジェネレータ@var{cdr-gen}によって生成されます。
+@c COMMON
+
+@example
+(define g (pairs-of int8s booleans))
+
+(generator->list g 10)
+ @result{} ((113 . #t) (101 . #f) (12 . #t) (68 . #f) (-55 . #f))
+@end example
+@end defun
+
+@defun tuples-of gen @dots{}
+@c EN
+Returns a generator that yields lists, 
+whose i-th element is generated from the i-th argument.
+@c JP
+リストを生成するジェネレータを作ります。
+各リストのi番目の要素はi番目の引数のジェネレータによって生成されます。
+@c COMMON
+
+@example
+(define g (tuples-of int8s booleans (char$)))
+
+(generator->list g 3)
+ @result{} ((-43 #f #\8) (53 #f #\1) (-114 #f #\i))
+@end example
+@end defun
+
+@defun permutations-of seq
+@c EN
+Returns a generator that yields a random permutations of @var{seq}.
+
+The type of @var{seq} should be a sequence with a builder
+(@xref{Sequence framework}).  The type of generated objects
+will be the same as @var{seq}.
+@c JP
+シーケンス@var{seq}の要素をランダムに並べ替えたシーケンスを生成する
+ジェネレータを作ります。
+
+@var{seq}の型は、ビルダーを持つシーケンスである必要があります
+(@ref{Sequence framework}参照)。生成されるオブジェクトは
+@var{seq}と同じ型になります。
+@c COMMON
+
+@example
+(generator->list (permutations-of '(1 2 3)) 3)
+ @result{} ((1 2 3) (2 3 1) (3 2 1))
+
+(generator->list (permutations-of "abc") 3)
+ @result{} ("cba" "cba" "cab")
+@end example
+@end defun
+
+@defun combinations-of size seq
+@c EN
+Returns a generator that yields a sequence of @var{size} elements
+randomly picked from @var{seq}.
+
+The type of @var{seq} should be a sequence with a builder
+(@xref{Sequence framework}).  The type of generated objects
+will be the same as @var{seq}.
+@c JP
+シーケンス@var{seq}からランダムに@var{size}個の要素を取り出して
+並べたシーケンスを生成するジェネレータを作ります。
+
+@var{seq}の型は、ビルダーを持つシーケンスである必要があります
+(@ref{Sequence framework}参照)。生成されるオブジェクトは
+@var{seq}と同じ型になります。
+@c COMMON
+
+@example
+(generator->list (combinations-of 2 '(a b c)) 5)
+ @result{} ((a c) (a b) (a c) (b a) (a c))
+
+(generator->list (combinations-of 2 '#(a b c)) 5)
+ @result{} (#(a c) #(b c) #(c b) #(b a) #(b c))
+@end example
+@end defun
+
+@c EN
+The following procedures takes optional @var{sizer} argument, which can
+be either a nonnegative integer or a generator of nonnegative integers.
+The value of the sizer determines the length of the result data.
+@c JP
+以下の手続きは、省略可能な@var{sizer}引数を取ります。
+@var{sizer}引数は非負整数か、非負整数を生成するジェネレータで、
+その値(もしくは生成された値)が、最終的に生成されるデータの長さを決定します。
+@c COMMON
+
+@c EN
+Unlike most of Gauche procedures, @var{sizer} argument comes before
+the last argument when it is not omitted.
+We couldn't resist the temptation to
+write something like @code{(lists-of 3 booleans)}.
+@c JP
+Gaucheの他のほとんどの手続きと違って、@var{sizer}引数は省略されない時は
+最後の引数よりも前に来ます。これは統一性を損ないますが、
+@code{(lists-of 3 booleans)} のように書ける、という誘惑に勝てませんでした。
+@c COMMON
+
+@c EN
+If @var{sizer} is omitted, the default value is taken from
+the parameter @code{default-sizer}.  The default of @code{default-sizer}
+is @code{(integers-poisson$ 4)}.
+@c JP
+@var{sizer}引数が省略された場合、パラメータ@code{default-sizer}の値が
+使われます。@code{default-sizer}のデフォルトは
+@code{(integers-poisson$ 4)}で作られるジェネレータです。
+@c COMMON
+
+@defun lists-of item-gen
+@defunx lists-of sizer item-gen
+@defunx vectors-of item-gen
+@defunx vectors-of sizer item-gen
+@defunx strings-of
+@defunx strings-of item-gen
+@defunx strings-of sizer item-gen
+@c EN
+Creates a generator that generates lists, vectors or strings of values from @var{item-gen}, respectively.  The size of each datum is determined by
+@var{sizer}.
+@c JP
+それぞれ、リスト、ベクタ、文字列を生成するジェネレータを作ります。
+作られるデータの各要素はジェネレータ@var{item-gen}から取られます。
+各データの長さは@var{sizer}により決定されます。
+@c COMMON
+
+@c EN
+You can also omit @var{item-gen} for @code{strings-of}.  In that case,
+a generator created by @code{(chars$)} is used.
+@c JP
+@code{strings-of}の場合は@var{item-gen}も省略することができます。
+その場合は、@code{(chars$)}で作られるジェネレータが使われます。
+@c COMMON
+
+@example
+(generator->list (lists-of 3 uint8s) 4)
+ @result{} ((254 46 0) (77 158 46) (1 134 156) (74 5 110))
+
+@c EN
+;; using the default sizer
+@c JP
+;; デフォルトのsizerを使う
+@c COMMON
+(generator->list (lists-of uint8s) 4)
+ @result{} ((93 249) (131 97) (98 206 144 247 241) (126 156 31))
+
+@c EN
+;; using a generator for the sizer
+@c JP
+;; sizerにジェネレータを使う
+@c COMMON
+(generator->list (strings-of (integers$ 8) (chars$)) 5)
+ @result{} ("dTJYVhu" "F" "PXkC" "w" "")
+@end example
+@end defun
+
+@defun sequences-of class item-gen
+@defunx sequences-of class sizer item-gen
+@c EN
+Creates a generator that yields sequences of class @var{class},
+whose items are generated by @var{item-gen}.  The size of each
+sequence is determined by @var{sizer}, or the value of @code{default-sizer}
+if omitted; the sizer can be a nonnegative integer, or a generator
+that yields nonnegative integers.
+
+The class @var{class} must be a subclass of @code{<sequence>} and
+implement the builder interface.
+@c JP
+クラス@var{class}のインスタンスであるシーケンスを生成するジェネレータを作ります。
+シーケンスの要素は@var{item-gen}により生成されます。
+各シーケンスの長さは@var{sizer}引数 (省略時は@code{default-sizer}の値)
+によって決められます。@var{sizer}は非負整数か、非負整数を生成するジェネレータです。
+
+@var{class}は@code{<sequence>}のサブクラスであり、
+ビルダーインタフェースを実装していなければなりません。
+@c COMMON
+
+@example
+(generator->list (sequences-of <u8vector> 4 uint8s) 3)
+ @result{} (#u8(95 203 243 46) #u8(187 199 153 152) #u8(39 114 39 25))
+@end example
+@end defun
+
+
+@deffn {Parameter} default-sizer
+@c EN
+The sizer used by @code{lists-of}, @code{vectors-of} and @code{strings-of}
+when @var{sizer} argument is omitted.
+
+The value must be either an nonnegative integer, or a generator
+of nonnegative integers.
+@c JP
+@code{lists-of}、@code{vectors-of}、@code{strings-of}で
+@var{sizer}引数が省略された場合に使われるsizerです。
+
+値は、非負整数か、非負整数を生成するジェネレータでなければなりません。
+@c COMMON
+@end deffn
+
+@c ----------------------------------------------------------------------
+@node Sparse data containers, Trie, Random data generators, Library modules - Utilities
+@section @code{data.sparse} - Sparse data containers
+@c NODE 疎なデータコンテナ, @code{data.sparse} - 疎なデータコンテナ
+
+@deftp {Module} data.sparse
+@mdindex data.sparse
+@c EN
+This module provides a @emph{sparse vector} and @emph{sparse matrix}, 
+a space efficient data container indexed by nonnegative integer(s), and
+a @emph{sparse table}, a hash table using a sparse vector
+as a backing storage.
+@c JP
+このモジュールは、非負整数でインデックスされる空間効率の良いデータ構造である
+@emph{疎ベクタ} (@emph{sparse vector})と
+@emph{疎行列} (@emph{sparse matrix})、
+および
+疎ベクタを格納領域に用いるハッシュテーブルである@emph{疎テーブル} (@emph{sparse table})
+を提供します。
+@c COMMON
+@end deftp
+
+@c EN
+A sparse vector associates a nonnegative integer index
+to a value.  It has @emph{vector} in its name since it is indexed
+by an integer, but it isn't like a flat array on contiguous memory;
+it's more like an associative array.  (Internally, the current
+implementation uses compact trie structure.)
+It is guaranteed that you can store a value with index at least
+up to @code{2^32-1}; the actual maximum bits of indexes can
+be queried by @code{sparse-vector-max-index-bits}.
+(We have a plan to remove the maximum bits limitation in future).
+@c JP 
+疎ベクタは非負整数のインデックスと値を関連付けます。
+整数でインデックスされるので名前に@emph{ベクタ}がついていますが、
+連続するメモリに置かれる配列ではなく、むしろ連想配列のようなものです。
+(内部的には、現在の実装はコンパクトなトライを使っています)。
+少なくとも@code{2^32-1}までのインデックスが使えることは保証されています。
+実装が許す最大のインデックスのビット長は
+@code{sparse-vector-max-index-bits}で得ることができます。
+(将来的にはこの制限を無くす計画です)。
+@c COMMON
+
+@c EN
+Unlike ordinary vectors, you don't need to specify the size
+of a sparse vector when you create one.  You can just set
+a value to any index in the supported range.
+@c JP
+通常のベクタと違い、疎ベクタは作る時に大きさを指定する必要がありません。
+サポートされている範囲内ならどんなインデックスにでも単に値を格納できます。
+@c COMMON
+
+@example
+(define v (make-sparse-vector))
+
+(sparse-vector-set! v 0 'a)
+(sparse-vector-ref v 0) @result{} a
+
+(sparse-vector-set! v 100000000 'b)
+(sparse-vector-ref v 100000000) @result{} b
+
+;; set! also work
+(set! (sparse-vector-ref v 100) 'c)
+(sparse-vector-ref v 100) @result{} c
+@end example
+
+@c EN
+If you try to access an element that hasn't been set,
+an error is signaled by default.  You can set
+a default value for each vector, or give a
+fallback value to @code{sparse-vector-ref}, to suppress the error.
+@c JP
+値がセットされていない要素にアクセスすると、デフォルトではエラーが通知されます。
+ベクタごとに既定値を設定したり、
+@code{sparse-vector-ref}の省略可能引数にフォールバック値を
+渡すことでエラーを回避できます。
+@c COMMON
+
+@example
+(sparse-vector-ref v 1)        @result{} @r{error}
+(sparse-vector-ref v 1 'noval) @result{} noval
+
+(let1 w (make-sparse-vector #f :default 'x)
+  (sparse-vector-ref w 1))     @result{} x
+@end example
+
+@c EN
+A sparse matrix is like a sparse vector, except it can be indexed
+by a pair of integers.
+@c JP
+疎行列は、二つの整数でインデックスされるという点以外は疎なベクタと同じです。
+@c COMMON
+
+@c EN
+A sparse table works just like a hash table, but it uses
+a sparse vector to store the values using hashed number of the keys.
+@c JP
+疎テーブルはハッシュテーブルと同じように動作しますが、キーのハッシュ値を
+インデックスとして値を疎ベクタに格納しています。
+@c COMMON
+
+@c EN
+The main reason of these sparse data containers are for
+memory efficiency.   If you want to store values in a vector
+but knows you'll use only some entries sparsely, obviously it
+is waste to allocate a large vector and to leave many entries unused.
+But it is worse than that; Gauche's GC doesn't like a large
+contiguous region of memory.  Using lots of large vectors adds
+GC overhead quickly.  It becomes especially visible when you
+store large number of entries (like >100,000) into hash tables,
+since Gauche's builtin hash tables use a flat vector as a backing
+storage.   You'll see the heap size grows quickly and
+GC runs more frequently and longer.
+On the other hand, sparse table works pretty stable with
+large number of entries.
+@c JP
+これらの疎なデータコンテナの主な目的は、メモリ効率です。
+ベクタに値を入れておきたいけれどごく一部のインデックスしか使わないことが
+分かっている、と言った場合に、巨大なベクタをアロケートしてその大部分を
+使わないでおくのは明らかに無駄でしょう。ただそれだけではありません。
+Gaucheのガベージコレクタは、一続きの巨大なメモリ領域を確保するのとあまり
+相性が良くありません。大きなベクタを大量に使うとGCのオーバヘッドが急速に増えます。
+Gaucheの組み込みハッシュテーブルは
+データストアに通常のベクタを使っているのですが、
+大量のデータを詰め込むとその効果が目に見えてきます。ヒープサイズが急に増え、
+GCはより頻繁に走り、しかも一回一回に要する時間は長くなるでしょう。
+一方で、疎テーブルは大量のデータに対してもかなり安定に動作します。
+@c COMMON
+
+@c EN
+Sparse data containers does have overhead on access speed.
+They are a bit slower than the ordinary hash tables,
+and much slower than ordinary vectors.  We should note, however,
+as the number of entries grow, access time on ordinary hash
+tables grows quicker than sparse tables and eventually two become
+comparable.
+@c JP
+疎なデータコンテナは、単純なデータコンテナに比べるとアクセスにオーバヘッドはあります。
+通常のハッシュテーブルより若干遅いですし、通常のベクタと比べるとかなり遅いです。
+けれども、テーブル内のデータ数が大きくなる領域では、通常のハッシュテーブルの
+アクセス時間の方が急速に悪化するため、いずれ二つのアクセス時間は
+そこそこ同じになります。
+@c COMMON
+
+@c EN
+It depends on your application which you should use, and
+if you're not sure, you need to benchmark.
+As a rule of thumb, if you use more than several hashtables
+each of which contains more than a few tens of thousands of
+entries, sparse tables may work better.
+If you see GC Warnings telling ``repeated allocation of large
+blocks'', you should definitely consider sparse tables.
+@c JP
+どちらを使うべきかはアプリケーションに依存します。良く分からないのであれば、
+ベンチマークを取りましょう。簡単な基準としては、数万以上のエントリを持つ
+ハッシュテーブルを数個以上作るなら、疎テーブルの方が良くなるかもしれません。
+実行中に``repeated allocation of large blocks''というGCからの
+警告を目にしたなら、疎テーブルへの切り替えを考えてみましょう。
+@c COMMON
+
+@menu
+* Sparse vectors::              
+* Sparse matrixes::             
+* Sparse tables::               
+@end menu
+
+@node Sparse vectors, Sparse matrixes, Sparse data containers, Sparse data containers
+@subsection Sparse vectors
+@c NODE 疎なベクタ
+
+@deftp {Class} <sparse-vector-base>
+@clindex sparse-vector-base
+@c EN
+An abstract base class of sparse vectors.
+Inherits @code{<dictionary>} and @code{<collection>}.
+Note that sparse vectors are @emph{not} @code{<sequence>}; even
+they can be indexable by integers, they don't have
+means of @emph{ordered} access.
+
+Sparse vector may be a general vector
+that can contain any Scheme objects (like @code{<vector>}),
+or a specialized vector that can contain only certain
+types of numbers (like @code{<s8vector>} etc.).
+
+All of these sparse vectors can be accessed by the same API.
+
+Sparse vectors also implements the Collection API
+(@xref{Collection framework}) and the Dictionary API
+(@xref{Dictionary framework}).
+@c JP
+疎なベクタの抽象ベースクラスです。@code{<dictionary>}と@code{<collection>}を
+継承しています。@code{<sequence>}は継承していないことに注意してください。
+疎なベクタは整数でインデクス可能ですが、インデクスの順番に要素にアクセスする手段を
+持っていません。
+
+疎なベクタは、@code{<vector>}と同様、任意のSchemeオブジェクトを格納可能である
+ものもあれば、@code{<s8vector>}等と同様に特定の範囲の数値のみ格納可能なものもあります。
+全ての疎なベクタは同一セットのAPIで利用可能です。
+
+疎なベクタはまた、コレクションAPIとディクショナリAPIを実装しています。これらについては
+@ref{Collection framework}および@ref{Dictionary framework}を
+参照してください。
+@c COMMON
+@end deftp
+
+@deftp {Class} <sparse-vector>
+@deftpx {Class} <sparse-@var{TAG}vector>
+@clindex sparse-vector
+@clindex sparse-s8vector
+@clindex sparse-u8vector
+@clindex sparse-s16vector
+@clindex sparse-u16vector
+@clindex sparse-s32vector
+@clindex sparse-u32vector
+@clindex sparse-s64vector
+@clindex sparse-u64vector
+@clindex sparse-f16vector
+@clindex sparse-f32vector
+@clindex sparse-f64vector
+@c EN
+The actual sparse vector classes.  Inherits @code{<sparse-vector-base>}.
+An instance of @code{<sparse-vector>} can contain any Scheme objects.
+
+@var{TAG} either one of @code{s8}, @code{u8},
+@code{s16}, @code{u16}, @code{s32}, @code{u32},
+@code{s64}, @code{u64}, @code{f16}, @code{f32}, or @code{f64}.
+The range of values an instance of those classes can hold
+is the same as the corresponding @code{<@var{TAG}vector>} class
+in @code{gauche.uvector} (@xref{Uniform vectors}).  That is,
+@code{<sparse-u8vector>} can have exact integer values
+between 0 and 255.
+@c JP
+疎なベクタの具体クラスです。それぞれ@code{<sparse-vector-base>}を継承します。
+
+@code{<sparse-vector>}のインスタンスは任意のSchemeオブジェクトを格納できます。
+
+@var{TAG}は @code{s8}, @code{u8},
+@code{s16}, @code{u16}, @code{s32}, @code{u32},
+@code{s64}, @code{u64}, @code{f16}, @code{f32}, @code{f64}のいずれかで、
+それぞれの疎なベクタの格納可能な値は、@code{gauche.uvector}の
+対応する@code{<@var{TAG}vector>}に準じます(@ref{Uniform vectors}参照)。
+つまり、@code{<sparse-u8vector>}の要素には0以上255以下の正確な整数を
+格納できます。
+@c COMMON
+@end deftp
+
+@defun make-sparse-vector :optional type :key default
+@c EN
+Creates an empty sparse vector.  The @var{type} argument can be
+@code{#f} (default), one of subclasses of @code{<sparse-vector-base>},
+or a symbol of either one of @code{s8}, @code{u8},
+@code{s16}, @code{u16}, @code{s32}, @code{u32},
+@code{s64}, @code{u64}, @code{f16}, @code{f32}, or @code{f64}.
+
+If @var{type} is omitted or @code{#f}, a @code{<sparse-vector>} is
+created.  If it is a class, an instance of the class is created
+(It is an error to pass a class that is not a subclass of
+@code{<sparse-vector-base>}.)
+If it is a symbol, an instance of corresponding @code{<sparse-@var{TAG}vector>}
+is created.
+@c JP
+空の疎なベクタを作成して返します。@var{type}引数は@code{#f}(デフォルト)か、
+@code{<sparse-vector-base>}のサブクラスのどれか、
+あるいはシンボル@code{s8}, @code{u8},
+@code{s16}, @code{u16}, @code{s32}, @code{u32},
+@code{s64}, @code{u64}, @code{f16}, @code{f32}, @code{f64}のいずれかを
+指定できます。
+
+@var{type}が省略されるか@code{#f}の場合は@code{<sparse-vector>}のインスタンスが
+作られます。@var{type}がクラスであればそのインスタンスが、またシンボルであれば、
+対応する@code{<sparse-@var{TAG}vector>}のインスタンスが作られます。
+@c COMMON
+
+@c EN
+You can specify the default value of the vector by @var{default}
+keyword argument.   If given, the vector behaves as if it is filled
+with the default value (but the vector iterator only picks
+the values explicitly set).
+
+Note that you have to give the optional argument as well
+to specify the keyword argument.
+@c JP
+キーワード引数@var{default}によって、作成するベクタの要素既定値を指定できます。
+この引数が与えられると、ベクタは全てあらかじめその値で埋められているかのように
+振る舞います (ただしイテレータは陽にセットされた値のみ取り出します)。
+
+キーワード引数を与える場合、それに先立って省略可能引数も与える必要が
+あることに注意してください。
+@c COMMON
+
+@example
+(define v (make-sparse-vector 'u8 :default 128))
+
+(sparse-vector-ref v 0) @result{} 128
+@end example
+@end defun
+
+@defun sparse-vector-max-index-bits
+@c EN
+Returns maximum number of bits of allowed integer.  If this
+returns 32, the index up to @code{(expt 2 32)} is supported.
+It is guaranteed that this is at least 32.
+@c JP
+実装が利用できる、疎なベクタのインデックスの最大のビット数を返します。
+例えばこれが32を返したなら、インデックスとして@code{(expt 2 32)}まで
+使えるということです。この値は最低でも32であることが保証されています。
+@c COMMON
+@end defun
+
+@c EN
+In the following entries, the argument @var{sv} denotes
+an instance of sparse vector; an error is signaled if other
+object is passed.
+@c JP
+以下のエントリにおいて、引数@var{sv}は疎なベクタのインスタンスです。
+他のオブジェクトが渡された場合はエラーが報告されます。
+@c COMMON
+
+@defun sparse-vector-copy sv
+@c EN
+Returns a copy of a sparse vector @var{sv}.
+@c JP
+疎なベクタ@var{sv}のコピーを返します。
+@c COMMON
+@end defun
+
+@defun sparse-vector-ref sv k :optional fallback
+@c EN
+Returns @var{k}-th element of a sparse vector @var{sv}, where
+@var{k} must an exact integer.
+
+If the sparse vector doesn't have a value for @var{k}, it
+behaves as follows:
+
+@itemize @bullet
+@item
+If @var{fallback} is given, it is returned.
+@item
+Otherwise, if the vector has the default value, it is returned.
+@item
+Otherwise, an error is signaled.
+@end itemize
+@c JP
+疎なベクタ@var{sv}のインデックス@var{k}にある要素を返します。
+@var{k}は正確な整数でなければなりません。
+
+@var{k}に対応する要素がない場合は、次のように振る舞います。
+
+@itemize @bullet
+@item
+@var{fallback}引数が与えられていればそれを返します。
+@item
+そうでなく、ベクタが既定値を持っていれば、それを返します。
+@item
+そうでなければ、エラーが報告されます。
+@end itemize
+@c COMMON
+@end defun
+
+@defun sparse-vector-set! sv k value
+Sets @var{value} for @var{k}-th element of a sparse vector @var{sv}.
+@var{K} must be a nonnegative exact integer, and below the maximum
+allowed index.
+
+If @var{sv} is a numeric sparse vector, @var{value} must also be
+within the allowed range, or an error is signaled.
+@end defun
+
+@defun sparse-vector-num-entries sv
+Returns the number of entries in @var{sv}.
+@end defun
+
+@defun sparse-vector-exists? sv k
+Returns @code{#t} if @var{sv} has an entry for index @var{k},
+@code{#f} otherwise.
+@end defun
+
+@defun sparse-vector-delete! sv k
+Deletes the @var{k}-th entry of @var{sv}.  If @var{sv} had the entry ,
+returns @code{#t}.  If @var{sv} didn't have the entry, returns @code{#f}.
+@end defun
+
+@defun sparse-vector-clear! sv
+Empties a sparse vector.
+@end defun
+
+@defun sparse-vector-inc! sv k delta :optional (fallback 0)
+This is a shortcut of the following.  It is especially efficient
+for numeric sparse vectors.
+
+@example
+(sparse-vector-set! sv k (+ (sparse-vector-ref sv k fallback) delta))
+@end example
+
+If the result of addition exceeds the allowed value range of @var{sv},
+an error is signaled.  In future we'll allow an option to clamp
+the result value within the range.
+@end defun
+
+@defun sparse-vector-update! sv k proc :optional fallback
+@defunx sparse-vector-push! sv k val
+@defunx sparse-vector-pop! sv k :optional fallback
+Convenience routines to fetch-and-update an entry of
+a sparse vector.  Works just like @code{hash-table-update!},
+@code{hash-table-push!} and @code{hash-table-pop!};
+(@xref{Hashtables}).
+@end defun
+
+
+The following procedures traverses a sparse vector.
+Note that elements are not visited in the order of index;
+it's just like hash table traversers.
+
+At this moment, if you want to walk a sparse vector with
+increasing/decreasing index order, you have to get a list
+of keys by @code{sparse-vector-keys}, sort it, then use
+it to retrieve values.
+We may add an option in future to @code{make-sparse-vector} so that
+those walk operation will be more convenient.
+
+@defun sparse-vector-fold sv proc seed
+For each entry in @var{sv}, calls @var{proc} as
+@code{(proc @var{k_n} @var{v_n} @var{seed_n})}, where
+@var{k_n} is an index and @var{v_n} is a value for it,
+and @var{seed_n} is the returned value of the previous
+call to @code{proc} if @var{n} @code{>=} 1, and @var{seed} if @var{n} = 0.
+Returns the value of the last call of @code{proc}.
+@end defun
+
+@defun sparse-vector-for-each sv proc
+@defunx sparse-vector-map sv proc
+Calls @code{proc} with index and value, e.g. @code{(proc k value)},
+for each element of @var{sv}.
+
+The results of @var{proc} are discarded by @code{sparse-vector-for-each},
+and gathered to a list and returned by @code{sparse-vector-map}.
+@end defun
+
+@defun sparse-vector-keys sv
+@defunx sparse-vector-values sv
+Returns a list of all keys and all values in @var{sv}, respectively.
+@end defun
+
+@node Sparse matrixes, Sparse tables, Sparse vectors, Sparse data containers
+@subsection Sparse matrixes
+@c NODE 疎行列
+
+A sparse matrix is like a sparse vector, except it can be indexed
+by two integers.
+
+Currently, each index can have half of bits of
+@code{sparse-vector-max-index-bits}.  We'll remove
+this limitation in future.
+
+
+@deftp {Class} <sparse-matrix-base>
+@clindex sparse-matrix-base
+@end deftp
+
+@deftp {Class} <sparse-matrix>
+@deftpx {Class} <sparse-@var{TAG}matrix>
+@clindex sparse-matrix
+@clindex sparse-s8matrix
+@clindex sparse-u8matrix
+@clindex sparse-s16matrix
+@clindex sparse-u16matrix
+@clindex sparse-s32matrix
+@clindex sparse-u32matrix
+@clindex sparse-s64matrix
+@clindex sparse-u64matrix
+@clindex sparse-f16matrix
+@clindex sparse-f32matrix
+@clindex sparse-f64matrix
+@end deftp
+
+@defun make-sparse-matrix type :key default
+@end defun
+
+@defun sparse-matrix-num-entries mat
+@end defun
+
+@defun sparse-matrix-ref mat x y :optional fallback
+@end defun
+
+@defun sparse-matrix-set! mat x y value
+@end defun
+
+@defun sparse-matrix-exists? mat x y
+@end defun
+
+@defun sparse-matrix-clear! mat x y
+@end defun
+
+@defun sparse-matrix-delete! mat x y
+@end defun
+
+@defun sparse-matrix-copy mat
+@end defun
+
+@defun sparse-matrix-update! mat x y proc :optional fallback
+@end defun
+
+@defun sparse-matrix-inc! mat x y delta :optional fallback
+@end defun
+
+@defun sparse-matrix-push! mat x y val
+@end defun
+
+@defun sparse-matrix-pop! mat x y
+@end defun
+
+@defun sparse-matrix-fold mat proc seed
+@end defun
+
+@defun sparse-matrix-map mat proc
+@defunx sparse-matrix-for-each mat proc
+@end defun
+
+@defun sparse-matrix-keys mat
+@defunx sparse-matrix-values mat
+@end defun
+
+@node Sparse tables,  , Sparse matrixes, Sparse data containers
+@subsection Sparse tables
+@c NODE 疎なテーブル
+
+@deftp {Class} <sparse-table>
+@clindex sparse-table
+A class for sparse table.  Inherits @code{<dictionary>} and
+@code{<collection>}.
+
+Operationally sparse tables are the same as hash tables, but
+the former consumes less memory in trade of slight slower access.
+(Roughly x1.5 to x2 access time when the table is small.
+As the table gets larger the difference becomes smaller.)
+@end deftp
+
+@defun make-sparse-table comparator
+Creates and returns an empty sparse table.
+The @var{comparator} argument specifies how to compare and hash keys;
+it must be either a comparator (@xref{Basic comparators}),
+or one of the symbols @code{eq?}, @code{eqv?}, @code{equal?} and
+@code{string=?}, like hash tables (@xref{Hashtables}).   If it is a symbol,
+@code{eq-comparator}, @code{eqv-comparator}, @code{equal-comparator} or
+@code{string-comparator} are used, respectively.
+@end defun
+
+@defun sparse-table-comparator st
+Returns the comparator used in the sparse table @var{st}.
+@end defun
+
+@defun sparse-table-copy st
+Returns a copy of a sparse table @var{st}.
+@end defun
+
+@defun sparse-table-num-entries st
+Returns the number of entries in a sparse table @var{st}.
+@end defun
+
+@defun sparse-table-ref st key :optional fallback
+Retrieves a value associated to the @var{key} in @var{st}.
+If no entry with @var{key} exists, @var{fallback} is returned
+when it is provided, or an error is signaled otherwise.
+@end defun
+
+@defun sparse-table-set! st key value
+Sets @var{value} with @var{key} in @var{st}.
+@end defun
+
+@defun sparse-table-exists? st key
+Returns @code{#t} if an entry with @var{key} exists in @var{st},
+@code{#f} otherwise.
+@end defun
+
+@defun sparse-table-delete! st key
+Deletes an entry with @var{key} in @var{st} if it exists.
+Returns @code{#t} if an entry is actually deleted, or @code{#f}
+if there hasn't been an entry with @var{key}.
+@end defun
+
+@defun sparse-table-clear! st
+Empties @var{st}.
+@end defun
+
+@defun sparse-table-update! st key proc :optional fallback
+@defunx sparse-table-push! st key val
+@defunx sparse-table-pop! st key :optional fallback
+@end defun
+
+@defun sparse-table-fold st proc seed
+@defunx sparse-table-for-each st proc
+@defunx sparse-table-map st proc
+@end defun
+
+@defun sparse-table-keys st
+@defunx sparse-table-values st
+@end defun
+
+@c ----------------------------------------------------------------------
+@node Trie, Database independent access layer, Sparse data containers, Library modules - Utilities
+@section @code{data.trie} - Trie
+@c NODE Trie, @code{data.trie} - Trie
+
+@deftp {Module} data.trie
+@mdindex data.trie
+@c EN
+This module provides @emph{Trie}, a dictionary-like data
+structure that maps keys to values, where a key is an arbitrary sequence.
+Internally it stores the data as a tree where each node corresponds
+to each element in the key sequence.
+Key lookup is O(n) where n is the length of the key, and not affected
+much by the number of total entries.
+Also it is easy to find a set of values whose keys have a common prefix.
+@c JP
+このモジュールは@emph{Trie}を提供します。@emph{Trie}はディレクトリに似
+たデータ構造で、キーを値に写像します。また、キーは任意のシーケンスです。
+内部的にはデータはツリーとして保持されます。このとき各ノードがキーシー
+ケンスの各要素に対応します。キーの検索は O(n) で、n はキーの長さです。
+したがって、全体のエントリ数には余り影響を受けません。また、キーが共通
+の接頭辞をもつような値の集合を簡単にみつけられます。
+@c COMMON
+
+@c EN
+The following example may give you the idea.
+@c JP
+以下のサンプルを見れば考え方が理解できると思います。
+@c COMMON
+
+@example
+(define t (make-trie))   ;; create a trie
+
+(trie-put! t "pho" 3)    ;; populate the trie
+(trie-put! t "phone" 5)
+(trie-put! t "phrase" 6)
+
+(trie-get t "phone")  @result{} 5  ;; lookup
+
+(trie-common-prefix t "pho")       ;; common prefix search
+  @result{} (("phone" . 5) ("pho" . 3))
+(trie-common-prefix-keys t "ph")
+  @result{} ("phone" "pho" "phrase")
+@end example
+
+@c EN
+Tries are frequently used with string keys, but you are not
+limited to do so; any sequence (@xref{Sequence framework}) can be
+a key.  If the types of keys differ, they are treated as different
+keys:
+@c JP
+Trieでは文字列キーを使うことが多いですが、それに限定される必要はありま
+せん。あらゆるシーケンス(@xref{Sequence framework})をキーにすることが
+できます。キーの型が違えば、別のキーとして扱われます。
+@c COMMON
+
+@example
+(trie-put! t '(#\p #\h #\o) 8)  ;; different key from "pho"
+@end example
+
+@c EN
+Trie inherits @code{<collection>} and implements collection framework
+including the builder. So you can apply generic collection
+operations on a trie (@xref{Collection framework}).
+When iterated, each element of a trie appears as a pair of a key
+and a value.
+@c JP
+Trieは@code{<collection>}を継承しており、コレクションフレームワークを
+ビルダも含めて実装しています。それゆえ、ジェネリックなコレクション操作
+をTrieに適用することが可能です(@ref{Collection framework}参照)。
+反復するとTrieの各要素がキーと値の対として現れます。
+@c COMMON
+@end deftp
+
+@deftp {Class} <trie>
+@clindex trie
+@c EN
+A class for Trie.  No slots are intended for public.
+Use the following procedures to operate on tries.
+@c JP
+Trieクラス。パブリックなスロットはありません。trieを操作するには以下の
+手続きを使ってください。
+@c COMMON
+
+@c EN
+This class also implements the dictionary interface
+(@xref{Generic functions for dictionaries}).
+@c JP
+このクラスはまた、ディクショナリインタフェースを実装しています
+(@ref{Generic functions for dictionaries}参照)。
+@c COMMON
+@end deftp
+
+@defun make-trie :optional tab-make tab-get tab-put! tab-fold
+@c EN
+Creates and returns an empty trie.  The optional four arguments
+are procedures to customize how the nodes of the internal
+tree are managed.
+@c JP
+空のtrieを生成し返します。4つのオプション引数があり、これらは、
+内部木のノードをどのようにマージするかをカスタマイズする手続きです。
+@c COMMON
+
+@c EN
+Each node can have a table to store its child nodes, indexed
+by an element of the key sequence (e.g. if the trie uses strings
+as keys, a node's table is indexed by characters).
+@c JP
+それぞれのノードは子のノードを格納するテーブルを持つことができます。
+キーシーケンスの要素でインデックスできます。(たとえば、trieがキーとし
+え文字列を使っているとすると、ノードのテーブルは文字でインデックスされ
+ています。)
+@c COMMON
+
+@c EN
+@table @code
+@item tab-make
+A procedure with no arguments.  When called, creates and
+returns an empty table for a node.
+@item tab-get @var{tab} @var{elt}
+Returns a child node indexed by @var{elt}, or returns @code{#f}
+if the table doesn't have a child for @var{elt}.
+@item tab-put! @var{tab} @var{elt} @var{child-node}
+If @var{child-node} isn't @code{#f},
+stores a @var{child-node} with index @var{elt}.
+If @var{child-node} is @code{#f},
+removes the entry with index @var{elt}.
+In both cases, this procedure should return the updated table.
+@item tab-fold @var{tab} @var{proc} @var{seed}
+Calls @var{proc} for every index and node in @var{tab}, while
+passing a seed value, whose initial value is @var{seed}.
+That is, @var{proc} has a type of @code{(index, node, seed) -> seed}.
+Should return the last result of @var{proc}.
+@end table
+@c JP
+@table @code
+@item tab-make
+引数なしの手続き。呼ばれるとノード用の空テーブルを生成し返します。
+@item tab-get @var{tab} @var{elt}
+@var{elt}でインデックスされた子ノードを返すか、あるいは@var{elt}に対応
+する子がテーブルにない場合には @code{#f}を返します。
+@item tab-put! @var{tab} @var{elt} @var{child-node}
+@var{child-node}が@code{#f}でなければ、@var{child-node}に@var{elt}とい
+うインデックスをつけて保存します。@var{child-node}が@code{#f}なら
+@var{elt}のインデックスをもつエントリを削除します。どちらの場合にも
+この手続きは更新されたテーブルを返します。
+@item tab-fold @var{tab} @var{proc} @var{seed}
+@var{tab}内の各インデックスと要素ごとに@var{proc}を呼びます。シード値
+が順に渡されていきます。シード値の初期値は@var{seed}です。すなわち、
+@var{proc}の型は@code{(index, node, seed) -> seed} のような型というこ
+とになります。返り値は最後の@var{proc}の適用結果です。
+@end table
+@c COMMON
+
+@c EN
+The default assumes @code{eqv?}-hashtables, i.e. the
+following procedures are used.
+@c JP
+デフォルトでは@code{eqv?}-ハッシュ可能であることが仮定されます。すなわ
+ち、以下の手続きが使われます。
+@c COMMON
+
+@example
+tab-make: (lambda () (make-hash-table 'eqv?))
+
+tab-get:  (lambda (tab k) (hash-table-get tab k #f))
+
+tab-put!: (lambda (tab k v)
+            (if v
+              (hash-table-put! tab k v)
+              (hash-table-delete! tab k))
+            tab)
+
+tab-fold: hash-table-fold
+@end example
+
+@c EN
+The following example creates a trie using
+assoc list to manage children, while comparing
+string keys with case-insensitive way:
+@c JP
+以下の例では子を管理するのに連想リストを用いるtrieを作成しています。
+文字列キーの比較は大文字小文字を無視する方法で行っています。
+@c COMMON
+
+@example
+(make-trie list
+           (cut assoc-ref <> <> #f char-ci=?)
+           (lambda (t k v)
+             (if v
+               (assoc-set! t k v char-ci=?)
+               (alist-delete! k t char-ci=?)))
+           (lambda (t f s) (fold f s t)))
+@end example
+
+@c EN
+It is important that @code{tab-put!} must return an updated
+table---by that, you can replace the table structure on the fly.
+For example, you may design a table which uses assoc list when
+the number of children are small, and then switches to a vector
+(indexed by character code) once the number of children grows over
+a certain threshold.
+@c JP
+@code{tab-put!}が更新されたテーブルを返すというのは重要で、これのおか
+げで、テーブル構造をおてがるに置き換えることができます。たとえば、
+子の数が少い場合にはテーブルに連想リストを使い、いったん子の数がある閾
+値を越えたら、(文字コードでインデックスされた)ベクタを使うように設計す
+ることができます。
+@c COMMON
+@end defun
+
+@defun trie params kv @dots{}
+@c EN
+Construct a trie with the initial contents
+@var{kv} @dots{}, where each @var{kv} is a pair of a key and a value.
+@var{Params} are a list of arguments
+which will be given to @code{make-trie} to create the trie.
+The following example creates a trie with two entries
+and the default table procedures.
+@c JP
+初期の内容が@var{kv} @dots{} であるようなtrieを構成します。ここで、
+@var{kv}はキーと値の対です。@var{params}はtrieを生成するときに
+@code{make-trie}に渡される引数のリストです。以下の例は2つのエントリ
+とデフォルトのテーブル手続をもつtrieを生成します。
+@c COMMON
+
+@example
+(trie '() '("foo" . a) '("bar" . b))
+@end example
+@end defun
+
+@defun trie-with-keys params key @dots{}
+@c EN
+A convenient version of @code{trie} when you only concern
+the keys.  Each value is the same as its key.
+The following example creates a trie with two entries
+and the default table procedures.
+@c JP
+キーにだけ関心がある場合には便利な@code{trie}。各値はキーと同じ。以下
+の例では2つのエントリとデフォルトのテーブル手続をもつtrieを生成します。
+@c COMMON
+
+@example
+(trie-with-keys '() "foo" "bar")
+@end example
+@end defun
+
+@defun trie? obj
+@c EN
+Returns @code{#t} if @var{obj} is a trie, or @code{#f} otherwise.
+@c JP
+@var{obj}がtrieなら@code{#t}を返し、さもなければ@code{#f}を返します。
+@c COMMON
+@end defun
+
+@defun trie-num-entries trie
+@c EN
+Returns the number of entries in @var{trie}.
+@c JP
+@var{trie}中のエントリの数を返します。
+@c COMMON
+@end defun
+
+@defun trie-exists? trie key
+@c EN
+Returns @code{#t} if @var{trie} contains an entry with @var{key},
+or returns @code{#f} otherwise.
+@c JP
+@var{trie}が@var{key}というキーのエントリを含む場合には@code{#t}を返し、
+さもなければ、@code{#f}を返します。
+@c COMMON
+@end defun
+
+@defun trie-get trie key :optional fallback
+@c EN
+Returns the value associated with @var{key} in @var{trie}, if
+such an entry exists.  When there's no entry for @var{key},
+if @var{fallback} is given, it is returned; otherwise,
+an error is signaled.
+@c JP
+@var{trie}中の@var{key}をもつエントリがあれば、それにむすびついている
+値を返します。そのようなエントリがない場合、@var{fallback}が与えられて
+いればそれを返し、さもなければ、エラーシグナルがあがります。
+@c COMMON
+@end defun
+
+@defun trie-put! trie key value
+@c EN
+Puts @var{value} associated to @var{key} into @var{trie}.
+@c JP
+@var{key}に結びついた@var{value}を@var{trie}に挿入します。
+@c COMMON
+@end defun
+
+@defun trie-update! trie key proc :optional fallback
+@c EN
+Works like the following code, except that the
+lookup of entry in @var{trie} is done only once.
+@c JP
+@var{trie}中のエントリの検索が一度きりしか起らないことをのぞけば以下の
+コードのように動きます。
+@c COMMON
+
+@example
+(let ((val (trie-get trie key fallback)))
+  (trie-put! trie key (proc val)))
+@end example
+@end defun
+
+@defun trie-delete! trie key
+@c EN
+Removes an entry associated with @var{key} from @var{trie}.
+If there's no such entry, this procedure does nothing.
+@c JP
+@var{trie}から@var{key}に関連するエントリを削除します。
+そのようなエントリがない場合にはこの手続きはなにもしません。
+@c COMMON
+@end defun
+
+@defun trie->list trie
+@c EN
+Makes each entry in @var{trie} to a pair @code{(@var{key} . @var{value})}
+and returns a list of pairs of all entries.  The order of entries
+are undefined.
+@c JP
+@var{trie}の各エントリを@code{(@var{key} . @var{value})}という対にして
+すべてのエントリの対のリストを返します。エントリの順序は未定義です。
+@c COMMON
+@end defun
+
+@defun trie-keys trie
+@defunx trie-values trie
+@c EN
+Returns a list of all keys and values in @var{trie}, respectively.
+The order of keys/values are undefined.
+@c JP
+それぞれ、@var{trie}のすべてのキーのリスト、すべての値のリストを返しま
+す。順序は未定義です。
+@c COMMON
+@end defun
+
+@defun trie->hash-table trie ht-type
+@c EN
+Creates a hash table with type @var{ht-type} (see @ref{Hashtables},
+about hash table types), and populates it with every key and value
+pair in @var{trie}.
+@c JP
+@var{ht-type}タイプのハッシュテーブル(ハッシュテーブルのタイプについて
+は@ref{Hashtables}を参照)を作成し、@var{trie}のすべてのキーと値の対を
+セットします。
+@c COMMON
+@end defun
+
+@defun trie-longest-match trie seq :optional fallback
+@c EN
+Returns a pair of the key and its value, where the key is the
+longest prefix of @var{seq}.   If no such key is found, @var{fallback}
+is returned if it is provided, or an error is thrown.
+
+Do not confuse this with @code{trie-common-prefix-*} procedures below;
+In this procedure, the key is the prefix of the given argument.
+In @code{trie-common-prefix-*} procedures, the given argument is
+the prefix of the keys.
+@c JP
+@var{seq}のプレフィクスになっているキーのうちもっとも長いものを見つけて、
+そのキーと値のペアを返します。そういったキーが見つからなかった場合は、
+@var{fallback}が与えられればそれを返し、なければエラーが通知されます。
+
+この手続きと以下の@code{trie-common-prefix-*}手続きを混同しないようにしてください。
+この手続きでは、キーが引数のプレフィクスです。
+@code{trie-common-prefix-*}手続きでは、引数がキーのプレフィクスです。
+@c COMMON
+
+@example
+(let1 t (make-trie)
+  (trie-put! t "a"  'a)
+  (trie-put! t "ab" 'ab)
+
+  (trie-longest-match t "abc")  @result{} ("ab" . ab)
+  (trie-longest-match t "acd")  @result{} ("a"  . a)
+  (trie-longest-match t "ab")   @result{} ("ab" . ab)
+  (trie-longest-match t "zy")   @result{} error
+  )
+@end example
+@end defun
+
+
+@defun trie-common-prefix trie prefix
+@defunx trie-common-prefix-keys trie prefix
+@defunx trie-common-prefix-values trie prefix
+@c EN
+Gathers all entries whose keys begin with @var{prefix};
+@code{trie-common-prefix} returns those entries in a list of
+pairs @code{(key . value)}; @code{trie-common-prefix-keys} returns
+a list of keys; and @code{trie-common-prefix-values} returns a list
+of values.   The order of entries in a returned list is undefined.
+If @var{trie} contains no entry whose key has @var{prefix}, an
+empty list is returned.
+@c JP
+@var{prefix}ではじまるキーをもつエントリをすべて集め、
+@code{trie-common-prefix}はその各エントリを@code{(key . value)}の対にし
+たリストを返します。@code{trie-common-prefix-keys}は、キーのリストを
+@code{trie-common-prefix-values}は値のリストを返します。返されるリスト
+のエントリの順序は未定義です。
+@var{trie}に指定した@var{prefix}をもつキーのエントリがなければ、
+空リストが返されます。
+@c COMMON
+
+@c EN
+Note that prefix matching doesn't consider the type of sequence;
+if @var{trie} has entries for @code{"foo"} and @code{(#\f #\o #\o)},
+@code{(trie-common-prefix trie "foo")} will return both entries.
+@c JP
+接頭辞照合ではシーケンスの型を考慮しないことに注意してください。
+@var{trie}のなかに@code{"foo"}と@code{(#\f #\o #\o)}に対応するエントリ
+があれば、@code{(trie-common-prefix trie "foo")}はその両方を返します。
+@c COMMON
+@end defun
+
+@defun trie-common-prefix-fold trie prefix proc seed
+@c EN
+For each entry whose key begins with @var{prefix},
+calls @var{proc} with three arguments, the entry's key,
+its value, and the current seed value.  @var{Seed} is
+used for the first seed value, and the value @var{proc}
+returns is used for the seed value of the next call of @var{proc}.
+The last returned value from @var{proc} is returned from
+@code{trie-common-prefix-fold}.
+The order of entries on which @var{proc} is called is undefined.
+If @var{trie} contains no entry whose key has @var{prefix},
+@var{proc} is never called and @var{seed} is returned.
+@c JP
+@var{prefix}ではじまるキーをもつ各エントリに対して、@var{proc}を3つの
+引数、エントリのキー、値、現在のシード値で呼びます。@var{seed}は最初の
+シード値として使われ、@var{proc}が返す値は次の@var{proc}の呼び出しのシー
+ド値として使われます。@var{proc}が返した最後の値が
+@code{trie-common-prefix-fold}から返ります。
+@var{proc}が適用される順序は未定義です。@var{trie}が@var{prefix}を持つ
+キーのエントリを含まない場合には@var{proc}が呼ばれることはなく、
+@var{seed}が返ります。
+@c COMMON
+@end defun
+
+@defun trie-common-prefix-map trie prefix proc
+@defunx trie-common-prefix-for-each trie prefix proc
+@c EN
+These are to @var{trie-common-prefix-fold} as @code{map} and @code{for-each}
+are to @code{fold}; @code{trie-common-prefix-map} calls
+@var{proc} with key and value for matching entries and
+gathers its result to a list; @code{trie-common-prefix-for-each}
+also applies @var{proc}, but discards its results.
+@c JP
+@code{map}や@code{for-each}を@code{fold}を合せたのと同じように、
+@var{trie-common-prefix-fold}に合せたものです。
+@code{trie-common-prefix-map}は@var{proc}をマッチするエントリのキーと
+値に適用し結果をリストにあつめます。
+@code{trie-common-prefix-for-each}も同じく@var{proc}を適用しますが
+結果は捨てます。
+@c COMMON
+@end defun
+
+@defun trie-fold trie proc seed
+@defunx trie-map trie proc
+@defunx trie-for-each trie proc
+@c EN
+These procedures are like their common-prefix versions, but
+traverse entire @var{trie} instead.
+@c JP
+これらの手続きはcommon-prefix版とおなじような働きをしますが、
+@var{trie}全体をトラバースします。
+@c COMMON
+@end defun
+
+
+
+
+@c ----------------------------------------------------------------------
+
+@node Database independent access layer, Generic DBM interface, Trie, Library modules - Utilities
 @section @code{dbi} - Database independent access layer
 @c NODE データベース非依存アクセス層, @code{dbi} - データベース非依存アクセス層
 
@@ -2072,7 +4764,7 @@ more efficient if you issue similar queries lots of time.
 @c COMMON
 
 @c EN
-If the backend does't support prepared statements (SQL templates
+If the backend doesn't support prepared statements (SQL templates
 having @code{?} parameters), the driver may use @code{text.sql}
 module to parse @var{sql}.  It may raise @code{<sql-parse-error>}
 condition if the given SQL is not well formed.
@@ -3289,7 +5981,7 @@ That makes it difficult to pass around dbm databases
 between different machines.
 A safe way is to write out the content of a dbm database
 into some portable format on the source machine,
-and rebuild another dbm databse from it on the destination
+and rebuild another dbm database from it on the destination
 machine.
 
 The operation is so common that Gauche provides convenience
@@ -3951,7 +6643,7 @@ like @code{map} and @code{for-each} to @code{fold}.
 
 The procedure @var{proc} is called with two arguments,
 an item read from the input and an output port.
-The results of @var{proc} are collected as a list and retured
+The results of @var{proc} are collected as a list and returned
 by @code{file-filter-map}, and discarded by @code{file-filter-for-each}.
 
 The meaning of keyword arguments are the same as @code{file-filter-fold}.
@@ -4314,7 +7006,7 @@ followed.
 @c EN
 If @var{src} is a regular file, copies its content to @var{dst}, just like
 @code{copy-file} does.  If @var{src} is a directory, recursively
-desends it and copy the file tree to @var{dst}.  Basically
+descends it and copy the file tree to @var{dst}.  Basically
 it mimics the behavior of @code{cp -r} command.
 
 If there's any symbolic links under @var{src}, the link itself
@@ -4609,12 +7301,17 @@ If @var{newext} is @code{#f}, it returns @var{path} without extension.
 拡張子を持たない場合は、@var{path}に "." と@var{newext}が追加されます。
 
 @var{newext}が@code{#f}の場合は、@var{path}の拡張子が除かれたものが
-返されます。すなわち、
+返されます。
 @c COMMON
 
 @example
 (path-swap-extension "/foo/bar.c" "o")  @result{} "/foo/bar.o"
+(path-swap-extension "/foo/bar.c" "")   @result{} "/foo/bar."
 (path-swap-extension "/foo/bar.c" #f)   @result{} "/foo/bar"
+
+(path-swap-extension "/foo/bar" "o")  @result{} "/foo/bar.o"
+(path-swap-extension "/foo/bar" "")   @result{} "/foo/bar."
+(path-swap-extension "/foo/bar" #f)   @result{} "/foo/bar"
 @end example
 @end defun
 
@@ -5238,7 +7935,7 @@ stealing behavior safely.  The creation and removal of the primary
 lock file (named by @var{lock-name} argument) are guarded by
 the secondary lock file (named by @var{secondary-lock-file} argument,
 defaulted by @code{.2} suffix attached to @var{lock-name}).
-The secondary lock is aquired for a very short period so there's
+The secondary lock is acquired for a very short period so there's
 much less chance to be left behind by abnormal terminations.
 If it happens, however, we just give up; we don't steal the
 secondary lock.
@@ -5267,7 +7964,7 @@ but it may be slower than @code{file}.
 
 Accepts a nonnegative real number that specifies either
 the interval to attempt to acquire the primary lock, or the maximum
-time we should keep retrying, respecively, in seconds.
+time we should keep retrying, respectively, in seconds.
 The default value is 1 second interval and 10 second limit.
 To prevent retrying, give 0 to @var{retry-limit}.
 
@@ -5814,7 +8511,7 @@ the upper bound of the prime number to be tried.  If it is given,
 @code{naive-factorize} leaves a factor @var{f} as is if it can't be
 divided by any primes less than or equal to @var{divisor-limit}.
 So, the last element of the returned list may be composite number.
-This is handy to exclude trivial factors befor applying more sophisticated
+This is handy to exclude trivial factors before applying more sophisticated
 factorizing algorithms.
 @c JP
 オプショナル引数@var{divisor-limit}を与えると、試行する素数の上限を指定
@@ -6708,7 +9405,7 @@ Calls @code{AllocConsole} and @code{FreeConsole}, respectively.
 @c @node PEG stream, PEG performance tips, PEG combinators, Parser combinators for PEG
 @c @subsection PEG stream
 
-@c @defun make-peg-steram generator :optional fini
+@c @defun make-peg-stream generator :optional fini
 @c @end defun
 
 @c @defun string->peg-stream string
@@ -7079,7 +9776,7 @@ Parses RFC822 type date format and returns SRFI-19 @code{<date>} object
 (see @ref{SRFI-19 Date}).  If @var{string} can't be parsed,
 returns @code{#f} instead.
 
-To consturct rfc822 date string from SRFI-19 date, you can use
+To construct rfc822 date string from SRFI-19 date, you can use
 @code{date->rfc822-date} below.
 @c JP
 RFC822形式の日付フォーマットをパーズし、SRFI-19 の @code{<date>} オブジェクト
@@ -7193,16 +9890,16 @@ SRFI-19の@code{<date>}オブジェクト(@ref{SRFI-19 Date}参照)
 @c EN
 This module defines a few functions to encode/decode Base64 format,
 defined in RFC 2045 (@ref{rfc2045, [RFC2045], RFC2045}), section 6.3
-and RFC3548 (@ref{rfc3548, [RFC3548], RFC3548})
+and RFC 4648 (@ref{rfc4648, [RFC4648], RFC4648})
 @c JP
 このモジュールでは、RFC 2045 (@ref{rfc2045, [RFC2045], RFC2045})の6.3節
-およびRFC 3548 (@ref{rfc3548, [RFC3548], RFC3548})で
+およびRFC 4648 (@ref{rfc4648, [RFC4648], RFC4648})で
 定義されている Base64 フォーマットへエンコード/デコードするいくつかの
 手続きを定義しています。
 @c COMMON
 @end deftp
 
-@defun base64-encode :key line-width
+@defun base64-encode :key line-width url-safe
 @c EN
 Reads byte stream from the current input port, encodes it in Base64
 format and writes the result character stream to the current output port.
@@ -7222,9 +9919,24 @@ value of @var{line-width} is 76, as specified in RFC2045.  You can give
 RFC2045に従い76となっています。@var{line-width}に@code{#f}または@code{0}
 を与えることで改行を抑制することができます。
 @c COMMON
+
+@c EN
+If a true value is given to @var{url-safe},
+the input bytes will be encoded with an
+alternative encoding table, which substitutes @code{+} instead of
+@code{-} and @code{/} instead of @code{_}. The result will contain
+filename and url safe characters only.  Default value of @var{url-safe}
+is false.
+@c JP
+@var{url-safe}に真の値を与えると、標準の Base64 と異なったエンコーディングテーブルを使って
+入力をエンコードします。このエンコーディングでは、@code{+}の代わりに
+@code{-}が、@code{/}の代わりに@code{_}が使われます。このエンコーディングは
+ファイル名やURLの一部として使うのに適しています。@var{url-safe}の
+デフォルト値は偽です。
+@c COMMON
 @end defun
 
-@defun base64-encode-string string :key line-width
+@defun base64-encode-string string :key line-width url-safe
 @c EN
 Converts contents of @var{string} to Base64 encoded format.
 Input string can be either complete or incomplete string;
@@ -7236,7 +9948,7 @@ it is always interpreted as a byte sequence.
 @c COMMON
 @end defun
 
-@defun base64-decode
+@defun base64-decode :key url-safe
 @c EN
 Reads character stream from the current input port, decodes it from Base64
 format and writes the result byte stream to the current output port.
@@ -7251,7 +9963,7 @@ Base64 でエンコードされた文字として適当でない文字は沈黙�
 @c COMMON
 @end defun
 
-@defun base64-decode-string string
+@defun base64-decode-string string :key url-safe
 @c EN
 Decodes a Base64 encoded string @var{string} and returns
 the result as a string.
@@ -7286,7 +9998,7 @@ RFC 6265で定義されている「クッキー」情報を
 @c EN
 Parse a cookie string @var{string}, which is the value of ``Cookie''
 request header.  Usually, the same information is available to CGI
-program via the environemnt variable @code{HTTP_COOKIE}.
+program via the environment variable @code{HTTP_COOKIE}.
 
 If the cookie version is known, via ``Cookie2'' request header,
 the integer version must be passed to @var{version}.  Otherwise,
@@ -7564,7 +10276,7 @@ those information is given in the @var{host} argument.
 @c EN
 If the keyword arugment @var{account} is given, its value
 is passed to ftp @code{ACCT} command when requested by
-the server at login time.  The defalut value is a null string @code{""}.
+the server at login time.  The default value is a null string @code{""}.
 @c JP
 キーワード引数@var{account}が与えられた場合には、その値が、ログイン時
 にサーバーからの要求でFTPの@code{ACCT}コマンドに渡されます。デフォルト
@@ -8194,7 +10906,7 @@ Other keywords are used as the header of the MIME part.
 
 最初の形式は使うのが簡単で、また@var{request-uri}のクエリパラメータリストと
 同じ形式なのでGETとPOSTでルーチンを共有したい場合にも便利でしょう。
-この形式では、各値はMIMEパーとに@code{text/plain}として置かれます。
+この形式では、各値はMIMEパートに@code{text/plain}として置かれます。
 文字コードは下に述べる@code{request-encoding}キーワード引数により変換されます。
 
 二番目の形式では、MIMEパートの属性についてより細かな指定を行うことができます。
@@ -8523,8 +11235,8 @@ The default behavior is as follows:
 デフォルトの動作は以下の通りです。
 @c COMMON
 
-@table @code
-@item 300, 301, 305, 307
+@table @asis
+@item @code{300}, @code{301}, @code{305}, @code{307}
 @c EN
 Redirect to the url given to the @code{location} header only if
 the original request method is @code{GET} or @code{HEAD}.
@@ -8532,10 +11244,10 @@ the original request method is @code{GET} or @code{HEAD}.
 元のリクエストが@code{GET}か@code{HEAD}の場合に限り、同じリクエストを使って
 @code{location}ヘッダに与えられたURLにリダイレクトします。
 @c COMMON
-@item 302
+@item @code{302}
 @c EN
 Redirect to the url given to the @code{location} header.  If
-the origianl request method is @code{HEAD}, it is used again.
+the original request method is @code{HEAD}, it is used again.
 Otherwise, @code{GET} method is used.
 
 Strictly speaking, this is a violation of RFC2616.  However, as the note
@@ -8550,10 +11262,10 @@ in RFC2616 says, many user agent do this, so we follow the flock.
 多くのユーザエージェントがこの振る舞いをするので、それに合わせてあります。
 (将来は変えるかもしれません。)
 @c COMMON
-@item 303
+@item @code{303}
 @c EN
 Redirect to the url given to the @code{location} header.  If
-the origianl request method is @code{HEAD}, it is used again.
+the original request method is @code{HEAD}, it is used again.
 Otherwise, @code{GET} method is used.
 @c JP
 @code{location}ヘッダに与えられたURLにリダイレクトします。
@@ -8588,13 +11300,35 @@ behavior in a specific request:
 
 
 @defun http-compose-query path params :optional encoding
+@c EN
 A helper procedure to create a request-uri from
 a list of query parameters.  @var{Encoding} specifies
 the character encodings to be used.
+@c JP
+クエリパラメータのリストからリクエストURIを生成する補助関数です。
+@var{encoding}引数はクエリパラメータの文字エンコーディングを指定します。
+@c COMMON
 
 @example
 (http-compose-query "/search" '((q "$foo") (n 20)))
  @result{} "/search?q=%24foo&n=20"
+
+(http-compose-query "" '((x "a b") (x 2)))
+ @result{} "?x=a%20b&x=2"
+@end example
+
+@c EN
+If @var{path} is @code{#f}, only the query parameter part
+is returned (compare the following example and the last
+example):
+@c JP
+@var{path}が@code{#f}の場合は、クエリパラメータの部分だけが返されます
+(次の例と直前の例を比べてみてください)。
+@c COMMON
+
+@example
+(http-compose-query #f '((x "a b") (x 2)))
+ @result{} "x=a%20b&x=2"
 @end example
 @end defun
 
@@ -8611,6 +11345,24 @@ and the boundary string.
 
 @var{Encoding} specifies the character encodings to be used.
 @end defun
+
+@defun http-status-code->description code
+@c EN
+Returns a brief description of http status code @code{code},
+which may be an integer or a string (e.g. @code{"404"}).
+If @code{code} isn't one of known code, @code{#f} is returned.
+@c JP
+HTTPステータスコード@code{code}の簡単な説明を返します。
+@code{code}は整数か、整数を表す文字列です(例: @code{"404"})。
+@code{code}が知られているものでなかった場合は@code{#f}が返されます。
+@c COMMON
+
+@example
+(http-status-code->description 404)
+  @result{} "Not Found"
+@end example
+@end defun
+
 
 @c EN
 @subheading Secure connection
@@ -8664,7 +11416,7 @@ so you usually don't need to use these functions.
 @c COMMON
 
 @c EN
-The @var{offset} argument specifies the beginnig of the IP packet
+The @var{offset} argument specifies the beginning of the IP packet
 in @var{packet}.  If @var{packet} contains only one IP packet
 you can pass 0.  It is not an optional argument, since these routines
 may be used in speed-sensitive inner loop.
@@ -8833,10 +11585,10 @@ ICMPv4およびICMPv6のタイプとコードの説明テキストを返しま�
 @deftp {Module} rfc.json
 @mdindex rfc.json
 @c EN
-Procedures to parse JSON (RFC4627) data to S-expressions,
+Procedures to parse JSON (RFC7159) data to S-expressions,
 and convert S-expressions to JSON representation, are provided.
 @c JP
-RFC4627で規定される、JSON形式をパーズしてS式に直す手続きと、
+RFC7159で規定される、JSON形式をパーズしてS式に直す手続きと、
 S式をJSON形式に変換する手続きが提供されます。
 @c COMMON
 @end deftp
@@ -8939,7 +11691,7 @@ and returns parsed results as a list.
 
 @defun parse-json-string str
 @c EN
-Parses the JSON string and resurns the result in an S-expression.
+Parses the JSON string and returns the result in an S-expression.
 May raise a @code{<json-parse-error>} condition when parse error occurs.
 
 See @code{parse-json} above for the mappings from JSON datatypes
@@ -9047,7 +11799,7 @@ RFC4627はJSONテキストはobjectかarrayであると定めているので、
 でなければなりません。
 
 @var{obj}がJSONにマップできないオブジェクトを含んでいた場合は
-@code{<json-consturct-error>}コンディションが投げられます。
+@code{<json-construct-error>}コンディションが投げられます。
 
 Schemeオブジェクトは以下のようにJSONへと変換されます。
 @c COMMON
@@ -10190,13 +12942,120 @@ in an incomplete string.
 @deftp {Module} rfc.uri
 @mdindex rfc.uri
 @c EN
-Provides a set of functions to parse Uniform Resource Identifiers
-defined in RFC 2396 (@ref{rfc2396, [RFC2396], RFC2396}).
+Provides a set of procedures to parse and construct Uniform Resource Identifiers
+defined in RFC 2396 (@ref{rfc2396, [RFC2396], RFC2396}),
+as well as Data URI scheme defined in RFC2397.
 @c JP
 RFC 2396 (@ref{rfc2396, [RFC2396], RFC2396})で定義されている
-Uniform Resource Identifiers をパーズする関数を提供します。
+Uniform Resource Identifiers、
+またRFC 2397で定義されているData URI Schemeをパーズおよび構築する
+手続き群を提供します。
 @c COMMON
 @end deftp
+
+First, lets review the structur of URI briefly.
+The following graph shows how the URI is constructed:
+
+@example
+URI-+-scheme
+    |
+    +-specific--+--authority-+--userinfo
+                |            +--host
+                |            +--port
+                +--path
+                +--query
+                +--fragment
+@end example
+
+Not all URIs have this full hierachy.  For exmaple,
+@code{mailto:admin@@example.com} has only @emph{scheme} (@code{mailto})
+and @emph{specific} (@code{admin@@example.com}) parts.
+
+Most popular URI schemes, however, organize resources
+in a tree, so they adopt @emph{authority} (which usually identifies
+the server) and the hierarchical @emph{path}.  In the URI
+@code{http://example.com:8080/search?q=key#results}, the authority
+part is @code{exmaple.com:8080}, the path is @code{/search},
+the query is @code{key} and the fragment is @code{results}.
+The userinfo can be provided before hostname, such as @code{anonymous}
+in @code{ftp://anonymous@@example.com/pub/}.
+
+We have procedures that decompose a URI into those parts,
+and that compose a URI from those parts.
+
+@c EN
+@subheading Parsing URI
+@c JP
+@subheading URIのパーズ
+@c COMMON
+
+@defun uri-ref uri parts
+Extract specific part(s) from the given URI.  You can fully
+decompose URI by the procedures described below, but in actual
+applications, you often need only some of the parts.  This procedure
+comes handy for it.
+
+The @var{parts} argument may be a symbol, or a list of symbols,
+to name the desired parts.  The recognized symbos are as follows.
+
+@table @code
+@item scheme
+The scheme part, as string..
+@item authority
+The authority part, as string.
+If URI doesn't have the part, @code{#f}.
+@item userinfo
+The userinfo part, as string.  If URI doesn't have the part, @code{#f}.
+@item host
+The host part, as string.  If URI doesn't have the part, @code{#f}.
+@item port
+The port part, as integer.  If URI doesn't have the part, @code{#f}.
+@item path
+The path part, as string.  If URI isn't hierarchical, this returns
+the specific part.
+@item query
+The query part, as string. If URI doesn't have the part, @code{#f}.
+@item fragment
+The fragment part, as string.  If URI doesn't have the part, @code{#f}.
+@item scheme+authority
+The scheme and authority part.
+@item host+port
+The host and port part.
+@item userinfo+host+port
+The userinfo, host and port part.
+@item path+query
+The path and query part.
+@item path+query+fragment
+The path, query and fragment part.
+@end table
+
+@example
+(define uri "http://foo:bar@@example.com:8080/search?q=word#results")
+
+(uri-ref uri 'scheme)             @result{} "http"
+(uri-ref uri 'authority)          @result{} "//foo:bar@@example.com:8080/"
+(uri-ref uri 'userinfo)           @result{} "foo:bar"
+(uri-ref uri 'host)               @result{} "example.com"
+(uri-ref uri 'port)               @result{} 8080
+(uri-ref uri 'path)               @result{} "/search"
+(uri-ref uri 'query)              @result{} "q=word"
+(uri-ref uri 'fragment)           @result{} "results"
+(uri-ref uri 'scheme+authority)   @result{} "http://foo:bar@@example.com:8080/"
+(uri-ref uri 'host+port)          @result{} "example.com:8080"
+(uri-ref uri 'userinfo+host+port) @result{} "foo:bar@@example.com:8080"
+(uri-ref uri 'path+query)         @result{} "/search?q=word"
+(uri-ref uri 'path+query+fragment)@result{} "/search?q=word#results"
+@end example
+
+You can extract multiple parts at once by specifying a list of parts.
+A list of parts is returned.
+
+@example
+(uri-ref uri '(host+port path+query))
+  @result{} ("example.com:8080" "/search?q=word")
+@end example
+@end defun
+
 
 @defun uri-parse uri
 @defunx uri-scheme&specific uri
@@ -10340,6 +13199,60 @@ It returns @var{userinfo}, @var{host} and @var{port}.
 @end example
 @end defun
 
+
+@defun uri-decompose-data uri
+@c EN
+Parse a Data URI string @var{uri}.  You can either pass the entire
+uri including @code{data:} scheme part, or just the specific part.
+If the passed uri is invalid as a data uri, an error is signalled.
+
+Returns two values: parsed content type and the decoded data.
+The data is a string if the content type is @code{text/*}, and
+a u8vector otherwise.
+
+The content-type is parsed by @code{mime-parse-content-type}
+(@xref{MIME message handling}).  The result format is a list as follows:
+@c JP
+Data URI文字列@var{uri}をパーズします。@code{data:}スキームは有っても無くても
+構いません。渡されたuriがdata uriとして無効な文字列であればエラーが投げられます。
+
+二つの値、パーズされたContent-Typeおよびデコードされたデータを返します。
+Content-Typeが@code{text/*}であればデコードされたデータは文字列で、
+そうでなければu8vectorで返されます。
+
+Content-Typeは@code{mime-parse-content-type}でパーズされます
+(@ref{MIME message handling}参照)。結果のデータ形式は次のようなリストです。
+@c COMMON
+
+@example
+@code{(@i{type} @i{subtype} (@i{attribute} . @i{value}) @dots{})}.
+@end example
+
+@c EN
+Here are a couple of examples:
+@c JP
+いくつか例を示します。
+@c COMMON
+
+@example
+(uri-decompose-data
+ "data:text/plain;charset=utf-8;base64,KGhlbGxvIHdvcmxkKQ==")
+  @result{} ("text" "plain" ("charset" . "utf-8")) @r{and} "(hello world)"
+
+(uri-decompose-data
+ "data:application/octet-stream;base64,AAECAw==")
+  @result{} ("application" "octet-stream") @r{and} #u8(0 1 2 3)
+@end example
+
+@end defun
+
+
+@c EN
+@subheading Constructing URI
+@c JP
+@subheading URIの構築
+@c COMMON
+
 @defun uri-compose :key scheme userinfo host port authority path path* query fragment specific
 @c EN
 Compose a URI from given components.
@@ -10438,6 +13351,63 @@ to the resulting uri, and so on.
 @end example
 @end defun
 
+@defun uri-compose-data data :key content-type encoding
+@c EN
+Creates a Data URI of the given @var{data}, with specified content-type
+and transfer encoding.  Returns a string.
+
+The @var{data} argument must be a string or a u8vector.
+
+The @var{content-type} argument can be @code{#f} (default),
+a string that represents a content type (e.g. @code{"text/plain;charset=utf-8"}),
+or a list form of parsed content type
+(e.g. @code{("application" "octet-stream")}.  If it is @code{#f},
+@code{text/plain} with the gauche's native character encoding is
+used when @var{data} is a complete string, and @code{application/octet-stream}
+is used otherwise.
+
+The @var{encoding} argument can be either @code{#f} (default),
+or a symbol @code{uri} or @code{base64}.  This is for transfer encoding,
+not character encoding.  If it is @code{#f}, URI encoding is used
+for text data and base64 encoding is used for binary data.
+@c JP
+与えられた@var{data}からData URIを構築して文字列で返します。
+
+@var{data}引数は文字列かu8vectorでなければなりません。
+
+@var{content-type}キーワード引数は、@code{#f} (デフォルト)、
+content typeを表現する文字列 (例: @code{"text/plain;charset=utf-8"})、
+もしくはパーズされたcontent type (例: @code{("application" "octet-stream")})です。
+@code{#f}である場合は、@var{data}が完全な文字列であれば
+@code{text/plain}にGaucheのネイティブ文字エンコーディングに基づく@code{charset}を
+つけたもの、@var{data}がそれ以外であれば@code{application/octet-stream}が
+使われます。
+
+@var{encoding}キーワード引数は@code{#f} (デフォルト)、
+もしくはシンボル@code{uri}または@code{base64}です。これは文字エンコーディングではなく
+トランスファーエンコーディングであることに注意。
+@code{#f}の場合は、テキストデータなら@code{uri}が、バイナリデータなら@code{base64}が
+使われます。
+@c COMMON
+
+@example
+(uri-compose-data "(hello world)")
+ @result{} "data:text/plain;charset=utf-8,%28hello%20world%29"
+
+(uri-compose-data "(hello world)" :encoding 'base64)
+ @result{} "data:text/plain;charset=utf-8;base64,KGhlbGxvIHdvcmxkKQ=="
+
+(uri-compose-data '#u8(0 1 2 3))
+ @result{} "data:application/octet-stream;base64,AAECAw=="
+@end example
+@end defun
+
+
+@c EN
+@subheading URI Encoding and decoding
+@c JP
+@subheading URIのエンコードとデコード
+@c COMMON
 
 @defun uri-decode :key :cgi-decode
 @defunx uri-decode-string string :key :cgi-decode :encoding
@@ -10717,7 +13687,7 @@ There are a couple of special modes specifiable by @var{window-bits}.
 When an integer between -8 and -15 is given to
 @var{window-bits}, the port produces a raw deflated data,
 that lacks zlib header and trailer.  In this case, Adler32 checksum isn't
-calculated.  The actual window size is determiend by the absolute value of
+calculated.  The actual window size is determined by the absolute value of
 @var{window-bits}.
 @c JP
 @var{window-bits}よって、2つばかり特別なモードを指定することができます。
@@ -10884,7 +13854,7 @@ Takes an input port @var{source} from which a compressed data
 can be read, and creates and returns a new instance of
 @code{<inflating-port>}, that is, a port that allows
 decompressed data from it.
-This procedure covers zlib's functionarity of
+This procedure covers zlib's functionality of
 @code{inflateInit2()} and @code{inflateSetDictionary()}.
 @c JP
 圧縮データを読み出せる入力ポート@var{source}を取り、
@@ -10904,7 +13874,7 @@ the same as @code{open-deflating-port}.
 
 @c EN
 The meaning of @var{window-bits} is almost the same,
-except that if a value incresed by 32 is given, the inflating port
+except that if a value increased by 32 is given, the inflating port
 automatically detects whether the source stream is
 zlib or gzip by its header.
 @c JP
@@ -12899,7 +15869,7 @@ if @var{obj} is SXML element, otherwise returns @var{#f}.
 The function @code{ntype-names??} takes a list of acceptable node names as a
 criterion and returns a function, which, when applied to a node,
 will return @code{#t} if the node name is present in criterion list
-and @code{#f} othervise.
+and @code{#f} otherwise.
 @c JP
 関数@code{ntype-names??}は、判定基準として受け付け可能なノード名のリストを取り、
 関数を返します。この関数は、ノードに適用された際、そのノード名が判定基準リストに
@@ -14478,7 +17448,7 @@ Returns a fast 'node-parent' function, i.e.
 a function of one argument - SXML element - which returns its parent
 node using @code{*PARENT*} pointer in aux-list.
 '@code{*TOP-PTR*} may be used as a pointer to root node.
-It return an empty list when applyed to root node.
+It return an empty list when applied to root node.
 @c JP
 高速な'node-parent'関数を返します。
 すなわち、SXML要素を1引数として取り、補助リストで
@@ -14558,7 +17528,7 @@ Creates the XML markup for attributes.
 
 @defun sxml:string->xml string
 @c EN
-Return a string or a list of strings where all the occurences of
+Return a string or a list of strings where all the occurrences of
 characters @code{<}, @code{>},
 @code{&}, @code{"}, or @code{'} in a given string are
 replaced by corresponding
@@ -14818,10 +17788,10 @@ omitted.  Default: @code{#t}.
 @code{standalone} - Whether to define the XML document as standalone in
 the XML declaration.  Should be one of the symbols @code{yes},
 @code{no} or @code{omit}, the later causing standalone declaration to
-be supressed.  Default: @code{omit}.
+be suppressed.  Default: @code{omit}.
 @c JP
 @code{standalone} - XML ドキュメントを XML 宣言でスタンドアローンとし
-て定義するかどうか。@code{yes}、@code{no}、@code{omit}のうちいづれかの
+て定義するかどうか。@code{yes}、@code{no}、@code{omit}のうちいずれかの
 シンボルでなければならない。デフォルトは @code{omit}
 @c COMMON
 
@@ -14967,7 +17937,7 @@ the field are ignored.
 @c JP
 RFC4180に定義されたフォーマットを含む、
 CSV (カンマ区切りの値) の表をパーズ/生成するための手続きを提供します。
-区切り文字やクオート文字をカスタマイズすることで、CVSに似たフォーマットを
+区切り文字やクオート文字をカスタマイズすることで、CSVに似たフォーマットを
 広くカバーすることができます。
 
 CSV の表は、改行で区切られた @var{record} の連続で構成されます。
@@ -14993,14 +17963,15 @@ and automatic conversions.
 
 @defun make-csv-reader separator :optional (quote-char #\")
 @c EN
-Returns a procedure with one argument, input port.
-When the procedure is called, it reads one record from the port,
+Returns a procedure with one optional argument, an input port.
+When the procedure is called, it reads one record from the port
+(or, if omitted, from the current input port)
 and returns a list of fields.
 If input reaches EOF, it returns EOF.
 @c JP
-入力ポートを唯一の引数として取る手続きを返します。
-手続きが呼ばれると、ポートからレコードを1つ読み込み、フィールドの
-リストを返します。入力ポートが EOF に達すると、EOF を返します。
+入力ポートを省略可能引数として取る手続きを返します。
+手続きが呼ばれると、ポート(省略された場合は現在の入力ポート)からレコードを1つ読み込み、
+フィールドのリストを返します。入力ポートが EOF に達すると、EOF を返します。
 @c COMMON
 @end defun
 
@@ -15890,13 +18861,15 @@ when it returns a true value.
 
 @defun read-string n :optional port
 @c EN
-Reads up to @var{n} characters, collects them into a string, and returns it.
-If the input stream contains less characters, the returns string contains
-as many characters available.
+This is like built-in @code{read-string} (@xref{Reading data}),
+except that this returns @code{""} when the input already reached EOF.
+
+Provided for the compatibility for the code that depends Oleg's library.
 @c JP
-@var{n} 文字まで読み込み、文字列として蓄積しそれを返します。
-入力ストリームに含まれる文字のほうが少ない場合、有効な文字を可能な限り
-含む文字列が返ります。
+組み込みの@code{read-string} (@ref{Reading data}参照) とほぼ同じですが、
+入力が既にEOFに達していた場合は@code{""}を返します。
+
+Olegのライブラリに依存しているコードの互換性のために用意されています。
 @c COMMON
 @end defun
 
@@ -16654,6 +19627,7 @@ an output string port, and returns the result string.
 
 @deftp {Module} text.unicode
 @mdindex text.unicode
+@c EN
 This module provides various operations on a sequence of Unicode codepoints.
 
 Gauche can be compiled with a native encoding other than Unicode,
@@ -16661,7 +19635,16 @@ and the full Unicode-compatible behavior on characters and strings may
 not be available on such systems.  So we provide most operations in two
 flavors: Operations on characters and strings, or operations on
 codepoints represented as a sequence of integers.
+@c JP
+このモジュールは、Unicodeのコードポイントの列に対する様々な操作を提供します。
 
+Gaucheはコンパイル時に、内部文字エンコーディングとしてUnicode以外も選べます。
+その場合、文字列に対して完全にUnicode互換の動作を提供できない場合があります。
+そこで、本モジュールの多くの操作は、文字列を対象にするものと、
+コードポイントの数値のシーケンスを対象にするものの両方で提供されます。
+@c COMMON
+
+@c EN
 If Gauche is compiled with its native encoding being @code{none},
 @code{euc-jp} or @code{sjis}, character-and-string operations
 are likely to be partial functions of the operations defined
@@ -16669,7 +19652,15 @@ in Unicode standard.  That is, if the operation can yield a
 character that are not supported in the native encoding, it
 may be remapped to an alternative character.  Each manual entry
 explains the detailed behavior.
+@c JP
+Gaucheの内部エンコーディングが@code{none}、
+@code{euc-jp}、@code{sjis}の場合は、
+文字および文字列に対する操作はUnicode標準で定義されたものと完全には一致しないでしょう。
+操作の結果が、内部エンコーディングでは定義されていない文字になった場合、
+それは代替文字に置き換えられます。各関数のエントリで詳しく説明してあります。
+@c COMMON
 
+@c EN
 The codepoint operations are independent from Gauche's native
 encoding and supports full spec as defined in Unicode standard.
 If Gauche is compiled with the @code{utf-8} native encoding,
@@ -16678,6 +19669,15 @@ when you convert codepoints and characters by @code{char->integer} and
 @code{integer->char}.  The codepoint operations are handy when
 you need to support the algorithms described in Unicode standard
 fully, no matter what the running Gauche's native encoding is.
+@c JP
+コードポイントの列に対する操作はGaucheの内部文字エンコーディングとは
+無関係であり、Unicode標準の定義が完全にサポートされます。
+Gaucheが@code{utf-8}でコンパイルされている場合、コードポイント列に
+対する操作は、文字列に対する操作と (各要素を@code{char->integer}および
+@code{integer->char}で変換すること以外は)一致します。
+コードポイント列に対する操作はGaucheの内部文字エンコーディングにかかわらず
+ポータブルなアルゴリズムを必要とする場合に便利です。
+@c COMMON
 @end deftp
 
 @menu
@@ -16716,7 +19716,7 @@ The procedure may still raise an error in @code{permissive} or
 way to handle the input data.
 
 @defun ucs4->utf8 codepoint :optional strictness
-Takes an integer codepoint and returns list of octets that
+Takes an integer codepoint and returns a list of octets that
 encodes the input in UTF-8.
 
 @example
@@ -16773,13 +19773,69 @@ between @code{#x110000} to @code{#x7fffffff}.  The invalid
 octet sequence is still an error with @code{permissive} mode.
 @end defun
 
+@defun utf8->string u8vector :optional start end
+[R7RS]
+Converts a sequence of utf8 octets in @var{u8vector} to a string.
+Optional @var{start} and/or @var{end} argument(s) will limit the
+range of the input.
+
+If Gauche's native encoding is utf8, 
+@code{u8vector->string} (@xref{Uvector conversion operations})
+will do the job faster; but this routine can be used regardless
+of Gauche's native encoding, and it raises an error if @var{u8vector}
+contains octet sequences illegal as utf8.
+@end defun
+
+@defun string->utf8 string :optional start end
+[R7RS]
+Converts a string to a u8vector of utf8 octets.
+Optional @var{start} and/or @var{end} argument(s) will limit the
+range of the input.
+
+If Gauche's native encoding is utf8, 
+@code{string->u8vector} (@xref{Uvector conversion operations})
+will do the job faster; but this routine can be used regardless
+of Gauche's native encoding.
+@end defun
+
 @defun ucs4->utf16 codepoint :optional strictness
+Takes an integer codepont and returns a list of integers
+that encodes the input in UTF-16.  The output is either
+one integer or two integers, and each integer is in the
+range between 0 and 65535 (inclusive).
+
+If @var{strictness} is @code{strict} (default), input codepoint
+between @code{#xd800} to @code{#xdfff}, and beyond @code{#x110000},
+are rejected.  If @var{strictness} is @code{permissive}, it accepts
+high surrogates and low surrogates, in which case the result is
+single element list of input.  If @var{strictness} is @code{ignore},
+an empty list is returned for an invalid codepoint (including surrogates).
 @end defun
 
-@defun utf16-length octet :optional strictness
+@defun utf16-length code :optional strictness
+@var{Code} must be an integer between 0 and 65535, inclusive.
+Returns 1 if @var{code} is BMP character codepoint, or
+2 if @var{code} is high surrogate codepoint.
+
+If @var{strictness} is @code{strict} (default), an error is
+signalled if @var{code} is a low surrogate, or it is out of range.
+If @var{strictness} is @code{permissive}, 1 is returned
+for low surrogates, but an error is signalled for out of range arguments.
+If @var{strictness} is @code{ignore}, 0 is returned
+for low surrogates and out of range arguments.
 @end defun
 
-@defun utf16->ucs4 octet-list :optional strictness
+@defun utf16->ucs4 code-list :optional strictness
+Takes a list of integers and decodes it as a utf-16 sequence.
+Returns two values: The decoded ucs4 codepoint, and the rest of
+input list.
+
+If @var{strictness} is @code{strict} (default), an invalid utf-16
+sequence and out-of-range integer raise an error.  If @var{strictness}
+is @code{permissive}, an out-of-range integer causes an error, but
+a lone surrogate is allowed and returned as is.  If @var{strictness}
+is @code{ignore}, lone surrogates and out-of-range integers are just
+ignored.
 @end defun
 
 @node Unicode text segmentation, Full string case conversion, Unicode transfer encodings, Unicode utilities
@@ -16891,7 +19947,7 @@ Then the created generator works as follows:
 @defunx string-downcase string
 @defunx string-titlecase string
 @defunx string-foldcase string
-[R6RS]
+[R6RS][R7RS]
 Converts given @var{string} to upper case, using language-independent
 full case folding defined by Unicode standard.
 They differ from srfi-13's procedures
@@ -16929,6 +19985,24 @@ codepoints instead.  Returns a sequence of the same type of the input.
  @result{} #(83 84 82 65 83 83 69)
 @end example
 @end defun
+
+@defun string-ci=? string1 string2 string3 @dots{}
+@defunx string-ci<? string1 string2 string3 @dots{}
+@defunx string-ci<=? string1 string2 string3 @dots{}
+@defunx string-ci>? string1 string2 string3 @dots{}
+@defunx string-ci>=? string1 string2 string3 @dots{}
+[R7RS]
+Case-insensitive string comparison, using full-string case conversion.
+
+Note that Gauche has builtin @code{string-ci=?} etc., which use
+character-wise case folding (@xref{String Comparison}).  These are
+different procedures.
+
+@example
+(string-ci=? "\u00df" "SS") @result{} #t
+@end example
+@end defun
+
 
 
 @c ----------------------------------------------------------------------
@@ -17110,7 +20184,7 @@ Returns a cartesian product of sets in @var{list-of-sets}.
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Message digester framework, Determine isomorphism, Combination library, Library modules - Utilities
+@node Message digester framework, Calculate dominator tree, Combination library, Library modules - Utilities
 @section @code{util.digest} - Message digester framework
 @c NODE メッセージダイジェストフレームワーク, @code{util.digest} - メッセージダイジェストフレームワーク
 
@@ -17226,7 +20300,82 @@ converts it to a hexified string.
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Determine isomorphism, The longest common subsequence, Message digester framework, Library modules - Utilities
+@node Calculate dominator tree, Determine isomorphism, Message digester framework, Library modules - Utilities
+@section @code{util.dominator} - Calculate dominator tree
+@c NODE 支配木, @code{util.dominator} - 支配木
+
+@deftp {Module} util.dominator
+@mdindex util.dominator
+@c EN
+Dominator tree is an auxiliary structure for control flow graphs.
+It is frequently used in the flow analysis of compilers, but
+also useful for handling general directed graphs.
+@c JP
+支配木(dominator tree)は制御フローグラフで補助的に使われる構造です。
+コンパイラのフロー解析によく使われることが多いですが、一般の有向グラフでも有用です。
+@c COMMON
+@end deftp
+
+@defun calculate-dominators start upstreams downstreams node-comparator
+@c EN
+The four arguments represent a directed, possibly cyclic, graph.
+Here, we use @code{Node} to denote an abstract type of a node 
+of the graph.  It can be anything---the algorithm is oblivious on
+the actual type of nodes.
+@c JP
+4つの引数で有向グラフが表現されます。循環があっても構いません。
+以下ではグラフのノードが@code{Node}という型を持つとして説明します。
+実際にはノードの型は何であっても構いません。
+アルゴリズムはノードの実際の型とは無関係に動作します。
+@c COMMON
+
+@table @asis
+@item @var{start} @code{:: Node}
+@c EN
+The start node, or the enter node, of the graph.
+@c JP
+フローの起点となるノード。startノードとかenterノードとも呼ばれます。
+@c COMMON
+@item @var{upstreams} @code{:: Node -> (Node @dots{})}
+@c EN
+A procedure that takes a node, and returns its upstream
+(immediate ancestor) nodes.
+@c JP
+ノードを取り、その直接の上流ノードのリストを返す関数。
+@c COMMON
+@item @var{downstreams} @code{:: Node -> (Node @dots{})}
+@c EN
+A procedure that takes a node, and returns its downstream
+(immediate descendant) nodes.
+@c JP
+ノードを取り、その直接の下流ノードのリストを返す関数。
+@c COMMON
+@item @var{node-comparator}
+@c EN
+A comparator that is used to determine if two nodes are equal to each other.
+It doesn't need to have comparison procedure (we don't need to see
+which is smaller than the other), but it has to have hash function,
+for we use hashtables internally.  (@xref{Comparators}, for the details
+of comparators.)
+@c JP
+二つのノードが等しいかどうかを決定する比較器。大小比較関数を持っている必要はありませんが、
+アルゴリズム内部でハッシュテーブルを使うので、ハッシュ関数は持っている必要があります。
+比較器について詳しくは@ref{Comparators}を参照してください。
+@c COMMON
+@end table
+
+@c EN
+The procedure returns a list of @code{(node1 node2)}, where
+@code{node2} is an immediate dominator of @code{node1}.
+@c JP
+返り値は@code{(node1 node2)}を要素に持つリストです。ここで、
+@code{node2}は@code{node1}の直接支配ノード(immediate dominator)です。
+@c COMMON
+@end defun
+
+
+@c ----------------------------------------------------------------------
+@node Determine isomorphism, The longest common subsequence, Calculate dominator tree, Library modules - Utilities
 @section @code{util.isomorph} - Determine isomorphism
 @c NODE 同型判定, @code{util.isomorph} - 同型判定
 
@@ -17492,7 +20641,7 @@ returns.
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Pattern matching, Queue, The longest common subsequence, Library modules - Utilities
+@node Pattern matching, Red black tree, The longest common subsequence, Library modules - Utilities
 @section @code{util.match} - Pattern matching
 @c NODE パターンマッチング, @code{util.match} - パターンマッチング
 
@@ -17871,7 +21020,7 @@ an integer.
 
 @item
 @c EN
-A symbol @code{_} matches anything, without binding a patter variable.
+A symbol @code{_} matches anything, without binding a pattern variable.
 It can be used to show "don't care" placeholder.
 @c JP
 シンボル @code{_} はあらゆるものマッチし、パターン変数は束縛しません。
@@ -17889,7 +21038,7 @@ keywords match the same object (in the sense of @code{equal?}).
 
 @item
 @c EN
-Quoted expression matches the same experssion (in the sense of @code{equal?}).
+Quoted expression matches the same expression (in the sense of @code{equal?}).
 You can use a quoted symbol to match the symbol itself.
 @c JP
 クウォートされた式は(@code{equal?} という意味で)同じ式とマッチします。
@@ -18044,7 +21193,7 @@ called, it returns the matched value.
 @c EN
 @code{`qp} is a quasipattern.  @var{qp} is quoted, in the sense
 that it matches itself, @emph{except} the pattern that is unquoted.
-(Don't confuse quasipatern to quasiquote, though the functions are
+(Don't confuse quasipattern to quasiquote, though the functions are
 similar.  Quasiquote turns off evaluation except unquoted subtree.
 Quasiquote turns off the special pattern syntax except unquoted subtree.
 See the examples below).
@@ -18168,465 +21317,7 @@ quasipatternの例です。最初の式では、パターンのうち@code{value
 
 
 @c ----------------------------------------------------------------------
-@node Queue, Red black tree, Pattern matching, Library modules - Utilities
-@section @code{util.queue} - Queue
-@c NODE キュー, @code{util.queue} - キュー
-
-@deftp {Module} util.queue
-@mdindex util.queue
-@c EN
-Provides a queue (FIFO).  You can create a simple queue,
-which is lightweight but not thread-safe, or an MTqueue,
-a thread-safe queue.  Basic queue operations work on
-both type of queues.  When an mtqueue is passed to the
-procedures listed in this section, each operation is
-done in atomic way, unless otherwise noted.
-
-There are also a set of procedures for mtqueues that
-can be used for thread synchronization; for example,
-you can let the consumer thread block if an
-mtqueue is empty, and/or the producer thread block if the number
-of items in the mtqueue reaches a specified limit.
-Using these procedures allows the program to use an mtqueue
-as a @emph{channel}.
-
-The simple queue API is a superset of SLIB's queue implementation.
-@c JP
-キュー(FIFO)機能を提供します。
-極めて軽量ですがスレッドセーフでないシンプルなキューと、
-スレッドセーフなmtqueueがあります。基本的なキュー操作手続きは
-どちらのキューに対しても使うことができます。本節で説明されている
-手続きをmtqueueに適用した場合、特に断りが無い限り、操作は
-アトミックに行われます。
-
-また、スレッド間同期に使えるmtqueue用の手続きも用意されています。
-例えばキューが空の時に読み出しスレッドをブロックさせたり
-キューの長さが指定値に達した場合に書き込みスレッドをブロックさせることができ、
-いわゆる「チャネル」としてキューを使うことができます。
-
-シンプルキューのAPIはSLIBのキュー実装の上位互換になっています。
-@c COMMON
-@end deftp
-
-@deftp {Class} <queue>
-@clindex queue
-@c EN
-A class of simple queue.
-@c JP
-シンプルなキューのクラスです。
-@c COMMON
-
-@defivar {<queue>} length
-@c EN
-A read-only slot that returns the number of items in the queue.
-@c JP
-キュー中の要素の数を返す、読み取り専用のスロットです。
-@c COMMON
-@end defivar
-@end deftp
-
-@deftp {Class} <mtqueue>
-@clindex mtqueue
-@c EN
-A class of mtqueue.  Inherits @code{<queue>}.
-@c JP
-mtqueueのクラスです。@code{<queue>}を継承しています。
-@c COMMON
-
-@defivar {<mtqueue>} max-length
-@c EN
-The upper bound of the number of items in the queue.
-@c JP
-キュー中の要素数の上限を示します。
-@c COMMON
-
-@c EN
-If this slot is zero, the queue cannot hold any items, but
-works as a synchrization device.
-A writer will block until a reader appears to take the item;
-a reader will block until a writer appears to give the item.
-@c JP
-このスロットが0の場合、キューは要素を中に持つことはできませんが、同期デバイスとして動作します。
-書き込みスレッドは、その要素を受け取る読み出しスレッドが現れるまでブロックし、
-読み出しスレッドは、要素を渡してくれる書き込みスレッドが現れるまでブロックします。
-@c COMMON
-@end defivar
-@end deftp
-
-@defun make-queue
-@c EN
-Creates and returns an empty simple queue.
-@c JP
-空のシンプルなキューを作って返します。
-@c COMMON
-@end defun
-
-@defun make-mtqueue &key max-length
-@c EN
-Creates and returns an empty mtqueue.  When an integer is given
-to the keyword argument @var{max-length}, it is used to
-initialize the @code{max-length} slot.
-@c JP
-空のmtqueueを作って返します。整数が@var{max-length}に与えられた場合は、
-それが@code{max-length}スロットの値となります。
-@c COMMON
-@end defun
-
-@defun queue? obj
-@c EN
-Returns @code{#t} if @var{obj} is a queue (either a simple queue
-or an mtqueue).
-@c JP
-@var{obj}がキューであれば(シンプルなキューでもmtqueueでも)@code{#t}を返します。
-@c COMMON
-@end defun
-
-@defun mtqueue? obj
-@c EN
-Returns @code{#t} if @var{obj} is an mtqueue.
-@c JP
-@var{obj}がmtqueueであれば@code{#t}を返します。
-@c COMMON
-@end defun
-
-@defun queue-empty? queue
-@c EN
-Returns @code{#t} if @var{obj} is an empty queue.
-@c JP
-@var{obj}が空のキューであれば@code{#t}を返します。
-@c COMMON
-@end defun
-
-@defun queue-length queue
-@c EN
-Returns the number of the items in the queue.
-@c JP
-キューの中にある要素の数を返します。
-@c COMMON
-@end defun
-
-@defun mtqueue-max-length mtqueue
-@c EN
-Returns the maximum number of items the mtqueue can hold.
-Zero indicates unlimited.
-@c JP
-キューが保持できる要素の最大数を返します。限度がない場合はゼロが返ります。
-@c COMMON
-@end defun
-
-@defun mtqueue-room mtqueue
-@c EN
-Returns the number of elements the mtqueue can accept at this moment
-before it hits its maximum length.   For example, if the queue
-already has the maximum number of elements, 0 is returned.
-If the queue doesn't have the limit, @code{+inf.0} is returned.
-@c JP
-保持できる最大容量に達するまであといくつ要素を受け入れることができるかを
-示す整数を返します。例えば、既にキューがいっぱいであれば0が返ります。
-キューに最大容量が設定されていなければ@code{+inf.0}が返ります。
-@c COMMON
-@end defun
-
-
-@defun copy-queue queue
-@c EN
-Returns a copy of the queue.
-@c JP
-キューqueueのコピーを返します。
-@c COMMON
-@end defun
-
-@defun enqueue! queue obj :optional more-objs @dots{}
-@c EN
-Add @var{obj} to the end of @var{queue}.  You may give more than
-one object, and each of them are enqueued in order.
-@c JP
-@var{obj}をキュー@var{queue}の末尾に追加します。
-一つ以上の@var{obj}を与えることができ、その場合はそれらが順にenqueueされます。
-@c COMMON
-
-@c EN
-If @var{queue} is an mtqueue, all the objects are enqueued
-atomically; no other objects from other threads can be inserted
-between the objects given to a single @code{enqueue!} call.
-Besides, if the value of its @code{max-length} slot
-is positive, and adding @var{obj}s makes the number of
-elements in @var{queue} exceeds @code{max-length},
-an error is signaled and @var{queue} won't be modified.
-(If @code{max-length} is zero, this procedure always fail.
-Use @code{enqueue/wait!} below.)
-@c JP
-@var{queue}がmtqueueの場合、渡されたオブジェクト全ての追加は
-アトミックに行われます。すなわち、途中に別スレッドが要素を挿入する
-ことはありません。さらに、@code{max-length}スロットが正の値を
-持っており、この@code{enqueue!}の実行によってキューの要素数が
-@code{max-length}を越えることになる場合は、@var{queue}は
-変更されずエラーとなります。
-(@code{max-length}がゼロの場合、この手続きは常にエラーとなります。
-下に説明する@code{enqueue/wait!}を使ってください。)
-@c COMMON
-@end defun
-
-@defun queue-push! queue obj :optional more-objs @dots{}
-@c EN
-Add @var{obj} in front of @var{queue}.  You may give more than
-one object, and each of them are pushed in order.
-
-Like @code{enqueue!}, when @var{queue} is an mtqueue,
-all objects are added atomically, and the value of
-@code{max-length} slot is checked.  See @code{enqueue!} above
-for the details.
-@c JP
-@var{obj}をキュー@var{queue}の先頭に追加します。
-一つ以上の@var{obj}を与えることができ、その場合はそれらが順にpushされます。
-
-@code{enqueue!}と同様に、@var{queue}がmtqueueの場合は
-全てのオブジェクトはアトミックに追加され、また@code{max-length}の値も
-チェックされます。詳しくは上の@code{enqueue!}の説明を参照してください。
-@c COMMON
-@end defun
-
-@defun enqueue-unique! queue eq-proc obj :optional more-objs @dots{}
-@defunx queue-push-unique! queue eq-proc obj :optional more-objs @dots{}
-@c EN
-Like @code{enqueue!} and @code{queue-push!}, respectively, except that these
-don't modify @var{queue} if it already contains @var{obj}
-(elements are compared by two-argument procedure @var{eq-proc}).
-
-When @var{queue} is an mtqueue, all objects are added atomically,
-and the value of
-@code{max-length} slot is checked.  See @code{enqueue!} above
-for the details.
-@c JP
-@var{obj}が既に@var{queue}の中に含まれている場合には@var{queue}を
-変更しないことを以外には、@code{enqueue!}および@code{queue-push!}と同じ
-動作をします。@var{obj}が含まれているかどうかの検査は
-2引数の関数@var{eq-proc}で行います。
-
-@var{queue}がmtqueueの場合は
-全てのオブジェクトはアトミックに追加され、また@code{max-length}の値も
-チェックされます。詳しくは上の@code{enqueue!}の説明を参照してください。
-@c COMMON
-@end defun
-
-@defun dequeue! queue :optional fallback
-@defunx queue-pop! queue :optional fallback
-@c EN
-Take one object from the front of the queue @var{queue} and returns it.
-Both function works the same, but @code{queue-pop!} may be used to
-emphasize it works with @code{queue-push!}.
-
-If @var{queue} is empty, @var{fallback} is returned if given,
-otherwise an error is signaled.
-
-If @var{queue} is an mtqueue and its @code{max-length} is zero,
-the queue is always empty.  Use @code{dequeue/wait!} to use
-such a queue as an synchronization device.
-@c JP
-キュー@var{queue}の先頭からひとつ要素を取って返します。
-二つの手続きは全く同じ動作をします。@code{queue-pop!}は@code{queue-push!}と
-ペアで使われていることを強調したいときに使うと良いでしょう。
-
-キューが空の場合は、@var{fallback}が与えられていればそれが返され、
-そうでなければエラーが報告されます。
-
-キューがmtqueueでその@code{max-length}がゼロの場合、
-キューは常に空であるとみなされます。ゼロ長のキューを同期デバイスとして
-使う場合は@code{dequeue/wait!}を使ってください。
-@c COMMON
-@end defun
-
-@defun dequeue-all! queue
-@c EN
-Returns the whole content of the queue by a list, with emptying
-@var{queue}.   If @var{queue} is already empty, returns an empty list.
-See also @code{queue->list} below.
-@c JP
-キューの全ての内容をリストにして返します。キューそのものは空になります。
-キューが既に空の場合は空リストが返されます。
-下の@code{queue->list}も参照してください。
-@c COMMON
-@end defun
-
-@defun queue-front queue :optional fallback
-@defunx queue-rear queue :optional fallback
-@c EN
-Peek the head or the tail of the queue and returns the object, respectively.
-@var{util.queue - Queue} is not modified.
-If @var{queue} is empty, @var{fallback} is returned if it is given,
-otherwise an error is signaled.
-@c JP
-キュー@var{queue}の先頭もしくは末尾の要素を返します。キューそのものは変更されません。
-キューが空の場合、@var{fallback}が与えられていればその値を返し、
-そうでなければエラーを報告します。
-@c COMMON
-@end defun
-
-@defun list->queue list :optional class :rest initargs
-@c EN
-Returns a new queue whose content is the elements in @var{list},
-in the given order.
-
-By default the created queue is a simple queue, but you
-can create mtqueue or instances of other subclasses of @code{<queue>}
-by giving the class to the optional @var{class} arguments.
-The optional @var{initargs} arguments are passed to the constructor
-of @var{class}.
-@c JP
-与えられたリスト@var{list}の各要素をその順で持つようなキューを作成して返します。
-
-デフォルトではシンプルキューが作られますが、@var{class}に@code{<class>}の
-サブクラスを渡すことで他のキュークラスのインスタンスを作ることができます。
-@var{initargs}は@var{class}のコンストラクタに渡されます。
-@c COMMON
-@end defun
-
-@defun queue->list queue
-@c EN
-Returns a list whose content is the items in the queue in order.
-Unlike @code{dequeue-all!}, the content of @var{queue} remains intact.
-
-In Gauche, @code{queue->list} copies the content of the queue to a
-freshly allocated list, while @code{dequeue-all!} doesn't copy but
-directly returns the queue's internal list.   There are some Scheme
-systems that has @code{queue->list} but doesn't guarantee the content
-is copied, so if you're planning to share the code among these
-implementations, it's better not to rely on the fact that
-@code{queue->list} copies the content.
-@c JP
-キュー@var{queue}の内容をリストにして返します。
-@code{dequeue-all!}と異なり、キューそのものの内容は変化しません。
-
-Gaucheでは@code{queue->list}は新しいリストをアロケートしてキューの
-内容をコピーします (@code{dequeue-all!}はコピーをせずにキューの内部の
-リストをそのまま返します)。組込みで@code{queue->list}を持っているScheme
-実装がいくつかありますが、その中には@code{queue->list}がキューの
-内容をコピーすることを保証していないものがあるので、それらの処理系と
-共有するコードでは@code{queue->list}がリストをコピーすることを
-あてにしない方が良いでしょう。
-@c COMMON
-@end defun
-
-@defun find-in-queue pred queue
-@c EN
-Returns the first item in @var{queue} that satisfies a
-predicate @var{pred}.  The order of arguments follows
-@code{find} (@xref{Other list procedures}).
-@c JP
-キュー内の要素のうち述語@var{pred}を満たす最初の要素を返します。
-引数の順序は@code{find}に揃えました (@ref{Other list procedures}参照)。
-@c COMMON
-@end defun
-
-@defun any-in-queue pred queue
-@c EN
-Like @code{any} in SRFI-1, apply @var{pred} on each item
-in @var{queue} until it evaluates true, and returns that
-true value (doesn't necessarily be @code{#t}).  If no
-items in the queue satisfies @var{pred}, @code{#f} is returned.
-@c JP
-SRFI-1の@code{any}のように、@var{queue}中の各要素に
-順に@var{pred}を適用し、それが真の値 (@code{#t}である必要はありません) に
-評価されたらその値を返します。@var{pred}を満たす要素が無ければ@code{#f}が
-返ります。
-@c COMMON
-@end defun
-
-@defun every-in-queue pred queue
-@c EN
-Like @code{every} in SRFI-1, apply @var{pred} on each item
-in @var{queue}.  If @var{pred} returns @code{#f}, stops
-iteration and returns @code{#f} immediately.
-Otherwise, returns the result of the application of
-@var{pred} on the last item of the queue.  If the queue
-is empty, @code{#t} is returned.
-@c JP
-SRFI-1の@code{every}のように、@var{queue}中の各要素に
-順に@var{pred}を適用し、それが@code{#f}を返したらすぐ@code{#f}を返します。
-@var{pred}に対し@code{#f}を返す要素が無ければ、最後の要素に@var{pred}を
-適用した結果が返ります。キューが空なら@code{#f}が返ります。
-@c COMMON
-@end defun
-
-@defun remove-from-queue! pred queue
-@c EN
-Removes all items in the queue that satisfies @var{pred}.
-Returns @code{#t} if any item is removed.  Otherwise returns @code{#f}.
-The order of arguments follows
-@code{remove} in SRFI-1 (@xref{SRFI-1 List utilities}).
-@c JP
-キューから、述語@var{pred}を満たす要素を全て取り除きます。
-要素が削除された場合は@code{#t}が、そうでなければ@code{#f}が返されます。
-引数の順序はSRFI-1の@code{remove}に揃えました (@ref{SRFI-1 List utilities}参照)。
-@c COMMON
-@end defun
-
-@c EN
-Note on portability:
-Scheme48 has @code{delete-from-queue!}, which takes object to remove
-rather than predicate, and also takes arguments in reversed order
-(i.e. queue comes first).   Avoid conflicting with that I intentionally
-left out @code{delete-from-queue!}; it's easy to write one in either
-Scheme48 compatible way or consistent to SRFI-1 argument order.
-@c JP
-移植性に関する註：Scheme48には、述語ではなく削除するオブジェクトそのものを取る
-@code{delete-from-queue!}がありますが、引数の順序が逆(キューが先)になっています。
-まぎらわしい衝突を避けるため、敢えて@code{delete-from-queue!}は
-提供しませんでした。@code{remove-from-queue!}を使えば、Scheme48互換の方法でも、
-あるいはSRFI-1と一貫性のある方法でも@code{delete-from-queue!}を簡単に書けるでしょう。
-@c COMMON
-
-@defun enqueue/wait! mtqueue obj :optional timeout timeout-val
-@defunx queue-push/wait! mtqueue obj :optional timeout timeout-val
-@defunx dequeue/wait! mtqueue :optional timeout timeout-val
-@defunx queue-pop/wait! mtqueue :optional timeout timeout-val
-@c EN
-These synchronizing variants work on an mtqueue and
-make the caller thread block when the mtqueue has reached
-its maximum length (for @code{enqueue/wait!} and @code{queue-push/wait!}),
-or the mtqueue is empty (for @code{dequeue/wait!} and
-@code{queue-pop/wait!}).   The blocked caller thread is unblocked
-either when the blocking condition is resolved, or the timeout
-condition is met.
-
-The optional @var{timeout} argument specifies the timeout condition.
-If it is @code{#f}, those procedures wait indefinitely.
-If it is a real number, they wait at least the given number of
-seconds.  If it is a @code{<time>} object (@xref{Time}),
-they wait until the absolute point of time the argument specifies.
-
-In case the call is blocked then timed out, the value of
-@var{timeout-val} is returned, which defaults to @code{#f}.
-
-When @code{enqueue/wait!} and @code{queue-push/wait!} succeeds
-without hitting timeout, they return @code{#t}.
-@c JP
-これらの手続きは@var{mtqueue}に対して使うことができ、
-スレッド間同期を実現できます。
-@code{enqueue/wait!}と@code{queue-push/wait!}は、
-キューの要素数が@var{max-length}を越える場合に、キューに空きができるまで、
-@code{dequeue/wait!}と@code{queue-pop/wait!}は、
-キューが空の場合に、キューに要素が追加されるまで、
-呼び出しスレッドをブロックします。
-
-@var{timeout}引数で、ブロックされたスレッドのタイムアウトを指定することができます。
-@code{#f}は指定しなかった場合と同じで、キューの状態が変化するまで
-無期限に待ちます。実数が渡された場合はそれが秒数と解釈され、最低限
-その時間経過するまでは待ちます。渡されたのが@code{<time>}オブジェクト
-(@ref{Time}参照)である場合は、そのオブジェクトが指定する絶対時刻を
-経過するまで待ちます。
-
-タイムアウトによりブロックが解かれた場合は、@var{timeout-val}で
-指定した値が返されます。@var{timeout-val}の省略時値は@code{#f}です。
-
-@code{enqueue/wait!}と@code{queue-push/wait!}は、
-タイムアウトせずに操作が成功した場合は@code{#t}を返します。
-@c COMMON
-@end defun
-
-
-@c ----------------------------------------------------------------------
-@node Red black tree, SLIB-compatible record type, Queue, Library modules - Utilities
+@node Red black tree, SLIB-compatible record type, Pattern matching, Library modules - Utilities
 @section @code{util.rbtree} - Red black tree
 @c NODE 赤黒木, @code{util.rbtree} - 赤黒木
 
@@ -19064,7 +21755,7 @@ obj @result{} #<my-record 0x819d9b0>
 @end example
 
 @c ----------------------------------------------------------------------
-@node Relation framework, Sparse data containers, SLIB-compatible record type, Library modules - Utilities
+@node Relation framework, Stream library, SLIB-compatible record type, Library modules - Utilities
 @section @code{util.relation} - Relation framework
 @c NODE リレーションフレームワーク, @code{util.relation} - リレーションフレームワーク
 
@@ -19413,339 +22104,7 @@ you can write like this:
 @end deftp
 
 @c ----------------------------------------------------------------------
-@node Sparse data containers, Stream library, Relation framework, Library modules - Utilities
-@section @code{util.sparse} - Sparse data containers
-@c NODE 疎なデータコンテナ, @code{util.sparse} - 疎なデータコンテナ
-
-@deftp {Module} util.sparse
-@mdindex util.sparse
-This module provides a @emph{sparse vector}, a space efficient
-data containter indexed by nonnegative integer, and
-a @emph{sparse table}, a hash table using a sparse vector
-as a backing storage.
-@end deftp
-
-A sparse vector associates a nonnegative integer index
-to a value.  It has @emph{vector} in its name since it is indexed
-by an integer, but it isn't like a flat array on contiguous memory;
-it's more like an associative array.  (Internally, the current
-implementation uses compact trie structure.)
-It is guaranteed that you can store a value with index at least
-up to @code{2^32-1}; the actual maximum bits of indexes can
-be queried by @code{sparse-vector-max-index-bits}.
-
-Unlike ordinary vectors, you don't need to specify the size
-of a sparse vector when you create one.  You can just set
-a value to any index in the supported range.
-
-@example
-(define v (make-sparse-vector))
-
-(sparse-vector-set! v 0 'a)
-(sparse-vector-ref v 0) @result{} a
-
-(sparse-vector-set! v 100000000 'b)
-(sparse-vector-ref v 100000000) @result{} b
-
-;; set! also work
-(set! (sparse-vector-ref v 100) 'c)
-(sparse-vector-ref v 100) @result{} c
-@end example
-
-If you try to access an element that hasn't been set,
-an error is signaled by default.  You can give a
-fallback value to @code{sparse-vector-ref} to suppress
-the error.
-
-@example
-(sparse-vector-ref v 1)        @result{} @r{error}
-(sparse-vector-ref v 1 'noval) @result{} noval
-@end example
-
-A sparse table works just like a hash table, but it uses
-a sparse vector to store the values using hashed number of keys.
-
-The main reason of these sparse data containers are for
-memory efficiency.   If you want to store values in a vector
-but knows you'll use only some entries sparsely, obviously it
-is waste to allocate a large vector and to leave many entries unused.
-But it is worse than that; Gauche's GC doesn't like a large
-contiguous region of memory.  Using lots of large vectors adds
-GC overhead quickly.  It becomes especially visible when you
-store large number of entries (like >100,000) into hash tables,
-since Gauche's builtin hash tables use a flat vector as a backing
-storage.   You'll see the heap size grows quickly and
-GC runs more frequently and longer.
-On the other hand, sparse table works pretty stable with
-large number of entries.
-
-Sparse data containers does have overhead on access speed.
-They are a bit slower than the ordinary hash tables,
-and much slower than ordinary vectors.  We should note, however,
-as the number of entries grow, access speed on ordinary hash
-tables grows quicker than sparse tables and eventually two become
-comparable.
-
-It depends on your application which you should use, and
-if you're not sure, you need to benchmark.
-As a rule of thumb, if you use more than several hashtables
-each of which contains more than a few tens of thousands of
-entries, sparse tables may work better.
-If you see GC Warnings telling ``repeated allocation of large
-blocks'', you should definitely consider sparse tables.
-
-@menu
-* Sparse vectors::              
-* Sparse tables::               
-@end menu
-
-@node Sparse vectors, Sparse tables, Sparse data containers, Sparse data containers
-@subsection Sparse vectors
-@c NODE 疎なベクタ
-
-@deftp {Class} <sparse-vector-base>
-@clindex sparse-vector-base
-An abstract base class of sparse vectors.
-Inherits @code{<dictionary>} and @code{<collection>}.
-Note that sparse vectors are @emph{not} @code{<sequence>}; even
-they can be indexable by integers, they don't have
-means of @emph{ordered} access.
-
-Sparse vector may be a general vector
-that can contain any Scheme objects (like @code{<vector>}),
-or a specialized vector that can contain only certain
-types of numbers (like @code{<s8vector>} etc.).
-
-All of these sparse vectors can be accessed by the same API.
-
-Sparse vectors also implements the Collection API
-(@xref{Collection framework}) and the Dictionary API
-(@xref{Dictionary framework}).
-@end deftp
-
-@deftp {Class} <sparse-vector>
-@deftpx {Class} <sparse-@var{TAG}vector>
-@clindex sparse-vector
-@clindex sparse-s8vector
-@clindex sparse-u8vector
-@clindex sparse-s16vector
-@clindex sparse-u16vector
-@clindex sparse-s32vector
-@clindex sparse-u32vector
-@clindex sparse-s64vector
-@clindex sparse-u64vector
-@clindex sparse-f16vector
-@clindex sparse-f32vector
-@clindex sparse-f64vector
-The actual sparse vector classes.  Inherits @code{<sparse-vector-base>}.
-An instance of @code{<sparse-vector>} can contain any Scheme objects.
-
-@var{TAG} either one of @code{s8}, @code{u8},
-@code{s16}, @code{u16}, @code{s32}, @code{u32},
-@code{s64}, @code{u64}, @code{f16}, @code{f32}, or @code{f64}.
-The range of values an instance of those classes can hold
-is the same as the corresponding @code{<@var{TAG}vector>} class
-in @code{gauche.uvector} (@xref{Uniform vectors}).  That is,
-@code{<sparse-u8vector>} can have exact integer values
-between 0 and 255.
-@end deftp
-
-@defun make-sparse-vector :optional type
-Creates an empty sparse vector.  The @var{type} argument can be
-@code{#f} (default), one of subclasses of @code{<sparse-vector-base>},
-or a symbol of either one of @code{s8}, @code{u8},
-@code{s16}, @code{u16}, @code{s32}, @code{u32},
-@code{s64}, @code{u64}, @code{f16}, @code{f32}, or @code{f64}.
-
-If @var{type} is omitted or @code{#f}, a @code{<sparse-vector>} is
-created.  If it is a class, an instance of the class is created
-(It is an error to pass a class that is not a subclass of
-@code{<sparse-vector-base>}.)
-If it is a symbol, an instance of corresponding @code{<sparse-@var{TAG}vector>}
-is created.
-@end defun
-
-@defun sparse-vector-max-index-bits
-Returns maximum number of bits of allowed integer.  If this
-returns 32, the index up to @code{(expt 2 32)} is supported.
-It is guaranteed that this is at least 32.
-@end defun
-
-In the following entries, the argument @var{sv} denotes
-an instance of sparse vector; an error is signaled if other
-object is passed.
-
-@defun sparse-vector-copy sv
-Returns a copy of a sparse vector @var{sv}.
-@end defun
-
-@defun sparse-vector-ref sv k :optional default
-Returns @var{k}-th element of a sparse vector @var{sv}, where
-@var{k} must be a nonnegative exact integer.  If @var{k} is
-equal to or greater than the allowed index range, an error
-is signaled.
-
-If @var{k} is within the allowed range but the sparse vector
-doesn't have a value for @var{k}, @var{default} is returned
-if it is provided, otherwise an error is signaled.
-@end defun
-
-@defun sparse-vector-set! sv k value
-Sets @var{value} for @var{k}-th element of a sparse vector @var{sv}.
-@var{K} must be a nonnegative exact integer, and below the maximum
-allowed index.
-
-If @var{sv} is a numeric sparse vector, @var{value} must also be
-within the allowed range, or an error is signaled.
-@end defun
-
-@defun sparse-vector-num-entries sv
-Returns the number of entries in @var{sv}.
-@end defun
-
-@defun sparse-vector-exists? sv k
-Returns @code{#t} if @var{sv} has an entry for index @var{k},
-@code{#f} otherwise.
-@end defun
-
-@defun sparse-vector-delete! sv k
-Deletes the @var{k}-th entry of @var{sv}.  If @var{sv} had the entry ,
-returns @code{#t}.  If @var{sv} didn't have the entry, returns @code{#f}.
-@end defun
-
-@defun sparse-vector-clear! sv
-Empties a sparse vector.
-@end defun
-
-@defun sparse-vector-inc! sv k delta :optional (fallback 0)
-This is a shortcut of the following.  It is especially efficient
-for numeric sparse vectors.
-
-@example
-(sparse-vector-set! sv k (+ (sparse-vector-ref sv k fallback) delta))
-@end example
-
-If the result of addition exceeds the allowed value range of @var{sv},
-an error is signaled.  In future we'll allow an option to clamp
-the result value within the range.
-@end defun
-
-@defun sparse-vector-update! sv k proc :optional fallback
-@defunx sparse-vector-push! sv k val
-@defunx sparse-vector-pop! sv k :optional fallback
-Convenience routines to fetch-and-update an entry of
-a sparse vector.  Works just like @code{hash-table-update!},
-@code{hash-table-push!} and @code{hash-table-pop!};
-(@xref{Hashtables}).
-@end defun
-
-
-The following procedures traverses a sparse vector.
-Note that elements are not visited in the order of index;
-it's just like hash table traversers.
-
-At this moment, if you want to walk a sparse vector with
-increasing/decreasing index order, you have to get a list
-of keys by @code{sparse-vector-keys}, sort it, then use
-it to retrieve values.
-We may add an option in future to @code{make-sparse-vector} so that
-those walk operation will be more convenient.
-
-@defun sparse-vector-fold sv proc seed
-For each entry in @var{sv}, calls @var{proc} as
-@code{(proc @var{k_n} @var{v_n} @var{seed_n})}, where
-@var{k_n} is an index and @var{v_n} is a value for it,
-and @var{seed_n} is the returned value of the previous
-call to @code{proc} if @var{n} @code{>=} 1, and @var{seed} if @var{n} = 0.
-Returns the value of the last call of @code{proc}.
-@end defun
-
-@defun sparse-vector-for-each sv proc
-@defunx sparse-vector-map sv proc
-Calls @code{proc} with index and value, e.g. @code{(proc k value)},
-for each element of @var{sv}.
-
-The results of @var{proc} are discarded by @code{sparse-vector-for-each},
-and gathered to a list and returned by @code{sparse-vector-map}.
-@end defun
-
-@defun sparse-vector-keys sv
-@defunx sparse-vector-values sv
-Returns a list of all keys and all values in @var{sv}, respectively.
-@end defun
-
-@node Sparse tables,  , Sparse vectors, Sparse data containers
-@subsection Sparse tables
-@c NODE 疎なテーブル
-
-@deftp {Class} <sparse-table>
-@clindex sparse-table
-A class for sparse table.  Inherits @code{<dictionary>} and
-@code{<collection>}.
-
-Operationally sparse tables are the same as hash tables, but
-the former consumes less memory in trade of slight slower access.
-(Roughly x1.5 to x2 access time when the table is small.
-As the table gets larger the difference becomes smaller.)
-@end deftp
-
-@defun make-sparse-table type
-Creates and returns an empty sparse table.  The @var{type} argument
-specifies how to compare the elements; currently it can be
-one of the symbols @code{eq?}, @code{eqv?}, @code{equal?} and
-@code{string=?}, like hash tables (@xref{Hashtables}).
-@end defun
-
-@defun sparse-table-copy st
-Returns a copy of a sparse table @var{st}.
-@end defun
-
-@defun sparse-table-num-entries st
-Returns the number of entries in a sparse table @var{st}.
-@end defun
-
-@defun sparse-table-ref st key :optional fallback
-Retrieves a value associated to the @var{key} in @var{st}.
-If no entry with @var{key} exists, @var{fallback} is returned
-when it is provided, or an error is signaled otherwise.
-@end defun
-
-@defun sparse-table-set! st key value
-Sets @var{value} with @var{key} in @var{st}.
-@end defun
-
-@defun sparse-table-exists? st key
-Returns @code{#t} if an entry with @var{key} exists in @var{st},
-@code{#f} otherwise.
-@end defun
-
-@defun sparse-table-delete! st key
-Deletes an entry with @var{key} in @var{st} if it exists.
-Returns @code{#t} if an entry is actually deleted, or @code{#f}
-if there hasn't been an entry with @var{key}.
-@end defun
-
-@defun sparse-table-clear! st
-Empties @var{st}.
-@end defun
-
-@defun sparse-table-update! st key proc :optional fallback
-@defunx sparse-table-push! st key val
-@defunx sparse-table-pop! st key :optional fallback
-@end defun
-
-@defun sparse-table-fold st proc seed
-@defunx sparse-table-for-each st proc
-@defunx sparse-table-map st proc
-@end defun
-
-@defun sparse-table-keys st
-@defunx sparse-table-values st
-@end defun
-
-
-@c ----------------------------------------------------------------------
-@node Stream library, Trie, Sparse data containers, Library modules - Utilities
+@node Stream library, Topological sort, Relation framework, Library modules - Utilities
 @section @code{util.stream} - Stream library
 @c NODE ストリームライブラリ, @code{util.stream} - ストリームライブラリ
 
@@ -20187,7 +22546,7 @@ of the given stream.   If the given stream has less than
 would raise an error when the elements beyond the original stream
 is accessed.  On the other hand, the stream returned by
 @code{stream-take-safe} will return a shortened stream when
-the given steram has less than @var{count} elements.
+the given stream has less than @var{count} elements.
 
 @example
 (stream->list (stream-take (stream-iota -1) 10))
@@ -20304,447 +22663,7 @@ inserted between elements of @var{stream}.
 @end defun
 
 @c ----------------------------------------------------------------------
-@node Trie, Topological sort, Stream library, Library modules - Utilities
-@section @code{util.trie} - Trie
-@c NODE Trie, @code{util.trie} - Trie
-
-@deftp {Module} util.trie
-@mdindex util.trie
-@c EN
-This module provides @emph{Trie}, a dictionary-like data
-structure that maps keys to values, where a key is an arbitrary sequence.
-Internally it stores the data as a tree where each node corresponds
-to each element in the key sequence.
-Key lookup is O(n) where n is the length of the key, and not affected
-much by the number of total entries.
-Also it is easy to find a set of values whose keys have a common prefix.
-@c JP
-このモジュールは@emph{Trie}を提供します。@emph{Trie}はディレクトリに似
-たデータ構造で、キーを値に写像します。また、キーは任意のシーケンスです。
-内部的にはデータはツリーとして保持されます。このとき各ノードがキーシー
-ケンスの各要素に対応します。キーの検索は O(n) で、n はキーの長さです。
-したがって、全体のエントリ数には余り影響を受けません。また、キーが共通
-の接頭辞をもつような値の集合を簡単にみつけられます。
-@c COMMON
-
-@c EN
-The following example may give you the idea.
-@c JP
-以下のサンプルを見れば考え方が理解できると思います。
-@c COMMON
-
-@example
-(define t (make-trie))   ;; create a trie
-
-(trie-put! t "pho" 3)    ;; populate the trie
-(trie-put! t "phone" 5)
-(trie-put! t "phrase" 6)
-
-(trie-get t "phone")  @result{} 5  ;; lookup
-
-(trie-common-prefix t "pho")       ;; common prefix search
-  @result{} (("phone" . 5) ("pho" . 3))
-(trie-common-prefix-keys t "ph")
-  @result{} ("phone" "pho" "phrase")
-@end example
-
-@c EN
-Tries are frequently used with string keys, but you are not
-limited to do so; any sequence (@xref{Sequence framework}) can be
-a key.  If the types of keys differ, they are treated as different
-keys:
-@c JP
-Trieでは文字列キーを使うことが多いですが、それに限定される必要はありま
-せん。あらゆるシーケンス(@xref{Sequence framework})をキーにすることが
-できます。キーの型が違えば、別のキーとして扱われます。
-@c COMMON
-
-@example
-(trie-put! t '(#\p #\h #\o) 8)  ;; different key from "pho"
-@end example
-
-@c EN
-Trie inheris @code{<collection>} and implements collection framework
-including the builder. So you can apply generic collection
-operations on a trie (@xref{Collection framework}).
-When iterated, each element of a trie appears as a pair of a key
-and a value.
-@c JP
-Trieは@code{<collection>}を継承しており、コレクションフレームワークを
-ビルダも含めて実装しています。それゆえ、ジェネリックなコレクション操作
-をTrieに適用することが可能です(@ref{Collection framework}参照)。
-反復するとTrieの各要素がキーと値の対として現れます。
-@c COMMON
-@end deftp
-
-@deftp {Class} <trie>
-@clindex trie
-@c EN
-A class for Trie.  No slots are intended for public.
-Use the following procedures to operate on tries.
-@c JP
-Trieクラス。パブリックなスロットはありません。trieを操作するには以下の
-手続きを使ってください。
-@c COMMON
-
-@c EN
-This class also implements the dictionary interface
-(@xref{Generic functions for dictionaries}).
-@c JP
-このクラスはまた、ディクショナリインタフェースを実装しています
-(@ref{Generic functions for dictionaries}参照)。
-@c COMMON
-@end deftp
-
-@defun make-trie :optional tab-make tab-get tab-put! tab-fold
-@c EN
-Creates and returns an empty trie.  The optional four arguments
-are procedures to customize how the nodes of the internal
-tree are managed.
-@c JP
-空のtrieを生成し返します。4つのオプション引数があり、これらは、
-内部木のノードをどのようにマージするかをカスタマイズする手続きです。
-@c COMMON
-
-@c EN
-Each node can have a table to store its child nodes, indexed
-by an element of the key sequence (e.g. if the trie uses strings
-as keys, a node's table is indexed by characters).
-@c JP
-それぞれのノードは子のノードを格納するテーブルを持つことができます。
-キーシーケンスの要素でインデックスできます。(たとえば、trieがキーとし
-え文字列を使っているとすると、ノードのテーブルは文字でインデックスされ
-ています。)
-@c COMMON
-
-@c EN
-@table @code
-@item tab-make
-A procedure with no arguments.  When called, creates and
-returns an empty table for a node.
-@item tab-get @var{tab} @var{elt}
-Returns a child node indexed by @var{elt}, or returns @code{#f}
-if the table doesn't have a child for @var{elt}.
-@item tab-put! @var{tab} @var{elt} @var{child-node}
-If @var{child-node} isn't @code{#f},
-stores a @var{child-node} with index @var{elt}.
-If @var{child-node} is @code{#f},
-removes the entry with index @var{elt}.
-In both cases, this procedure should return the updated table.
-@item tab-fold @var{tab} @var{proc} @var{seed}
-Calls @var{proc} for every index and node in @var{tab}, while
-passing a seed value, whose initial value is @var{seed}.
-That is, @var{proc} has a type of @code{(index, node, seed) -> seed}.
-Should return the last result of @var{proc}.
-@end table
-@c JP
-@table @code
-@item tab-make
-引数なしの手続き。呼ばれるとノード用の空テーブルを生成し返します。
-@item tab-get @var{tab} @var{elt}
-@var{elt}でインデックスされた子ノードを返すか、あるいは@var{elt}に対応
-する子がテーブルにない場合には @code{#f}を返します。
-@item tab-put! @var{tab} @var{elt} @var{child-node}
-@var{child-node}が@code{#f}でなければ、@var{child-node}に@var{elt}とい
-うインデックスをつけて保存します。@var{child-node}が@code{#f}なら
-@var{elt}のインデックスをもつエントリを削除します。どちらの場合にも
-この手続きは更新されたテーブルを返します。
-@item tab-fold @var{tab} @var{proc} @var{seed}
-@var{tab}内の各インデックスと要素ごとに@var{proc}を呼びます。シード値
-が順に渡されていきます。シード値の初期値は@var{seed}です。すなわち、
-@var{proc}の型は@code{(index, node, seed) -> seed} のような型というこ
-とになります。返り値は最後の@var{proc}の適用結果です。
-@end table
-@c COMMON
-
-@c EN
-The default assumes @code{eqv?}-hashtables, i.e. the
-following procedures are used.
-@c JP
-デフォルトでは@code{eqv?}-ハッシュ可能であることが仮定されます。すなわ
-ち、以下の手続きが使われます。
-@c COMMON
-
-@example
-tab-make: (lambda () (make-hash-table 'eqv?))
-
-tab-get:  (lambda (tab k) (hash-table-get tab k #f))
-
-tab-put!: (lambda (tab k v)
-            (if v
-              (hash-table-put! tab k v)
-              (hash-table-delete! tab k))
-            tab)
-
-tab-fold: hash-table-fold
-@end example
-
-@c EN
-The following example creates a trie using
-assoc list to manage children, while comparing
-string keys with case-insensitive way:
-@c JP
-以下の例では子を管理するのに連想リストを用いるtrieを作成しています。
-文字列キーの比較は大文字小文字を無視する方法で行っています。
-@c COMMON
-
-@example
-(make-trie list
-           (cut assoc-ref <> <> #f char-ci=?)
-           (lambda (t k v)
-             (if v
-               (assoc-set! t k v char-ci=?)
-               (alist-delete! k t char-ci=?)))
-           (lambda (t f s) (fold f s t)))
-@end example
-
-@c EN
-It is important that @code{tab-put!} must return an updated
-table---by that, you can replace the table structure on the fly.
-For example, you may design a table which uses assoc list when
-the number of children are small, and then switches to a vector
-(indexed by character code) once the number of children grows over
-a certain threshold.
-@c JP
-@code{tab-put!}が更新されたテーブルを返すというのは重要で、これのおか
-げで、テーブル構造をおてがるに置き換えることができます。たとえば、
-子の数が少い場合にはテーブルに連想リストを使い、いったん子の数がある閾
-値を越えたら、(文字コードでインデックスされた)ベクタを使うように設計す
-ることができます。
-@c COMMON
-@end defun
-
-@defun trie params kv @dots{}
-@c EN
-Construct a trie with the initial contents
-@var{kv} @dots{}, where each @var{kv} is a pair of a key and a value.
-@var{Params} are a list of arguments
-which will be given to @code{make-trie} to create the trie.
-The following example creates a trie with two entries
-and the default table procedures.
-@c JP
-初期の内容が@var{kv} @dots{} であるようなtrieを構成します。ここで、
-@var{kv}はキーと値の対です。@var{params}はtrieを生成するときに
-@code{make-trie}に渡される引数のリストです。以下の例は2つのエントリ
-とデフォルトのテーブル手続をもつtrieを生成します。
-@c COMMON
-
-@example
-(trie '() '("foo" . a) '("bar" . b))
-@end example
-@end defun
-
-@defun trie-with-keys params key @dots{}
-@c EN
-A convenient version of @code{trie} when you only concern
-the keys.  Each value is the same as its key.
-The following example creates a trie with two entries
-and the default table procedures.
-@c JP
-キーにだけ関心がある場合には便利な@code{trie}。各値はキーと同じ。以下
-の例では2つのエントリとデフォルトのテーブル手続をもつtrieを生成します。
-@c COMMON
-
-@example
-(trie-with-keys '() "foo" "bar")
-@end example
-@end defun
-
-@defun trie? obj
-@c EN
-Returns @code{#t} if @var{obj} is a trie, or @code{#f} otherwise.
-@c JP
-@var{obj}がtrieなら@code{#t}を返し、さもなければ@code{#f}を返します。
-@c COMMON
-@end defun
-
-@defun trie-num-entries trie
-@c EN
-Returns the number of entries in @var{trie}.
-@c JP
-@var{trie}中のエントリの数を返します。
-@c COMMON
-@end defun
-
-@defun trie-exists? trie key
-@c EN
-Returns @code{#t} if @var{trie} contains an entry with @var{key},
-or returns @code{#f} otherwise.
-@c JP
-@var{trie}が@var{key}というキーのエントリを含む場合には@code{#t}を返し、
-さもなければ、@code{#f}を返します。
-@c COMMON
-@end defun
-
-@defun trie-get trie key :optional fallback
-@c EN
-Returns the value associated with @var{key} in @var{trie}, if
-such an entry exists.  When there's no entry for @var{key},
-if @var{fallback} is given, it is returned; otherwise,
-an error is signaled.
-@c JP
-@var{trie}中の@var{key}をもつエントリがあれば、それにむすびついている
-値を返します。そのようなエントリがない場合、@var{fallback}が与えられて
-いればそれを返し、さもなければ、エラーシグナルがあがります。
-@c COMMON
-@end defun
-
-@defun trie-put! trie key value
-@c EN
-Puts @var{value} associated to @var{key} into @var{trie}.
-@c JP
-@var{key}に結びついた@var{value}を@var{trie}に挿入します。
-@c COMMON
-@end defun
-
-@defun trie-update! trie key proc :optional fallback
-@c EN
-Works like the following code, except that the
-lookup of entry in @var{trie} is done only once.
-@c JP
-@var{trie}中のエントリの検索が一度きりしか起らないことをのぞけば以下の
-コードのように動きます。
-@c COMMON
-
-@example
-(let ((val (trie-get trie key fallback)))
-  (trie-put! trie key (proc val)))
-@end example
-@end defun
-
-@defun trie-delete! trie key
-@c EN
-Removes an entry associated with @var{key} from @var{trie}.
-If there's no such entry, this procedure does nothing.
-@c JP
-@var{trie}から@var{key}に関連するエントリを削除します。
-そのようなエントリがない場合にはこの手続きはなにもしません。
-@c COMMON
-@end defun
-
-@defun trie->list trie
-@c EN
-Makes each entry in @var{trie} to a pair @code{(@var{key} . @var{value})}
-and returns a list of pairs of all entries.  The order of entries
-are undefined.
-@c JP
-@var{trie}の各エントリを@code{(@var{key} . @var{value})}という対にして
-すべてのエントリの対のリストを返します。エントリの順序は未定義です。
-@c COMMON
-@end defun
-
-@defun trie-keys trie
-@defunx trie-values trie
-@c EN
-Returns a list of all keys and values in @var{trie}, respectively.
-The order of keys/values are undefined.
-@c JP
-それぞれ、@var{trie}のすべてのキーのリスト、すべての値のリストを返しま
-す。順序は未定義です。
-@c COMMON
-@end defun
-
-@defun trie->hash-table trie ht-type
-@c EN
-Creates a hash table with type @var{ht-type} (see @ref{Hashtables},
-about hash table types), and populates it with every key and value
-pair in @var{trie}.
-@c JP
-@var{ht-type}タイプのハッシュテーブル(ハッシュテーブルのタイプについて
-は@ref{Hashtables}を参照)を作成し、@var{trie}のすべてのキーと値の対を
-セットします。
-@c COMMON
-@end defun
-
-@defun trie-common-prefix trie prefix
-@defunx trie-common-prefix-keys trie prefix
-@defunx trie-common-prefix-values trie prefix
-@c EN
-Gathers all entries whose keys begin with @var{prefix};
-@code{trie-common-prefix} returns those entries in a list of
-pairs @code{(key . value)}; @code{trie-common-prefix-keys} returns
-a list of keys; and @code{trie-common-prefix-values} returns a list
-of values.   The order of entries in a returned list is undefined.
-If @var{trie} contains no entry whose key has @var{prefix}, an
-empty list is returned.
-@c JP
-@var{prefix}ではじまるキーをもつエントリをすべて集め、
-@code{trie-common-prefix}はその各エントリを@code{(key . value)}の対にし
-たリストを返します。@code{trie-common-prefix-keys}は、キーのリストを
-@code{trie-common-prefix-values}は値のリストを返します。返されるリスト
-のエントリの順序は未定義です。
-@var{trie}に指定した@var{prefix}をもつキーのエントリがなければ、
-空リストが返されます。
-@c COMMON
-
-@c EN
-Note that prefix matching doesn't consider the type of sequence;
-if @var{trie} has entries for @code{"foo"} and @code{(#\f #\o #\o)},
-@code{(trie-common-prefix trie "foo")} will return both entries.
-@c JP
-接頭辞照合ではシーケンスの型を考慮しないことに注意してください。
-@var{trie}のなかに@code{"foo"}と@code{(#\f #\o #\o)}に対応するエントリ
-があれば、@code{(trie-common-prefix trie "foo")}はその両方を返します。
-@c COMMON
-@end defun
-
-@defun trie-common-prefix-fold trie prefix proc seed
-@c EN
-For each entry whose key begins with @var{prefix},
-calls @var{proc} with three argments, the entry's key,
-its value, and the current seed value.  @var{Seed} is
-used for the first seed value, and the value @var{proc}
-returns is used for the seed value of the next call of @var{proc}.
-The last returned value from @var{proc} is returned from
-@code{trie-common-prefix-fold}.
-The order of entries on which @var{proc} is called is undefined.
-If @var{trie} contains no entry whose key has @var{prefix},
-@var{proc} is never called and @var{seed} is returned.
-@c JP
-@var{prefix}ではじまるキーをもつ各エントリに対して、@var{proc}を3つの
-引数、エントリのキー、値、現在のシード値で呼びます。@var{seed}は最初の
-シード値として使われ、@var{proc}が返す値は次の@var{proc}の呼び出しのシー
-ド値として使われます。@var{proc}が返した最後の値が
-@code{trie-common-prefix-fold}から返ります。
-@var{proc}が適用される順序は未定義です。@var{trie}が@var{prefix}を持つ
-キーのエントリを含まない場合には@var{proc}が呼ばれることはなく、
-@var{seed}が返ります。
-@c COMMON
-@end defun
-
-@defun trie-common-prefix-map trie prefix proc
-@defunx trie-common-prefix-for-each trie prefix proc
-@c EN
-These are to @var{trie-common-prefix-fold} as @code{map} and @code{for-each}
-are to @code{fold}; @code{trie-common-prefix-map} calls
-@var{proc} with key and value for matching entries and
-gathers its result to a list; @code{trie-common-prefix-for-each}
-also applies @var{proc}, but discards its results.
-@c JP
-@code{map}や@code{for-each}を@code{fold}を合せたのと同じように、
-@var{trie-common-prefix-fold}に合せたものです。
-@code{trie-common-prefix-map}は@var{proc}をマッチするエントリのキーと
-値に適用し結果をリストにあつめます。
-@code{trie-common-prefix-for-each}も同じく@var{proc}を適用しますが
-結果は捨てます。
-@c COMMON
-@end defun
-
-@defun trie-fold trie proc seed
-@defunx trie-map trie proc
-@defunx trie-for-each trie proc
-@c EN
-These procedures are like their common-prefix versions, but
-traverse entire @var{trie} instead.
-@c JP
-これらの手続きはcommon-prefix版とおなじような働きをしますが、
-@var{trie}全体をトラバースします。
-@c COMMON
-@end defun
-
-
-@c ----------------------------------------------------------------------
-@node Topological sort, CGI Utility, Trie, Library modules - Utilities
+@node Topological sort, CGI Utility, Stream library, Library modules - Utilities
 @section @code{util.toposort} - Topological sort
 @c NODE トポロジカルソート, @code{util.toposort} - トポロジカルソート
 
@@ -20767,7 +22686,7 @@ of connections, where each connection is the form
 that means a node @code{<node>} is connected to other nodes
 @code{<downstream>} etc.   @code{<node>} can be arbitrary
 object, as far as it can be compared by the procedure @var{eqproc},
-which is @var{eqv?} by default (@xref{Equivalence}).
+which is @var{eqv?} by default (@xref{Equality}).
 Returns a list of @code{<node>}s sorted topologically.
 
 If the graph contains circular reference, an error is signaled.
@@ -20780,7 +22699,7 @@ If the graph contains circular reference, an error is signaled.
 これで、ノード@code{<node>}から別のノード@code{<downstream>}等への接続が
 あることを表現します。@code{<node>}はどんなオブジェクトであっても構いませんが、
 同一性の判定が@var{eqproc}で行えなければなりません。@var{eqproc}の既定値は
-@code{eqv?}です (@ref{Equivalence}参照)。
+@code{eqv?}です (@ref{Equality}参照)。
 トポロジカルにソートされたノードのリストを返します。
 
 グラフに循環が検出された場合はエラーとなります。
@@ -21153,7 +23072,7 @@ and converts the character encoding if necessary.
 The output behavior of @code{cgi-main} can be customized
 by a keyword argument @var{output-proc}; if it is given,
 the text tree (either the normal return value of @var{proc},
-or an error page constructed by ther error handler) is passed
+or an error page constructed by the error handler) is passed
 to the procedure given to @var{output-proc}.  The procedure
 is responsible to format and output a text to the current
 output port, including character conversions, if necessary.
@@ -21341,7 +23260,7 @@ created by this action will be unlinked when @code{cgi-main} exits.
 
 @item file+name
 Like @code{file}, but the value of the parameter is a list of
-tempoary filename and the filename passed by the client.
+temporary filename and the filename passed by the client.
 It is useful if you want to use client's filename (but do not
 blindly assume the client sends a valid pathname; for example,
 you shouldn't use it to rename the uploaded file without

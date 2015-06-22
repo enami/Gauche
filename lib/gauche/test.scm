@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.test - test framework
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -82,16 +82,27 @@
 ;;         into the named file instead of reporting it out immediately.
 
 (define-module gauche.test
-  (export test test* test-start test-end test-section
-          test-module test-error test-one-of
+  (export test test* test-start test-end test-section test-log
+          test-module test-error test-one-of test-none-of
           test-check test-record-file test-summary-check
           *test-error* *test-report-error* test-error? prim-test))
 (select-module gauche.test)
 
-;; An object to represent error.
+;; An object to represent error.  This class isn't exported; the user
+;; must use `test-error' procedure to create an instance.
+;;
+;; This object is used in both the expected result and the actual result
+;; of test expression.   For the actual result, this object holds the
+;; raised condition in `condition' slot, and its class and message in
+;; the `class' and `message' slots.
+;; For the expected result, class slot must be set as one of <condition>
+;; classes, or #f.  If it's a <condition> class, then it is used to test
+;; the actual result condition has the condition type.  If it's #f,
+;; then any <test-error> object matches.
 (define-class <test-error> ()
-  ((message :init-keyword :message :init-value #f)
-   (class   :init-keyword :class   :init-value #f)))
+  ((condition :init-keyword :condition :init-value #f)
+   (class     :init-keyword :class     :init-value #f)
+   (message   :init-keyword :message   :init-value #f)))
 
 (define-method write-object ((obj <test-error>) out)
   (let1 cname (if (ref obj'class) (class-name (ref obj'class)) 'error)
@@ -104,38 +115,51 @@
 (define (test-error :optional (class #f) (message #f))
   (make <test-error> :class class :message message))
 
-;; An object to represet any one of
+;; An object to represent "any one of Xs"
 (define-class <test-one-of> ()
   ((choices :init-keyword :choices)))
 
 (define-method write-object ((obj <test-one-of>) out)
   (format out "#<test-one-of: any one of ~s>" (slot-ref obj'choices)))
 
+;; API
 (define (test-one-of . choices) (make <test-one-of> :choices choices))
 
+;; An object to represent "none of Xx"
+(define-class <test-none-of> ()
+  ((choices :init-keyword :choices)))
+
+(define-method write-object ((obj <test-none-of>) out)
+  (format out "#<test-none-of: none of ~s>" (slot-ref obj'choices)))
+
+;; API
+(define (test-none-of . choices) (make <test-none-of> :choices choices))
+
+;; API
+;; We don't use generic function dispatch (at least for the time being),
+;; to make it easy to troubleshoot when object system gets messed up.
+;; In future we'll make use of generic functions.
 (define (test-check expected result :optional (fallback equal?))
   (cond [(test-error? expected)
          (and (test-error? result)
-              (let ([ex (slot-ref expected'class)]
-                    [ey (slot-ref result'class)])
-                (or (not ex)
-                    (memq (slot-ref expected'class)
-                          (class-precedence-list (slot-ref result'class))))))]
+              (let ([c (slot-ref expected'class)]
+                    [e (slot-ref result'condition)])
+                (or (not c)
+                    (condition-has-type? e c))))]
         [(is-a? expected <test-one-of>)
-         ;; NB: not using srfi-1's any to avoid dependency
-         (let loop ([choices (slot-ref expected 'choices)])
-           (cond [(null? choices) #f]
-                 [(test-check (car choices) result fallback)]
-                 [else (loop (cdr choices))]))]
+         (any (lambda (choice) (test-check choice result fallback))
+              (slot-ref expected 'choices))]
+        [(is-a? expected <test-none-of>)
+         (every (lambda (choice) (not (test-check choice result fallback)))
+                (slot-ref expected 'choices))]
         [else (fallback expected result)]))
 
 (define *test-error* (make <test-error>)) ;DEPRECATED
-
 (define *test-report-error* (sys-getenv "GAUCHE_TEST_REPORT_ERROR"))
-
 (define *test-record-file* (sys-getenv "GAUCHE_TEST_RECORD_FILE"))
 
-(define (test-record-file file) (set! *test-record-file* file)) ;public API
+;; API
+(define (test-record-file file) (set! *test-record-file* file))
 
 ;; List of discrepancies
 (define *discrepancy-list* '())
@@ -208,17 +232,24 @@
            (guard (e [else
                       (when *test-report-error*
                         (report-error e))
-                      (make <test-error>
-                        :class (class-of e)
-                        :message (if (is-a? e <message-condition>)
-                                   (ref e 'message)
-                                   e))])
+                      (make <test-error> :condition e
+                            :class (class-of e)
+                            :message
+                            (if (condition-has-type? e <message-condition>)
+                              (slot-ref e 'message)
+                              e))])
              (thunk)))
          compare))
 
 ;; A convenient macro version
-(define-macro (test* msg expect form . compare)
-  `(test ,msg ,expect (lambda () ,form) ,@compare))
+;; We use er-macro-transformer, so test* should be used after macro
+;; subsystem is tested with more primitive framework.
+(define-syntax test*
+  (er-macro-transformer
+   (lambda (f r c)
+     (apply (lambda (_ msg expect form . compare)
+              `(,(r 'test) ,msg ,expect (,(r 'lambda) () ,form) ,@compare))
+            f))))
 
 ;; Toplevel binding sanity check ----------------------------------
 
@@ -333,10 +364,12 @@
 (define (closure-grefs closure)
   (define code->list (with-module gauche.internal vm-code->list))
   (define (gref-numargs code) (cadr code))
+  (define gref-call-insns
+    '(GREF-CALL PUSH-GREF-CALL GREF-TAIL-CALL PUSH-GREF-TAIL-CALL))
   (let loop ([r '()] [code (code->list (closure-code closure))])
     (cond [(null? code) r]
           [(and (pair? (car code))
-                (memq (caar code) '(GREF-CALL GREF-TAIL-CALL)))
+                (memq (caar code) gref-call-insns))
            (if (pair? (cdr code))
              (if (identifier? (cadr code))
                (loop `((,(cadr code) ,(gref-numargs (car code))) ,@r)
@@ -395,6 +428,14 @@
       (format #t "Testing ~a ~a\n" msg (make-string (max 5 (- 70 msglen)) #\=)))
     (flush))
   )
+
+;; test-log fmt arg ...
+;; The formatted output, prefixed by ";;",  goes to stdout for the logging.
+(define (test-log fmt . args)
+  (display ";; ")
+  (apply format #t fmt args)
+  (newline)
+  (flush))
 
 ;; test-end :key :exit-on-failure
 ;; avoid using extended formal list since we need to test it.

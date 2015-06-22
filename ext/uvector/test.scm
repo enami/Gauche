@@ -74,6 +74,32 @@
          (^[] (write (f64vector)))))
 
 ;;-------------------------------------------------------------------
+(test-section "constructors")
+
+(define (uvmaketester class specific inits)
+  ;; zero length
+  (test* (format "make ~a 0" (class-name class))
+         (make-uvector class 0)
+         (specific 0))
+  ;; some content
+  (dolist [init inits]
+    (test* (format "make ~a 10 ~a" (class-name class) init)
+           (make-uvector class 10 init)
+           (specific 10 init))))
+
+(uvmaketester <s8vector> make-s8vector '(0 10 -4))
+(uvmaketester <u8vector> make-u8vector '(0 4 255))
+(uvmaketester <s16vector> make-s16vector '(0 -32768 32767))
+(uvmaketester <u16vector> make-u16vector '(0 65535))
+(uvmaketester <s32vector> make-s32vector '(0))
+(uvmaketester <u32vector> make-u32vector '(0))
+(uvmaketester <s64vector> make-s64vector '(0))
+(uvmaketester <u64vector> make-u64vector '(0))
+(uvmaketester <f16vector> make-f16vector '(0 1.0 -1.0)) 
+(uvmaketester <f32vector> make-f32vector '(0 1.0 -1.0)) 
+(uvmaketester <f64vector> make-f64vector '(0 1.0 -1.0)) 
+
+;;-------------------------------------------------------------------
 (test-section "ref and set")
 
 (define (uvrefset-tester make ref set numlist expvec)
@@ -250,7 +276,7 @@
 (define (uvcomp-tester list-> samples)
   (dolist [x samples]
     (dolist [y samples]
-      (test* #`"equal? ,(list-> x) ,(list-> y)"
+      (test* #"equal? ~(list-> x) ~(list-> y)"
              (and (= (length x) (length y))
                   (every = x y))
              (equal? (list-> x) (list-> y))))))
@@ -273,8 +299,10 @@
 
 (define (uvcopy-tester copy copy! fill! ->list list-> uvec filler)
   (let* ([c0 (list-> (->list uvec))]
-         [c1 (copy uvec)])
+         [c1 (copy uvec)]
+         [c2 (uvector-copy uvec)])
     (and (equal? c1 uvec)
+         (equal? c2 uvec)
          (begin (fill! c1 filler)
                 (and (equal? c0 uvec)
                      (every (^n (= n filler))  (->list c1))
@@ -353,13 +381,13 @@
                       u64vector u64vector-copy u64vector-fill!)
 
 (define (uvcopy!-newapi-test msg make copy!)
-  (test* #`",msg /tstart" (make 0 7 8 9)
+  (test* #"~msg /tstart" (make 0 7 8 9)
          (copy! (make 0 1 2 3) 1 (make 7 8 9 10)))
-  (test* #`",msg /tstart(over)" (make 0 1 2 3)
+  (test* #"~msg /tstart(over)" (make 0 1 2 3)
          (copy! (make 0 1 2 3) 4 (make 7 8 9 10)))
-  (test* #`",msg /tstart,,sstart" (make 0 9 10 3)
+  (test* #"~msg /tstart,sstart" (make 0 9 10 3)
          (copy! (make 0 1 2 3) 1 (make 7 8 9 10) 2))
-  (test* #`",msg /tstart,,sstart,,send" (make 0 1 2 9)
+  (test* #"~msg /tstart,sstart,send" (make 0 1 2 9)
          (copy! (make 0 1 2 3) 3 (make 7 8 9 10) 2 3))
   )
 
@@ -389,22 +417,22 @@
          (uvector-copy! v 2 '#u8(1 1))))
 
 (define (uv-multicopy!-test msg make ctor copy!)
-  (test* #`",msg generic" (ctor 0 1 2 3 0 1 2 3 0 1 2)
+  (test* #"~msg generic" (ctor 0 1 2 3 0 1 2 3 0 1 2)
          (rlet1 dst (make 11 0)
            (copy! dst 1 4 (ctor 1 2 3))))
-  (test* #`",msg ssize" (ctor 0 1 2 3 0 0 4 5 6 0 0 7)
+  (test* #"~msg ssize" (ctor 0 1 2 3 0 0 4 5 6 0 0 7)
          (rlet1 dst (make 12 0)
            (copy! dst 1 5 (ctor 1 2 3 4 5 6 7 8 9) 0 3)))
-  (test* #`",msg sstart, ssize" (ctor 0 5 6 7 0 0 8 9 0 0 0 0)
+  (test* #"~msg sstart, ssize" (ctor 0 5 6 7 0 0 8 9 0 0 0 0)
          (rlet1 dst (make 12 0)
            (copy! dst 1 5 (ctor 1 2 3 4 5 6 7 8 9) 4 3)))
-  (test* #`",msg ssize, sstride" (ctor 1 2 3 0 2 3 4 0 3 4 5 0)
+  (test* #"~msg ssize, sstride" (ctor 1 2 3 0 2 3 4 0 3 4 5 0)
          (rlet1 dst (make 12 0)
            (copy! dst 0 4 (ctor 1 2 3 4 5 6 7 8 9) 0 3 1)))
-  (test* #`",msg count" (ctor 1 2 3 0 2 3 4 0 0 0 0 0)
+  (test* #"~msg count" (ctor 1 2 3 0 2 3 4 0 0 0 0 0)
          (rlet1 dst (make 12 0)
            (copy! dst 0 4 (ctor 1 2 3 4 5 6 7 8 9) 0 3 1 2)))
-  (test* #`",msg single item" (ctor 1 0 1 0 1 0 1 0 1 0)
+  (test* #"~msg single item" (ctor 1 0 1 0 1 0 1 0 1 0)
          (rlet1 dst (make 10 0)
            (copy! dst 0 2 (ctor 1))))
   )
@@ -420,6 +448,24 @@
 (uv-multicopy!-test "f16vector-multi-copy!" make-f16vector f16vector f16vector-multi-copy!)
 (uv-multicopy!-test "f32vector-multi-copy!" make-f32vector f32vector f32vector-multi-copy!)
 (uv-multicopy!-test "f64vector-multi-copy!" make-f64vector f64vector f64vector-multi-copy!)
+
+(define (uv-append-test msg ctor append)
+  (test* #"~msg base" (ctor) (append))
+  (test* #"~msg unit" (ctor 1 2 3 ) (append (ctor 1 2 3)))
+  (test* #"~msg" (ctor 1 2 3 4 5 6 7 8)
+         (append (ctor 1 2 3) (ctor) (ctor 4 5) (ctor 6 7 8))))
+
+(uv-append-test "s8vector-append" s8vector s8vector-append)
+(uv-append-test "u8vector-append" u8vector u8vector-append)
+(uv-append-test "s16vector-append" s16vector s16vector-append)
+(uv-append-test "u16vector-append" u16vector u16vector-append)
+(uv-append-test "s32vector-append" s32vector s32vector-append)
+(uv-append-test "u32vector-append" u32vector u32vector-append)
+(uv-append-test "s64vector-append" s64vector s64vector-append)
+(uv-append-test "u64vector-append" u64vector u64vector-append)
+(uv-append-test "f16vector-append" f16vector f16vector-append)
+(uv-append-test "f32vector-append" f32vector f32vector-append)
+(uv-append-test "f64vector-append" f64vector f64vector-append)
 
 ;;-------------------------------------------------------------------
 (test-section "swapping bytes")
@@ -540,10 +586,10 @@
 
 (define-macro (arith-test-generate tag)
   `(arith-test ',tag ,(tag->min tag) ,(tag->max tag)
-               ,(string->symbol #`",|tag|vector")
-               ,(string->symbol #`",|tag|vector-add")
-               ,(string->symbol #`",|tag|vector-sub")
-               ,(string->symbol #`",|tag|vector-mul")))
+               ,(string->symbol #"~|tag|vector")
+               ,(string->symbol #"~|tag|vector-add")
+               ,(string->symbol #"~|tag|vector-sub")
+               ,(string->symbol #"~|tag|vector-mul")))
 
 (define (arith-test tag min max make add sub mul)
   (define v0 (make 0 1 2 3))
@@ -690,11 +736,11 @@
 ;; flonum vectors; no clamping, so it's a bit simple
 (define-macro (flonum-arith-test-generate tag)
   `(flonum-arith-test ',tag
-                      ,(string->symbol #`",|tag|vector")
-                      ,(string->symbol #`",|tag|vector-add")
-                      ,(string->symbol #`",|tag|vector-sub")
-                      ,(string->symbol #`",|tag|vector-mul")
-                      ,(string->symbol #`",|tag|vector-div")
+                      ,(string->symbol #"~|tag|vector")
+                      ,(string->symbol #"~|tag|vector-add")
+                      ,(string->symbol #"~|tag|vector-sub")
+                      ,(string->symbol #"~|tag|vector-mul")
+                      ,(string->symbol #"~|tag|vector-div")
                       ))
 
 (define (flonum-arith-test tag make add sub mul div)
@@ -748,11 +794,11 @@
 
 (define-macro (bit-test-generate tag v0 v1 s0 s1)
   `(bit-test ',tag ',v0 ',v1 ,s0 ,s1
-             ,(string->symbol #`",|tag|vector->list")
-             ,(string->symbol #`"list->,|tag|vector")
-             ,(string->symbol #`",|tag|vector-and")
-             ,(string->symbol #`",|tag|vector-ior")
-             ,(string->symbol #`",|tag|vector-xor")))
+             ,(string->symbol #"~|tag|vector->list")
+             ,(string->symbol #"list->~|tag|vector")
+             ,(string->symbol #"~|tag|vector-and")
+             ,(string->symbol #"~|tag|vector-ior")
+             ,(string->symbol #"~|tag|vector-xor")))
 
 (bit-test-generate s8
                    #s8(#x0f #x70 #x-0f #x-70)
@@ -820,7 +866,7 @@
 
 (define-macro (dotprod-test-generate tag v0 v1)
   `(dotprod-test ',tag ',v0 ',v1
-                 ,(string->symbol #`",|tag|vector-dot")))
+                 ,(string->symbol #"~|tag|vector-dot")))
 
 (dotprod-test-generate s8 #s8() #s8())
 (dotprod-test-generate s8 #s8(0 1 2 3) #s8(4 5 6 7))
@@ -979,7 +1025,7 @@
 (define-macro (range-test-generate tag v min max result)
   `(test (format #f "~svector-range-check" ',tag) ,result
          (^[]
-           (,(string->symbol #`",|tag|vector-range-check") ',v ',min ',max)))
+           (,(string->symbol #"~|tag|vector-range-check") ',v ',min ',max)))
   )
 
 (range-test-generate s8 #s8(-4 -2 0 2 4) #f #f #f)
@@ -1154,11 +1200,11 @@
     ))
 
 (define-macro (clamp-test-generate tag v minv maxv)
-  `(clamp-test ',tag ,(string->symbol #`"<,|tag|vector>")
-               ,(string->symbol #`",|tag|vector?")
-               ,(string->symbol #`",|tag|vector-ref")
-               ,(string->symbol #`",|tag|vector-length")
-               ,(string->symbol #`",|tag|vector-clamp")
+  `(clamp-test ',tag ,(string->symbol #"<~|tag|vector>")
+               ,(string->symbol #"~|tag|vector?")
+               ,(string->symbol #"~|tag|vector-ref")
+               ,(string->symbol #"~|tag|vector-length")
+               ,(string->symbol #"~|tag|vector-clamp")
                ',v ',minv ',maxv))
 
 (clamp-test-generate s8 #s8(0 -127 -4 4 127) #f #f)
@@ -1372,6 +1418,12 @@
 (test* "string->u8vector (OOB)" (test-error)
        (string->u8vector "abcde" 2 6))
 
+(test* "string->u8vector (immutable)" '(#t #t)
+       (let ([a (string->u8vector "@ABCD" 0 -1 #t)]
+             [b (string->u8vector "@ABCD")])
+         (list (uvector-immutable? a)
+               (equal? a b))))
+
 (test* "string->u8vector!" '#u8(64 65 66 67 68)
        (let1 v (u8vector 0 1 2 3 4)
          (string->u8vector! v 0 "@ABCD")))
@@ -1460,6 +1512,14 @@
 (test* "string->u32vector (OOB)" (test-error)
        (string->u32vector "abcde" 2 6))
 
+(test* "string->u32vector!" '#u32(64 65 66 67 68 1 1 1)
+       (string->u32vector! (make-u32vector 8 1) 0 "@ABCD"))
+(test* "string->u32vector!" '#u32(1 1 1 1 64 65 66 67)
+       (string->u32vector! (make-u32vector 8 1) 4 "@ABCD"))
+(test* "string->u32vector!" '#u32(1 1 1 66 67 1 1 1)
+       (string->u32vector! (make-u32vector 8 1) 3 "@ABCD" 2 4))
+       
+
 (test* "u32vector->string" "@ABCD"
        (u32vector->string '#u32(64 65 66 67 68)))
 (test* "u32vector->string (start)" "ABCD"
@@ -1495,9 +1555,9 @@
 
 ;; test for multibyte chars
 (cond-expand
- [gauche.ces.eucjp (include "./test-eucjp")]
- [gauche.ces.utf8  (include "./test-utf8")]
- [gauche.ces.sjis  (include "./test-sjis")]
+ [gauche.ces.eucjp (include "test-eucjp")]
+ [gauche.ces.utf8  (include "test-utf8")]
+ [gauche.ces.sjis  (include "test-sjis")]
  [else])
 
 ;;-------------------------------------------------------------------

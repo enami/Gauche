@@ -1,7 +1,7 @@
 ;;;
 ;;;  data.random - Random data genarators
 ;;;
-;;;   Copyright (c) 2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2013-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -42,7 +42,7 @@
   (use gauche.parameter)
   (use gauche.sequence)
   
-  (export make-random-data-state current-random-data-seed with-random-data-seed
+  (export make-random-data-state random-data-seed with-random-data-seed
 
           integers$ integers-between$ fixnums chars$ booleans
           int8s uint8s int16s uint16s int32s uint32s int64s uint64s
@@ -51,6 +51,7 @@
 
           default-sizer
           samples-from pairs-of tuples-of lists-of vectors-of strings-of
+          sequences-of
           permutations-of combinations-of weighted-samples-from
           ))
 (select-module data.random)
@@ -69,14 +70,17 @@
   (make-parameter (make-random-data-state 42)))
 
 ;; API
-(define (current-random-data-seed)
-  (car (%random-data-state)))
+(define random-data-seed
+  (getter-with-setter
+   (^[] (car (%random-data-state)))
+   (^[seed] (%random-data-state (make-random-data-state seed)))))
 
 ;; API
 (define (with-random-data-seed seed thunk)
-  (parameterize ([%random-data-state (make-random-data-state seed)])
-    (thunk)))
-
+  ;; create st here so that reentering thunk retains the state.
+  (let1 st (make-random-data-state seed)
+    (parameterize ([%random-data-state st])
+      (thunk))))
 
 (define (%rand-int n) (mt-random-integer (cdr (%random-data-state)) n))
 (define (%rand-real0) (mt-random-real0 (cdr (%random-data-state))))
@@ -101,7 +105,7 @@
     (^[] (+ (%rand-int range) lb))))
 
 ;; API.
-(define fixnums (integers-between$ (least-fixnum) (+ (greatest-fixnum) 1)))
+(define fixnums (integers-between$ (least-fixnum) (greatest-fixnum)))
 (define int8s   (integers$ 256 -128))
 (define uint8s  (integers$ 256))
 (define int16s  (integers$ 65536 -32768))
@@ -279,7 +283,7 @@ plot 'tmp' using (bin($1,binwidth)):(1.0) smooth freq with boxes
 (define (pairs-of car-gen cdr-gen) (^[] (cons (car-gen) (cdr-gen))))
 
 ;; API
-(define (tuples-of . gens) (gmap (^g (g)) gens))
+(define (tuples-of . gens) (^[] (map (^g (g)) gens)))
 
 ;; We accept constant integer or generator
 (define-syntax %with-sizer
@@ -310,7 +314,7 @@ plot 'tmp' using (bin($1,binwidth)):(1.0) smooth freq with boxes
 ;; API
 (define strings-of
   (case-lambda
-    [()         (strings-of (default-sizer) (char))]
+    [()         (strings-of (default-sizer) (chars$))]
     [(item-gen) (strings-of (default-sizer) item-gen)]
     [(sizer item-gen) 
      (%with-sizer sizer
@@ -319,12 +323,24 @@ plot 'tmp' using (bin($1,binwidth)):(1.0) smooth freq with boxes
                 (^[] (do-ec (: i len) (display (item-gen))))))))]))
 
 ;; API
+(define sequences-of
+  (case-lambda
+    [(class item-gen) (sequences-of class (default-sizer) item-gen)]
+    [(class sizer item-gen)
+     (%with-sizer sizer
+       (^[] (let1 len (sizer)
+              (with-builder (class add! get :size len)
+                (dotimes [len] (add! (item-gen)))
+                (get)))))]))
+
+;; API
 (define (permutations-of seq)
   (^[] (shuffle seq (cdr (%random-data-state)))))
 
 ;; API
 (define (combinations-of len seq)
-  (let1 indices (list->vector (iota len))
+  (let1 indices (list->vector (iota (size-of seq)))
     (^[] (let1 ix (shuffle indices)
-           (list-ec (: i len) (ref seq (vector-ref ix i)))))))
+           (coerce-to (class-of seq)
+                      (list-ec (: i len) (ref seq (vector-ref ix i))))))))
 

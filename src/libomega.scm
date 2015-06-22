@@ -1,7 +1,7 @@
 ;;;
 ;;; libomega.scm - the stuff to be run after other parts are initialized
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -30,6 +30,68 @@
 ;;;   NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 ;;;   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;;
+
+;; Register built-in modules as provided, so that (use <built-in-modue>) won't
+;; complain.
+;; TODO: #<module util.match> isn't built-in, but the module is created during
+;; initializing compile.scm, for it has reference to util.match#match:error.
+;; Eventually it should be addressed by making util.match built-in; but for now,
+;; we use a kludge to exclude util.match explicitly.
+(dolist [m (all-modules)]
+  (let1 n (module-name m)
+    (unless (eq? n 'util.match)
+      (provide (module-name->path n)))))
+
+;; A trick to allow slot-ref to be used for compound condition.
+;; This is better to be in libexc.scm, but we need to evaluate this
+;; after the object system is fully bootstrapped.
+(define-method slot-missing ((class <condition-meta>)
+                             (cc <compound-condition>)
+                             slot)
+  (let loop ((members (slot-ref cc '%conditions)))
+    (cond [(null? members) (next-method)]
+          [(slot-exists? (car members) slot) (slot-ref (car members) slot)]
+          [else (loop (cdr members))])))
+
+;; Printing auxiliary error information.  This also is here instead
+;; of libexc.scm because of the initialization order.
+(define-method report-mixin-condition ((c <mixin-condition>) port) #f)
+
+(define-method report-mixin-condition ((c <load-condition-mixin>) port)
+  (and-let* ([p (~ c'port)]
+             [ (port? p) ]
+             [name (port-name p)]
+             [line (port-current-line p)])
+    (format port "    While loading ~s at line ~d\n" name line)))
+
+(define-method report-mixin-condition ((c <compile-error-mixin>) port)
+  (let* ([expr (~ c'expr)]
+         ;; TODO: This is dupe of debug-source-info in gauche.vm.debugger,
+         ;; but we don't want to load it here.  Maybe we should make
+         ;; debug-source-info built-in in future.
+         [src-info (and-let* ([ (pair? expr ) ]
+                              [info ((with-module gauche.internal pair-attribute-get)
+                                     expr 'source-info)]
+                              [ (pair? info) ]
+                              [ (pair? (cdr info)) ])
+                     info)])
+    (if src-info
+      (format port "    While compiling ~s at line ~d: ~,,,,105:s\n"
+              (car src-info) (cadr src-info) expr)
+      (format port "    While compiling: ~,,,,90:s\n" expr))))
+
+;; Built-in comparators.  These are here instead of libcmp.scm, for
+;; hash functions need to be defined before this.
+(define eq-comparator
+  (make-comparator #t eq? eq-compare eq-hash 'eq-comparator))
+(define eqv-comparator
+  (make-comparator #t eqv? #f eq-hash 'eqv-comparator))
+(define equal-comparator
+  (make-comparator #t equal? #f hash 'equal-comparator))
+(define string-comparator
+  (make-comparator string? string=? compare
+                   (with-module gauche.internal %hash-string)
+                   'string-comparator))
 
 ;;; TEMPORARY for 0.9.x series
 ;;; Remove this after 1.0 release!!!

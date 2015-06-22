@@ -33,6 +33,10 @@
 (test* "symbol reader escaped" 'foo (read-from-string "|foo|bar"))
 (test* "symbol reader escaped" '|foo bar| (read-from-string "|foo bar|"))
 
+;; NB: guard these with reader mode (legacy mode should read it differently)
+(test* "symbol reader hex escaped" 'abc (read-from-string "|a\\x62;c|"))
+(test* "symbol reader hex escaped" 'abc (read-from-string "|a\\x0062;c|"))
+
 (test* "symbol writer" 'foo (read-from-string (write-to-string 'foo)))
 (test* "symbol writer" '|foo bar|
        (read-from-string (write-to-string (string->symbol "foo bar"))))
@@ -62,6 +66,14 @@
 (test* "prefix" 'bar (symbol-sans-prefix 'foo:bar 'foo:))
 (test* "prefix" #f   (symbol-sans-prefix 'foo:bar 'bar:))
 
+(test* "symbol-append" 'ab:c45 (symbol-append 'ab ':c 45))
+(test* "symbol-append" 'quux (symbol-append #t 'qu "ux"))
+(test* "symbol-append" #t
+       (let1 x (symbol-append #f 'qu "ux")
+         (and (not (symbol-interned? x))
+              (equal? (symbol->string x) "quux"))))
+(test* "symbol-append" '|| (symbol-append))
+(test* "symbol-append" '|| (symbol-append #t))
 
 ;;----------------------------------------------------------------
 (test-section "keywords")
@@ -76,7 +88,9 @@
 (test* "keyword->string" "abc" (keyword->string (make-keyword 'abc)))
 (test* "keyword->string" "a b" (keyword->string (read-from-string ":|a b|")))
 (test* "writer" ":abc" (write-to-string (make-keyword "abc")))
-(test* "writer" ":|a b c|" (write-to-string (make-keyword "a b c")))
+(test* "writer"
+       (if (symbol? :x) "|:a b c|" ":|a b c|");transient during symbol-keyword integration
+       (write-to-string (make-keyword "a b c")))
 (test* "writer" ":" (write-to-string (make-keyword "")))
 (test* "writer" "::" (write-to-string (make-keyword ":")))
 (test* "writer" ":3" (write-to-string (make-keyword "3")))

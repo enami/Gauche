@@ -39,7 +39,7 @@
 extern "C" {
 #endif
 
-#include "config.h"
+#include "../config/config.h"
 #include "bigint_impl.h"
 #include "bigint.h"
 
@@ -217,7 +217,8 @@ void RSA_print(const RSA_CTX *ctx);
 /**************************************************************************
  * RNG declarations 
  **************************************************************************/
-EXP_FUNC void STDCALL RNG_initialize(const uint8_t *seed_buf, int size);
+EXP_FUNC void STDCALL RNG_initialize(void);
+EXP_FUNC void STDCALL RNG_custom_init(const uint8_t *seed_buf, int size);
 EXP_FUNC void STDCALL RNG_terminate(void);
 EXP_FUNC void STDCALL get_random(int num_rand_bytes, uint8_t *rand_data);
 void get_random_NZ(int num_rand_bytes, uint8_t *rand_data);

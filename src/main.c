@@ -1,7 +1,7 @@
 /*
  * main.c - interpreter main program
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -35,16 +35,11 @@
 
 #include <signal.h>
 #include <ctype.h>
-#include <fcntl.h>		/* for _O_BINMODE on windows. */
+#include <fcntl.h>              /* for _O_BINMODE on windows. */
 
 #ifdef HAVE_GETOPT_H
 #include <getopt.h>
 #endif
-#ifdef MSVC
-int optind = 1;
-char *optarg = NULL;
-int getopt(int argc, char **argv, const char *spec);
-#endif /*MSVC*/
 
 /* options */
 int load_initfile = TRUE;       /* if false, not to load init files */
@@ -62,6 +57,14 @@ ScmObj pre_cmds = SCM_NIL;      /* assoc list of commands that needs to be
 ScmObj main_module = SCM_FALSE; /* The name of the module where we
                                    look for 'main'.  If #f, 'user' module
                                    is used. */
+ScmModule *default_toplevel_module = NULL;
+                                /* The initial module for the script execution
+                                   and interactive REPL.  If NULL, the user
+                                   module is assumed.  In R7RS mode, it's
+                                   'r7rs.user' module.
+                                   Note that the .gaucherc script,
+                                   if there's one, is always evaluated in 'user'
+                                   module; see lib/gauche/interactive.scm */
 
 void usage(void)
 {
@@ -86,9 +89,8 @@ void usage(void)
             "           name of the module in which the 'main' procedure is defined.\n"
             "           By default, the 'main' procedure in the user module is called\n"
             "           after loading the script (srfi-22).  This option allows to call\n"
-            "           a main procedure in the different module\n"
-            "  -p<type> Turns on the profiler.  Currently <type> can only be\n"
-            "           'time'.\n"
+            "           a main procedure in the different module.\n"
+            "  -p<type> Turns on the profiler.  <Type> can be 'time' or 'load'.\n"
             "  -F<feature> Makes <feature> available in cond-expand forms\n"
             "  -r<standard>  Starts gosh with the default environment defined\n"
             "           in RnRS, where n is determined by <standard>.  The following\n"
@@ -97,13 +99,20 @@ void usage(void)
             "  -f<flag> Sets various flags\n"
             "      case-fold       uses case-insensitive reader (as in R5RS)\n"
             "      load-verbose    report while loading files\n"
+            "      include-verbose report while including files\n"
+            "      warn-legacy-syntax\n"
+            "                      print warning when legacy Gauche syntax is encountered\n"
             "      no-inline       don't inline procedures & constants (combined\n"
             "                      no-inline-globals, no-inline-locals, and\n"
             "                      no-inline-constants.)\n"
-            "      no-inline-globals don't inline global procedures.\n"
-            "      no-inline-locals  don't inline local procedures.\n"
-            "      no-inline-constants don't inline constants.\n"
-            "      no-post-inline-pass  don't run post-inline optimization pass.\n"
+            "      no-inline-globals\n"
+            "                      don't inline global procedures.\n"
+            "      no-inline-locals\n"
+            "                      don't inline local procedures.\n"
+            "      no-inline-constants\n"
+            "                      don't inline constants.\n"
+            "      no-post-inline-pass\n"
+            "                      don't run post-inline optimization pass.\n"
             "      no-source-info  don't preserve source information for debugging\n"
             "      test            test mode, to run gosh inside the build tree\n"
             );
@@ -121,7 +130,8 @@ void usage(void)
 void version(void)
 {
     printf("Gauche scheme shell, version %s [%s%s], %s\n",
-           GAUCHE_VERSION, SCM_CHAR_ENCODING_NAME, THREAD_OPT, GAUCHE_ARCH);
+           GAUCHE_VERSION, SCM_CHAR_ENCODING_NAME, THREAD_OPT,
+           Scm_HostArchitecture());
     exit(0);
 }
 
@@ -160,6 +170,9 @@ void further_options(const char *optarg)
     else if (strcmp(optarg, "case-fold") == 0) {
         SCM_VM_RUNTIME_FLAG_SET(vm, SCM_CASE_FOLD);
     }
+    else if (strcmp(optarg, "warn-legacy-syntax") == 0) {
+        Scm_SetReaderLexicalMode(SCM_INTERN("warn-legacy"));
+    }
     else if (strcmp(optarg, "test") == 0) {
         test_mode = TRUE;
     }
@@ -186,7 +199,7 @@ void further_options(const char *optarg)
     }
     else {
         fprintf(stderr, "unknown -f option: %s\n", optarg);
-        fprintf(stderr, "supported options are: -fcase-fold or -fload-verbose, -fno-inline, -fno-inline-globals, -fno-inline-locals, -fno-inline-constants, -fno-source-info, -fno-post-inline-pass, -fno-lambda-lifting-pass, -ftest\n");
+        fprintf(stderr, "supported options are: -fcase-fold, -fload-verbose, -finclude-verbose, -fno-inline, -fno-inline-globals, -fno-inline-locals, -fno-inline-constants, -fno-source-info, -fno-post-inline-pass, -fno-lambda-lifting-pass, -fwarn-legacy-syntax, or -ftest\n");
         exit(1);
     }
 }
@@ -203,7 +216,7 @@ void profiler_options(const char *optarg)
     }
     else {
         fprintf(stderr, "unknown -p option: %s\n", optarg);
-        fprintf(stderr, "supported profiling options are: -ptime\n");
+        fprintf(stderr, "supported profiling options are: -ptime or -pload\n");
     }
 }
 
@@ -238,7 +251,7 @@ int parse_options(int argc, char *argv[])
             pre_cmds = Scm_Acons(SCM_MAKE_CHAR(c),
                                  SCM_MAKE_STR_COPYING(optarg), pre_cmds);
             break;
-	case '-': break;
+        case '-': break;
         case '?': usage(); break;
         }
     }
@@ -288,29 +301,18 @@ void test_paths_setup(void)
        be searched first (hence it should come latter), since some
        extension modules are built from the file in src then linked
        from lib, and we want to test the one in lib. */
-    if (access("../src/gauche-init.scm", R_OK) == 0
+    if (access("../src/gauche/config.h", R_OK) == 0
         && access("../libsrc/srfi-1.scm", R_OK) == 0
         && access("../lib/srfi-0.scm", R_OK) == 0) {
         Scm_AddLoadPath("../src", FALSE);
         Scm_AddLoadPath("../libsrc", FALSE);
         Scm_AddLoadPath("../lib", FALSE);
-    } else if (access("../../src/gauche-init.scm", R_OK) == 0
+    } else if (access("../../src/gauche/config.h", R_OK) == 0
                && access("../../libsrc/srfi-1.scm", R_OK) == 0
                && access("../../lib/srfi-0.scm", R_OK) == 0) {
         Scm_AddLoadPath("../../src", FALSE);
         Scm_AddLoadPath("../../libsrc", FALSE);
         Scm_AddLoadPath("../../lib", FALSE);
-    }
-}
-
-/* Load gauche-init.scm */
-void load_gauche_init(void)
-{
-    ScmLoadPacket lpak;
-    if (Scm_Load("gauche-init.scm", 0, &lpak) < 0) {
-        Scm_Printf(SCM_CURERR, "gosh: WARNING: Error while loading initialization file: %A(%A).\n",
-                   Scm_ConditionMessage(lpak.exception),
-                   Scm_ConditionTypeName(lpak.exception));
     }
 }
 
@@ -364,9 +366,9 @@ void error_exit(ScmObj c)
 }
 
 /* Returns FALSE if the process doesn't have a console. */
+#if defined(GAUCHE_WINDOWS)
 static int init_console(void)
 {
-#if defined(GAUCHE_WINDOWS)
 #  if defined(GAUCHE_WINDOWS_NOCONSOLE)
     char buf[100];
     int in_fd, out_fd;
@@ -390,86 +392,23 @@ static int init_console(void)
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
     return TRUE;
-#  endif /*!defined(GAUCHE_WINDOS_NOCONSOLE)*/
-#else  /*!defined(GAUCHE_WINDOWS)*/
-    return TRUE;
-#endif /*!defined(GAUCHE_WINDOWS)*/
+#  endif /*!defined(GAUCHE_WINDOWS_NOCONSOLE)*/
 }
 
-/*-----------------------------------------------------------------
- * MAIN
- */
-int main(int argc, char **argv)
-{
-    int argind;
-    ScmObj cp;
-    const char *scriptfile = NULL;
-    ScmObj args = SCM_NIL;
-    int exit_code = 0;
-    ScmEvalPacket epak;
-    ScmLoadPacket lpak;
-    int has_console;
-    int standard_given = FALSE;
-
-    /* Initial setup. */
-    has_console = init_console();
-    GC_INIT();
-    Scm_Init(GAUCHE_SIGNATURE);
-    sig_setup();
-#if defined(GAUCHE_WINDOWS)
-    /* Ugly... need some abstraction. */
-    Scm__SetupPortsForWindows(has_console);
+/* called in main to set up trapper ports; defined in port.c */
+extern void Scm__SetupPortsForWindows(int);
 #endif /*defined(GAUCHE_WINDOWS)*/
 
-    /* Check command-line options */
-    argind = parse_options(argc, argv);
+/* Process command-line options that needs to run after Scheme runtime
+   is initialized.  CMD_ARGS is an list of (OPTION-CHAR . OPTION-ARG) */
+static void process_command_args(ScmObj cmd_args)
+{
+    ScmEvalPacket epak;
+    ScmLoadPacket lpak;
+    int standard_given = FALSE;
+    ScmObj cp;
 
-    /* If -ftest option is given and we seem to be in the source
-       tree, adds build directories to the library path _before_
-       loading init file.   This is to help development of Gauche
-       itself; normal user should never need this. */
-    if (test_mode) test_paths_setup();
-
-    /* load init file */
-    if (load_initfile) load_gauche_init();
-
-    /* prepare *program-name* and *argv* */
-    if (optind < argc) {
-        /* We have a script file specified. */
-        ScmObj at = SCM_NIL;
-        struct stat statbuf;
-
-        /* if the script name is given in relative pathname, see if
-           it exists from the current directory.  if not, leave it
-           to load() to search in the load paths */
-        if (argv[optind][0] == '\0') Scm_Error("bad script name");
-        if (argv[optind][0] == '/') {
-            scriptfile = argv[optind];
-#if defined(__CYGWIN__) || defined(GAUCHE_WINDOWS)
-	} else if (isalpha(argv[optind][0]) && argv[optind][1] == ':') {
-	    /* support of wicked legacy DOS drive letter */
-	    scriptfile = argv[optind];
-#endif /* __CYGWIN__ || GAUCHE_WINDOWS */
-        } else {
-            if (stat(argv[optind], &statbuf) == 0) {
-                ScmDString ds;
-                Scm_DStringInit(&ds);
-                Scm_DStringPutz(&ds, "./", -1);
-                Scm_DStringPutz(&ds, argv[optind], -1);
-                scriptfile = Scm_DStringGetz(&ds);
-            } else {
-                scriptfile = argv[optind];
-            }
-        }
-
-        /* sets up arguments. */
-        args = Scm_InitCommandLine(argc - optind, (const char**)argv + optind);
-    } else {
-        args = Scm_InitCommandLine(1, (const char**)argv);
-    }
-
-    /* process pre-commands */
-    SCM_FOR_EACH(cp, Scm_Reverse(pre_cmds)) {
+    SCM_FOR_EACH(cp, cmd_args) {
         ScmObj p = SCM_CAR(cp);
         ScmObj v = SCM_CDR(p);
 
@@ -521,22 +460,179 @@ int main(int argc, char **argv)
             if (standard_given) {
                 Scm_Error("Multiple -r option is specified.");
             } else {
+                /* R7RS mode.  Preload r7rs module, set the default toplevel
+                   to r7rs.user, and define *r7rs-mode* in user module
+                   so that gauche.interactive can do proper setup. */
                 const char *std = Scm_GetStringConst(SCM_STRING(v));
                 if (strcmp(std, "7") == 0) {
-                    if (Scm_EvalCString("(extend r7rs)",
-                                        SCM_OBJ(Scm_UserModule()),
-                                        &epak) < 0) {
-                        error_exit(epak.exception);
+                    if (Scm_Require(SCM_MAKE_STR("r7rs"), 0, &lpak) < 0) {
+                        error_exit(lpak.exception);
                     }
+                    SCM_DEFINE(Scm_UserModule(), "*r7rs-mode*", SCM_TRUE);
+                    default_toplevel_module = SCM_FIND_MODULE("r7rs.user", 0);
+                    standard_given = TRUE;
                 } else {
                     Scm_Error("Unsupported standard for -r option: %s", std);
                 }
-                standard_given = TRUE;
             }
         }
     }
+}
+
+/* When scriptfile is provided, execute it.  Returns exit code. */
+int execute_script(const char *scriptfile, ScmObj args)
+{
+    /* If script file is specified, load it. */
+    ScmObj mainproc = SCM_FALSE;
+    ScmLoadPacket lpak;
+
+    Scm_Load(scriptfile, SCM_LOAD_PROPAGATE_ERROR, &lpak);
+    if (!lpak.loaded) return 1;
+
+    /* If symbol 'main is bound, call it (SRFI-22).   */
+    ScmModule *mainmod = (SCM_SYMBOLP(main_module)
+                          ? Scm_FindModule(SCM_SYMBOL(main_module), 0)
+                          : Scm_UserModule());
+    if (mainmod) {
+        mainproc = Scm_GlobalVariableRef(mainmod,
+                                         SCM_SYMBOL(SCM_INTERN("main")),
+                                         SCM_BINDING_STAY_IN_MODULE);
+    }
+    if (SCM_PROCEDUREP(mainproc)) {
+#if 0 /* Temporarily turned off due to the bug that loses stack traces. */
+        ScmEvalPacket epak;
+        int r = Scm_Apply(mainproc, SCM_LIST1(args), &epak);
+        if (r > 0) {
+            ScmObj res = epak.results[0];
+            if (SCM_INTP(res)) return SCM_INT_VALUE(res);
+            else return 70;  /* EX_SOFTWARE, see SRFI-22. */
+        } else {
+            Scm_ReportError(epak.exception);
+            return 70;  /* EX_SOFTWARE, see SRFI-22. */
+        }
+#else
+        ScmObj r = Scm_ApplyRec1(mainproc, args);
+        if (SCM_INTP(r)) return SCM_INT_VALUE(r);
+        else             return 70;
+#endif
+    }
+    return 0;
+}
+
+/* When no script is given, enter REPL. */
+void enter_repl()
+{
+    /* We're in interactive mode. (use gauche.interactive) */
+    if (load_initfile) {
+        ScmLoadPacket lpak;
+        if (Scm_Require(SCM_MAKE_STR("gauche/interactive"), 0, &lpak) < 0) {
+            Scm_Warn("couldn't load gauche.interactive\n");
+        } else {
+            Scm_ImportModule(SCM_CURRENT_MODULE(),
+                             SCM_INTERN("gauche.interactive"), SCM_FALSE, 0);
+        }
+    }
+
+    /* If -fcase-fold flag is given, switch the stdin port to the
+       case folding mode. */
+    if (SCM_VM_RUNTIME_FLAG_IS_SET(Scm_VM(), SCM_CASE_FOLD)) {
+        Scm_SetPortCaseFolding(SCM_PORT(Scm_Stdin()), TRUE);
+    }
+    
+    if (batch_mode || (!isatty(0) && !interactive_mode)) {
+        Scm_LoadFromPort(SCM_PORT(Scm_Stdin()), SCM_LOAD_PROPAGATE_ERROR, NULL);
+    } else {
+        /* Call read-eval-print-loop.  If gauche.interactive is loaded,
+           this will invoke 'user-friendly' version of repl; otherwise,
+           this calls the 'bare' version in libeval.scm. */
+        Scm_EvalCString("(read-eval-print-loop)",
+                        SCM_OBJ(Scm_CurrentModule()), NULL);
+    }
+}
+
+/*-----------------------------------------------------------------
+ * MAIN
+ */
+int main(int ac, char **av)
+{
+    const char *scriptfile = NULL;
+    ScmObj args = SCM_NIL;
+    int exit_code = 0;
+    /* NB: For Windows, we can't use passed argv array if the command-line
+       argument contains multibyte characters.  We'll overwrite those later. */
+    int argc = ac;
+    char **argv = av;
+
+#if defined(GAUCHE_WINDOWS)
+    /* Need this before core initialization */
+    int has_console = init_console();
+#endif /*defined(GAUCHE_WINDOWS)*/
+
+    GC_INIT();
+    Scm_Init(GAUCHE_SIGNATURE);
+    sig_setup();
+
+#if defined(GAUCHE_WINDOWS)
+    Scm__SetupPortsForWindows(has_console);
+#  if defined(UNICODE)
+    /* Set up argument array correctly */
+    LPWSTR *argvW = CommandLineToArgvW(GetCommandLineW(), &argc);
+    argv = SCM_NEW_ATOMIC_ARRAY(char*, argc);
+    /* Kludge! Need to discard 'const' qualifier, for getopt() expects
+       char * const*, not const char**.  It's safe since Scm_WCS2MBS
+       always returns freshly allocated strings and we won't share them. */
+    for (int i=0; i<argc; i++) argv[i] = (char*)Scm_WCS2MBS(argvW[i]);
+    LocalFree(argvW);
+#  endif  /* UNICODE */
+#endif /*defined(GAUCHE_WINDOWS)*/
+
+    /* Check command-line options */
+    int argind = parse_options(argc, argv);
+
+    /* If -ftest option is given and we seem to be in the source
+       tree, adds build directories to the library path _before_
+       loading init file.   This is to help development of Gauche
+       itself; normal user should never need this. */
+    if (test_mode) test_paths_setup();
+
+    /* prepare *program-name* and *argv* */
+    if (argind < argc) {
+        /* We have a script file specified. */
+        struct stat statbuf;
+
+        /* if the script name is given in relative pathname, see if
+           it exists from the current directory.  if not, leave it
+           to load() to search in the load paths */
+        if (argv[argind][0] == '\0') Scm_Error("bad script name");
+        if (argv[argind][0] == '/') {
+            scriptfile = argv[argind];
+#if defined(__CYGWIN__) || defined(GAUCHE_WINDOWS)
+        } else if (isalpha(argv[argind][0]) && argv[argind][1] == ':') {
+            /* support of wicked legacy DOS drive letter */
+            scriptfile = argv[argind];
+#endif /* __CYGWIN__ || GAUCHE_WINDOWS */
+        } else {
+            if (stat(argv[argind], &statbuf) == 0) {
+                ScmDString ds;
+                Scm_DStringInit(&ds);
+                Scm_DStringPutz(&ds, "./", -1);
+                Scm_DStringPutz(&ds, argv[argind], -1);
+                scriptfile = Scm_DStringGetz(&ds);
+            } else {
+                scriptfile = argv[argind];
+            }
+        }
+
+        /* sets up arguments. */
+        args = Scm_InitCommandLine(argc - argind, (const char**)argv + argind);
+    } else {
+        args = Scm_InitCommandLine(1, (const char**)argv);
+    }
+
+    process_command_args(Scm_Reverse(pre_cmds));
 
     /* Set up instruments. */
+    ScmLoadPacket lpak;
     if (profiling_mode) {
         if (Scm_Require(SCM_MAKE_STR("gauche/vm/profiler"), 0, &lpak) < 0) {
             error_exit(lpak.exception);
@@ -545,134 +641,15 @@ int main(int argc, char **argv)
     }
     Scm_AddCleanupHandler(cleanup_main, NULL);
 
-    /* Following is the main dish. */
-
-    if (scriptfile != NULL) {
-        /* If script file is specified, load it. */
-        ScmModule *mainmod;
-        ScmObj mainproc = SCM_FALSE;
-        ScmEvalPacket epak;
-
-        Scm_Load(scriptfile, SCM_LOAD_PROPAGATE_ERROR, &lpak);
-        if (!lpak.loaded) {
-            Scm_Exit(1);
-        }
-
-        /* If symbol 'main is bound, call it (SRFI-22).   */
-        mainmod = (SCM_SYMBOLP(main_module)
-                   ? Scm_FindModule(SCM_SYMBOL(main_module), 0)
-                   : Scm_UserModule());
-        if (mainmod) {
-            mainproc = Scm_GlobalVariableRef(mainmod,
-                                             SCM_SYMBOL(SCM_INTERN("main")),
-                                             SCM_BINDING_STAY_IN_MODULE);
-        }
-        if (SCM_PROCEDUREP(mainproc)) {
-#if 0 /* Temporarily turned off due to the bug that loses stack traces. */
-            int r = Scm_Apply(mainproc, SCM_LIST1(args), &epak);
-            if (r > 0) {
-                ScmObj res = epak.results[0];
-                if (SCM_INTP(res)) exit_code = SCM_INT_VALUE(res);
-                else exit_code = 70;  /* EX_SOFTWARE, see SRFI-22. */
-            } else {
-                Scm_ReportError(epak.exception);
-                exit_code = 70;  /* EX_SOFTWARE, see SRFI-22. */
-            }
-#else
-            ScmObj r = Scm_ApplyRec1(mainproc, args);
-            if (SCM_INTP(r)) {
-                exit_code = SCM_INT_VALUE(r);
-            } else {
-                exit_code = 70;
-            }
-#endif
-        }
-    } else {
-        /* We're in interactive mode. (use gauche.interactive) */
-        if (load_initfile) {
-            if (Scm_Require(SCM_MAKE_STR("gauche/interactive"), 0, &lpak) < 0) {
-                Scm_Warn("couldn't load gauche.interactive\n");
-            } else {
-                Scm_ImportModule(SCM_CURRENT_MODULE(),
-                                 SCM_INTERN("gauche.interactive"),
-                                 SCM_FALSE, 0);
-            }
-        }
-
-        if (batch_mode || (!isatty(0) && !interactive_mode)) {
-            Scm_LoadFromPort(SCM_PORT(Scm_Stdin()), SCM_LOAD_PROPAGATE_ERROR,
-                             NULL);
-        } else {
-            /* Call read-eval-print-loop.  If gauche.interactive is loaded,
-               this will invoke 'user-friendly' version of repl; otherwise,
-               this calls the 'bare' version in libeval.scm. */
-            Scm_EvalCString("(read-eval-print-loop)",
-                            SCM_OBJ(SCM_CURRENT_MODULE()),
-                            NULL);
-        }
+    if (default_toplevel_module != NULL) {
+        Scm_SelectModule(default_toplevel_module);
     }
+
+    /* Following is the main dish. */
+    if (scriptfile != NULL) exit_code = execute_script(scriptfile, args);
+    else                    enter_repl();
 
     /* All is done.  */
     Scm_Exit(exit_code);
     return 0;                   /*NOTREACHED*/
 }
-
-#if defined(MSVC)
-/* getopt emulation.  this is NOT a complete implementation of getopt;
-   we know how it is used in main.c, so we don't need full-spec. */
-int getopt(int argc, char **argv, const char *spec)
-{
-    static int clusterind = 0;
-
-    char optchar, *optspec;
-
-    do {
-        if (optind >= argc) return -1;
-        if (clusterind > 0) {
-            /* remaining options */
-            if (argv[optind][clusterind] == '\0') {
-                clusterind = 0;
-                optind++;
-                continue;
-            } else {
-                optchar = argv[optind][clusterind];
-            }
-        } else {
-            if (argv[optind][0] != '-') return -1;
-            if (argv[optind][1] == '\0'
-                || (argv[optind][1] == '-' && argv[optind][2] == '\0')) {
-                optind++;
-                return -1;
-            }
-            /* found an option. */
-            optchar = argv[optind][1];
-            clusterind = 2;
-        }
-
-        /* now we have option char in optchar.  we know spec[0] == '+' so
-           we skip it. */
-        if ((optspec = strchr(spec+1, optchar)) == NULL) return '?';
-
-        if (optspec[1] != ':') return optchar;
-
-        /* look for the argument. */
-        if (argv[optind][clusterind] == '\0') {
-            if (optind == argc-1) {
-                optarg = NULL;
-                return '?';
-            } else {
-                optarg = argv[++optind];
-                optind++;
-                clusterind = 0;
-                return optchar;
-            }
-        } else {
-            optarg = &(argv[optind][clusterind]);
-            optind++;
-            clusterind = 0;
-            return optchar;
-        }
-    } while (0);
-    return -1;
-}
-#endif /*MSVC*/

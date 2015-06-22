@@ -1,7 +1,7 @@
 ;;;
 ;;; http.scm - HTTP 1.1
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -44,8 +44,6 @@
 ;; The features required for typical client usage are implemented first.
 
 (define-module rfc.http
-  (use srfi-1)
-  (use srfi-2)
   (use srfi-11)
   (use srfi-13)
   (use rfc.822)
@@ -57,11 +55,11 @@
   (use gauche.sequence)
   (use gauche.uvector)
   (use util.match)
-  (use util.list)
   (use text.tree)
   (export <http-error>
           http-user-agent make-http-connection reset-http-connection
           http-compose-query http-compose-form-data
+          http-status-code->description
 
           http-proxy http-request
           http-null-receiver http-string-receiver http-oport-receiver
@@ -234,35 +232,85 @@
                            (sender #f)
                            ((:request-encoding enc) (gauche-character-encoding))
                       :allow-other-keys opts)
-  (let1 conn (ensure-connection server auth-handler auth-user auth-password
-                                proxy secure extra-headers)
-    (let loop ([history '()]
-               [host host]
-               [method method]
-               [request-uri (ensure-request-uri request-uri enc)])
-      (receive (code headers body)
-          (request-response method conn host request-uri sender receiver
-                            `(:user-agent ,user-agent ,@(http-auth-headers conn) ,@opts) enc)
-        (or (and-let* ([ (not no-redirect) ]
-                       [ (string-prefix? "3" code) ]
-                       [h (case redirect-handler
-                            [(#t) (http-default-redirect-handler)]
-                            [(#f) #f]
-                            [else => identity])]
-                       [r (h method code headers body)]
-                       [method (car r)]
-                       [loc (cdr r)])
-              (receive (uri proto new-server path*)
-                  (canonical-uri conn loc (ref conn'server))
-                (when (or (member uri history)
-                          (> (length history) 20))
-                  (errorf <http-error> "redirection is looping via ~a" uri))
-                (loop (cons uri history)
-                      (ref (redirect conn proto new-server)'server)
-                      method
-                      path*)))
-            (values code headers body))))))
 
+  (define conn (ensure-connection server auth-handler auth-user auth-password
+                                  proxy secure extra-headers))
+  (define redirector (if no-redirect
+                       #f
+                       (case redirect-handler
+                         [(#t) (http-default-redirect-handler)]
+                         [(#f) #f]
+                         [else => identity])))
+  (define options `(:user-agent ,user-agent ,@(http-auth-headers conn) ,@opts))
+  (define no-body-replies '("204" "304"))
+
+  (define (get-body iport method code headers receiver)
+    (and (not (eq? method 'HEAD))
+         (not (member code no-body-replies))
+         (receive-body iport code headers receiver)))
+
+  ;; final touch of request headers
+  (define (req-headers host)
+    (cond-list [(~ conn'persistent) @ (if (~ conn'proxy)
+                                        '(:proxy-connection keep-alive)
+                                        '(:connection keep-alive))]
+               [#t @ `(:host ,host :user-agent ,user-agent
+                       ,@(http-auth-headers conn) ,@opts)]))
+
+  ;; If we decide to give up redirection, we read from already-retrieved
+  ;; body of 3xx reply.  This modifies reply headers if necessary.
+  (define (redirect-headers body rep-headers)
+    (if body
+      `(:content-length ,(string-size body)
+                        ,@(delete-keywords '(:content-length
+                                             :content-transfer-encoding)
+                                           rep-headers))
+      rep-headers))
+
+  ;; returns either one of:
+  ;;   (reply <code> <headers> <body>)
+  ;;   (redirect-to <method> <location>)
+  (define (request-response in out method uri host sender)
+    (send-request out method uri sender (req-headers host) enc)
+    (receive (code rep-headers) (receive-header in)
+      (if-let1 consider-redirect (and (string-prefix? "3" code) redirector)
+        ;; we retrieve body as string, not using caller-provided receiver
+        (let* ([body (get-body in method code rep-headers
+                               (http-string-receiver))]
+               [verdict (consider-redirect method code rep-headers body)])
+          (if verdict
+            `(redirect-to ,(car verdict) ,(cdr verdict))
+            (let1 hdrs (redirect-headers body rep-headers)
+              `(reply ,code ,hdrs
+                      ,(and body
+                            (receive-body (open-input-string body) code
+                                          hdrs receiver))))))
+        ;; no redirection
+        `(reply ,code ,rep-headers
+                ,(get-body in method code rep-headers receiver)))))
+
+  ;; main loop
+  (let loop ([history '()]
+             [host host]
+             [method method]
+             [request-uri (ensure-request-uri request-uri enc)])
+    (receive (host uri)
+        (consider-proxy conn (or host (~ conn'server)) request-uri)
+      (let1 result
+          (with-connection
+           conn
+           (^[i o] (request-response i o method uri host sender)))
+        (match result
+          [('reply code rep-headers body) (values code rep-headers body)]
+          [('redirect-to method location)
+           (receive (uri proto new-server path*)
+               (canonical-uri conn location (ref conn'server))
+             (when (or (member uri history)
+                       (> (length history) 20))
+               (errorf <http-error> "redirection is looping via ~a" uri))
+             (loop (cons uri history)
+                   (~ (redirect-connection! conn proto new-server)'server)
+                   method path*))])))))
 ;;
 ;; Pre-defined receivers
 ;;
@@ -325,7 +373,7 @@
 (define (match-status-code? pattern code clause)
   (cond [(string? pattern) (equal? pattern code)]
         [(regexp? pattern) (rxmatch pattern code)]
-        [else (error "invalid pattern in a clause of http-cond-receiver"
+        [else (error "Invalid pattern in a clause of http-cond-receiver:"
                      clause)]))
 
 ;;
@@ -369,7 +417,7 @@
            [body-sink (header-sink `(("content-length" ,(x->string size))
                                      ,@hdrs))]
            [port (body-sink size)])
-      (call-with-input-file (cut copy-port <> port :size size))
+      (call-with-input-file filename (cut copy-port <> port :size size))
       (body-sink 0))))
 
 ;; See http-compose-form-data definition for params spec.
@@ -408,13 +456,18 @@
 ;; Adaptor to the new API.  Converts :sink and :flusher arguments,
 ;; which are superseded by :receiver arguments.
 (define (%http-request-adaptor method server request-uri body
-                               :key receiver (sink #f) (flusher #f)
+                               :key (receiver #f) (sink #f) (flusher #f)
                                :allow-other-keys opts)
   (define recvr
-    (if (or sink flusher)
-      (http-oport-receiver (or sink (open-output-string))
-                           (or flusher (^(s h) (get-output-string s))))
-      receiver))
+    (cond [(and sink flusher)
+           (http-oport-receiver sink flusher)]
+          [(or sink flusher)
+           (errorf "You need to provide :sink and :flusher together to http-~a"
+                   (string-downcase (symbol->string method)))]
+          [receiver]
+          ;; fallback
+          [else (http-oport-receiver (open-output-string)
+                                     (^[s h] (get-output-string s)))]))
   (apply http-request method server request-uri
          :sender (cond [(not body) (http-null-sender)]
                        [(list? body) (http-multipart-sender body)]
@@ -464,7 +517,8 @@
     :proxy proxy
     :extra-headers extra-headers))
 
-(define (redirect conn proto new-server)
+;; This modifies CONN.
+(define (redirect-connection! conn proto new-server)
   (let1 orig-server (~ conn'server)
     (unless (and (string=? orig-server new-server)
                  (eq? (~ conn'secure) (equal? proto "https")))
@@ -494,7 +548,7 @@
   (define (query-1 n&v)
     (match n&v
       [(name value) #`",(esc name)=,(esc value)"]
-      [_ (error "invalid request-uri form: ~s" params)]))
+      [_ (error "Invalid request-uri form:" params)]))
   (define (query) (string-concatenate (intersperse "&" (map query-1 params))))
   (cond [(not path) (query)]
         [(null? params) path]
@@ -515,7 +569,7 @@
       [(name value) (translate-param `(,name :value ,value))]
       [(name . kvs)
        (unless (even? (length kvs))
-         (error "invalid parameter format to create multipart/form-data:" param))
+         (error "Invalid parameter format to create multipart/form-data:" param))
        (let-keywords kvs ([value ""]
                           [file  #f]
                           [content-type #f]
@@ -545,6 +599,61 @@
   (if (not port)
     (mime-compose-message-string (map translate-param params))
     (mime-compose-message (map translate-param params) port)))
+
+;;==============================================================
+;; status codes
+;;
+
+(define *status-code-map*
+  (hash-table 'eqv?
+              '(100 . "Continue")
+              '(101 . "Switching Protocols")
+              '(200 . "OK")
+              '(201 . "Created")
+              '(202 . "Accepted")
+              '(203 . "Non-Authoritative Information")
+              '(204 . "No Content")
+              '(205 . "Reset Content")
+              '(206 . "Partial Content")
+              '(300 . "Multiple Choices")
+              '(301 . "Moved Permanently")
+              '(302 . "Found")
+              '(303 . "See Other")
+              '(304 . "Not Modified")
+              '(305 . "Use Proxy")
+              '(306 . "(Unused)")
+              '(307 . "Temporary Redirect")
+              '(400 . "Bad Request")
+              '(401 . "Unauthorized")
+              '(402 . "Payment Required")
+              '(403 . "Forbidden")
+              '(404 . "Not Found")
+              '(405 . "Method Not Allowed")
+              '(406 . "Not Acceptable")
+              '(407 . "Proxy Authentication Required")
+              '(408 . "Request Timeout")
+              '(409 . "Conflict")
+              '(410 . "Gone")
+              '(411 . "Length Required")
+              '(412 . "Precondition Failed")
+              '(413 . "Request Entity Too Large")
+              '(414 . "Request-URI Too Long")
+              '(415 . "Unsupported Media Type")
+              '(416 . "Requested Range Not Satisfiable")
+              '(417 . "Expectation Failed")
+              '(500 . "Internal Server Error")
+              '(501 . "Not Implemented")
+              '(502 . "Bad Gateway")
+              '(503 . "Service Unavailable")
+              '(504 . "Gateway Timeout")
+              '(505 . "HTTP Version Not Supported")
+              ))
+
+;; API
+;; code can be an integer or a string, e.g. "200"
+;; returns #f for unknown code
+(define (http-status-code->description code)
+  (hash-table-get *status-code-map* (x->integer code) #f))
 
 ;;==============================================================
 ;; internal utilities
@@ -620,26 +729,6 @@
       (when (~ conn'secure) (shutdown-secure-agent conn))
       (shutdown-socket-connection conn))))
 
-(define (request-response method conn host request-uri
-                          sender receiver options enc)
-  (define no-body-replies '("204" "304"))
-  (receive (host uri) (consider-proxy conn (or host (~ conn'server)) request-uri)
-    (let1 req-headers (cond-list [(~ conn'persistent)
-                                  @ (if (~ conn'proxy)
-                                      '(:proxy-connection keep-alive)
-                                      '(:connection keep-alive))]
-                                 [#t @ `(:host ,host ,@options)])
-      (with-connection
-       conn
-       (^[in out]
-         (send-request out method uri sender req-headers enc)
-         (receive (code rep-headers) (receive-header in)
-           (values code
-                   rep-headers
-                   (and (not (eq? method 'HEAD))
-                        (not (member code no-body-replies))
-                        (receive-body in code rep-headers receiver)))))))))
-
 ;; canonicalize uri for the sake of redirection.
 ;; URI is a request-uri given to the API, or the redirect location specified
 ;; in 3xx response.  It can be a full URI or just a path w.r.t. the current
@@ -668,7 +757,9 @@
 ;; send
 (define (send-request out method uri sender headers enc)
   (define request-line #`",method ,uri HTTP/1.1\r\n")
-  (define request-headers ($ map (cut map x->string <>) $ slices headers 2))
+  (define request-headers
+    ($ map (cut map (^s (if (keyword? s) (keyword->string s) (x->string s))) <>)
+       $ slices headers 2))
   (case method
     [(POST PUT)
      (sender request-headers enc
@@ -714,7 +805,7 @@
     (if-let1 enc (assoc "transfer-encoding" headers)
       (if (equal? (cadr enc) "chunked")
         (receive-body-chunked remote code headers total receiver)
-        (error <http-error> "unsupported transfer-encoding" (cadr enc)))
+        (error <http-error> "unsupported transfer-encoding:" (cadr enc)))
       (receive-body-once remote code headers total receiver))))
 
 (define (receive-body-once remote code headers total receiver)
@@ -766,6 +857,7 @@
 (define (shutdown-secure-agent conn)
   (when (~ conn'secure-agent)
     (tls-close (~ conn'secure-agent))
+    (tls-destroy (~ conn'secure-agent))
     (set! (~ conn'secure-agent) #f)))
 
 (define (start-secure-agent conn)

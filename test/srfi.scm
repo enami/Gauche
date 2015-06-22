@@ -3,6 +3,7 @@
 ;;
 
 (use gauche.test)
+(use gauche.parameter)
 
 (test-start "SRFIs")
 
@@ -27,6 +28,8 @@
        (cond-expand [gauche 0] [else 1]))
 (test* "cond-expand" 0
        (cond-expand [scm -1] [gauche 0] [else 1]))
+(test* "cond-expand (library)" 0
+       (cond-expand [(library (gauche time)) 0] [else 1]))
 
 ;;-----------------------------------------------------------------------
 (test-section "srfi-2")
@@ -454,10 +457,15 @@
 (test* "char-set-delete!" #f
        (char-set= (char-set-delete! (->char-set "123") #\2 #\a #\2)
                   (->char-set "13a")))
-(test* "char-set-delete!" #[\x81\x83\x84\x86]
-       (char-set-delete! (->char-set '(#\x81 #\x82 #\x83 #\x84 #\x85 #\x86 #\x87))
-                         #\x82 #\x87 #\x85)
-       char-set=)
+(cond-expand
+ ;; Only test in utf-8, for the literal notation is interpreted differently
+ ;; in other encodings.
+ [gauche.ces-utf-8
+  (test* "char-set-delete!" #[\x81\x83\x84\x86]
+         (char-set-delete! (->char-set '(#\x81 #\x82 #\x83 #\x84 #\x85 #\x86 #\x87))
+                           #\x82 #\x87 #\x85)
+         char-set=)]
+ [else])
 (test* "char-set-intersection" #t
        (char-set= (char-set-intersection char-set:hex-digit (char-set-complement char-set:digit))
                   (->char-set "abcdefABCDEF")))
@@ -473,10 +481,15 @@
        (char-set= (char-set-union! (->char-set "abcdefghijkl")
                                    char-set:hex-digit)
                   (->char-set "abcdefABCDEFghijkl0123456789")))
-(test* "char-set-union!" #[\x81-\x89]
-       (char-set-union! (->char-set '(#\x81 #\x83 #\x84 #\x86 #\x87))
-                        (->char-set '(#\x82 #\x85 #\x86 #\x88 #\x89)))
-       char-set=)
+(cond-expand
+ ;; Only test in utf-8, for the literal notation is interpreted differently
+ ;; in other encodings.
+ [gauche.ces.utf-8
+  (test* "char-set-union!" #[\x81-\x89]
+         (char-set-union! (->char-set '(#\x81 #\x83 #\x84 #\x86 #\x87))
+                          (->char-set '(#\x82 #\x85 #\x86 #\x88 #\x89)))
+         char-set=)]
+ [else])
 (test* "char-set-difference" #t
        (char-set= (char-set-difference (->char-set "abcdefghijklmn")
                                        char-set:hex-digit)
@@ -1111,6 +1124,15 @@
                         (>= i 5))
                 (if #f #f))))
 
+;; Those tests manifest the bug in the original reference implementation
+(test* ":while loop boundary condition" '(1)
+       (list-ec (:while (:list x '(1 2)) (= x 1)) x))
+(test* ":while loop off-by-one error" '(1)
+       (list-ec (:while (:list x '(1)) #t) x))
+(test* ":while loop off-by-one error on vector" '(1 2 3 4 5)
+       (list-ec (:while (:vector x (index i) '#(1 2 3 4 5)) (< x 10)) x))
+
+
 (test* ": list" '(a b)     (list-ec (: c '(a b)) c))
 (test* ": list" '(a b c d) (list-ec (: c '(a b) '(c d)) c))
 
@@ -1344,9 +1366,969 @@
 (test* "booleans->integer" 9 (booleans->integer #f #f #t #f #f #t))
 
 ;;-----------------------------------------------------------------------
-(test-section "srfi-98")
+(test-section "srfi-69")
+(use srfi-69)
+(test-module 'srfi-69)
 
+;; These test is contributed by Takashi Kato @tk_riple
+(letrec-syntax
+    ([test-error
+      (syntax-rules ()
+        ((_ expr)
+         (test* 'expr #t (guard (e (else #t)) expr #f))))]
+     [test-equal
+      (syntax-rules ()
+        ((_ expect expr)
+         (test* 'expr expect expr)))]
+     [test-assert
+      (syntax-rules ()
+        ((_ expr)
+         (test-assert 'expr expr))
+        ((_ name expr)
+         (test* name #t expr (lambda (a r) (and a r)))))]
+     [test-not
+      (syntax-rules ()
+        ((_ expr)
+         (test-not 'expr expr))
+        ((_ name expr)
+         (test-assert name (not expr))))]
+     [test-lset-eq?
+      (syntax-rules ()
+        ((test-lset= a b)
+         (test-assert 'a (lset= eq? a b))))]
+     [test-lset-equal?
+      (syntax-rules ()
+        ((test-lset-equal? a b)
+         (test-assert 'a (lset= equal? a b))))])
+
+  (let ((ht (make-hash-table eq?)))
+    ;; 3 initial elements
+
+    (test-equal 0 (hash-table-size ht))
+    (hash-table-set! ht 'cat 'black)
+    (hash-table-set! ht 'dog 'white)
+    (hash-table-set! ht 'elephant 'pink)
+
+    (test-equal 3 (hash-table-size ht))
+    (test-assert (hash-table-exists? ht 'dog))
+    (test-assert (hash-table-exists? ht 'cat))
+    (test-assert (hash-table-exists? ht 'elephant))
+    (test-not (hash-table-exists? ht 'goose))
+    (test-equal 'white (hash-table-ref ht 'dog))
+    (test-equal 'black (hash-table-ref ht 'cat))
+    (test-equal 'pink (hash-table-ref ht 'elephant))
+    (test-error (hash-table-ref ht 'goose))
+    (test-equal 'grey (hash-table-ref ht 'goose (lambda () 'grey)))
+    (test-equal 'grey (hash-table-ref/default ht 'goose 'grey))
+    (test-lset-eq? '(cat dog elephant) (hash-table-keys ht))
+    (test-lset-eq? '(black white pink) (hash-table-values ht))
+    (test-lset-equal? '((cat . black) (dog . white) (elephant . pink))
+                      (hash-table->alist ht))
+
+    ;; remove an element
+    (hash-table-delete! ht 'dog)
+    (test-equal 2 (hash-table-size ht))
+    (test-not (hash-table-exists? ht 'dog))
+    (test-assert (hash-table-exists? ht 'cat))
+    (test-assert (hash-table-exists? ht 'elephant))
+    (test-error (hash-table-ref ht 'dog))
+    (test-equal 'black (hash-table-ref ht 'cat))
+    (test-equal 'pink (hash-table-ref ht 'elephant))
+    (test-lset-eq? '(cat elephant) (hash-table-keys ht))
+    (test-lset-eq? '(black pink) (hash-table-values ht))
+    (test-lset-equal? '((cat . black) (elephant . pink)) (hash-table->alist ht))
+
+    ;; remove a non-existing element
+    (hash-table-delete! ht 'dog)
+    (test-equal 2 (hash-table-size ht))
+    (test-not (hash-table-exists? ht 'dog))
+
+    ;; overwrite an existing element
+    (hash-table-set! ht 'cat 'calico)
+    (test-equal 2 (hash-table-size ht))
+    (test-not (hash-table-exists? ht 'dog))
+    (test-assert (hash-table-exists? ht 'cat))
+    (test-assert (hash-table-exists? ht 'elephant))
+    (test-error (hash-table-ref ht 'dog))
+    (test-equal 'calico (hash-table-ref ht 'cat))
+    (test-equal 'pink (hash-table-ref ht 'elephant))
+    (test-lset-eq? '(cat elephant) (hash-table-keys ht))
+    (test-lset-eq? '(calico pink) (hash-table-values ht))
+    (test-lset-equal? '((cat . calico) (elephant . pink)) (hash-table->alist ht))
+
+    ;; walk and fold
+    (test-lset-equal?
+     '((cat . calico) (elephant . pink))
+     (let ((a '()))
+       (hash-table-walk ht (lambda (k v) (set! a (cons (cons k v) a))))
+       a))
+    (test-lset-equal? '((cat . calico) (elephant . pink))
+                      (hash-table-fold ht (lambda (k v a) (cons (cons k v) a)) '()))
+
+    ;; copy
+    (let ((ht2 (hash-table-copy ht)))
+      (test-equal 2 (hash-table-size ht2))
+      (test-not (hash-table-exists? ht2 'dog))
+      (test-assert (hash-table-exists? ht2 'cat))
+      (test-assert (hash-table-exists? ht2 'elephant))
+      (test-error (hash-table-ref ht2 'dog))
+      (test-equal 'calico (hash-table-ref ht2 'cat))
+      (test-equal 'pink (hash-table-ref ht2 'elephant))
+      (test-lset-eq? '(cat elephant) (hash-table-keys ht2))
+      (test-lset-eq? '(calico pink) (hash-table-values ht2))
+      (test-lset-equal? '((cat . calico) (elephant . pink))
+                        (hash-table->alist ht2)))
+
+    ;; merge
+    (let ((ht2 (make-hash-table eq?)))
+      (hash-table-set! ht2 'bear 'brown)
+      (test-equal 1 (hash-table-size ht2))
+      (test-not (hash-table-exists? ht2 'dog))
+      (test-assert (hash-table-exists? ht2 'bear))
+      (hash-table-merge! ht2 ht)
+      (test-equal 3 (hash-table-size ht2))
+      (test-assert (hash-table-exists? ht2 'bear))
+      (test-assert (hash-table-exists? ht2 'cat))
+      (test-assert (hash-table-exists? ht2 'elephant))
+      (test-not (hash-table-exists? ht2 'goose))
+      (test-equal 'brown (hash-table-ref ht2 'bear))
+      (test-equal 'calico (hash-table-ref ht2 'cat))
+      (test-equal 'pink (hash-table-ref ht2 'elephant))
+      (test-error (hash-table-ref ht2 'goose))
+      (test-equal 'grey (hash-table-ref/default ht2 'goose 'grey))
+      (test-lset-eq? '(bear cat elephant) (hash-table-keys ht2))
+      (test-lset-eq? '(brown calico pink) (hash-table-values ht2))
+      (test-lset-equal? '((cat . calico) (bear . brown) (elephant . pink))
+                        (hash-table->alist ht2)))
+
+    ;; alist->hash-table
+    (test-lset-equal? (hash-table->alist ht)
+                      (hash-table->alist
+                       (alist->hash-table
+                        '((cat . calico) (elephant . pink)))))
+    )
+
+  ;; update
+  (let ((ht (make-hash-table eq?))
+        (add1 (lambda (x) (+ x 1))))
+    (hash-table-set! ht 'sheep 0)
+    (hash-table-update! ht 'sheep add1)
+    (hash-table-update! ht 'sheep add1)
+    (test-equal 2 (hash-table-ref ht 'sheep))
+    (hash-table-update!/default ht 'crows add1 0)
+    (hash-table-update!/default ht 'crows add1 0)
+    (hash-table-update!/default ht 'crows add1 0)
+    (test-equal 3 (hash-table-ref ht 'crows)))
+
+  ;; string keys
+  (let ((ht (make-hash-table equal?)))
+    (hash-table-set! ht "cat" 'black)
+    (hash-table-set! ht "dog" 'white)
+    (hash-table-set! ht "elephant" 'pink)
+    (hash-table-ref/default ht "dog" #f)
+    (test-equal 'white (hash-table-ref ht "dog"))
+    (test-equal 'black (hash-table-ref ht "cat"))
+    (test-equal 'pink (hash-table-ref ht "elephant"))
+    (test-error (hash-table-ref ht "goose"))
+    (test-equal 'grey (hash-table-ref/default ht "goose" 'grey))
+    (test-lset-equal? '("cat" "dog" "elephant") (hash-table-keys ht))
+    (test-lset-equal? '(black white pink) (hash-table-values ht))
+    (test-lset-equal?
+     '(("cat" . black) ("dog" . white) ("elephant" . pink))
+     (hash-table->alist ht)))
+
+  ;; string-ci keys
+  (let ((ht (make-hash-table string-ci=? string-ci-hash)))
+    (hash-table-set! ht "cat" 'black)
+    (hash-table-set! ht "dog" 'white)
+    (hash-table-set! ht "elephant" 'pink)
+    (hash-table-ref/default ht "DOG" #f)
+    (test-equal 'white (hash-table-ref ht "DOG"))
+    (test-equal 'black (hash-table-ref ht "Cat"))
+    (test-equal 'pink (hash-table-ref ht "eLePhAnT"))
+    (test-error (hash-table-ref ht "goose"))
+    (test-lset-equal? '("cat" "dog" "elephant") (hash-table-keys ht))
+    (test-lset-equal? '(black white pink) (hash-table-values ht))
+    (test-lset-equal?
+     '(("cat" . black) ("dog" . white) ("elephant" . pink))
+     (hash-table->alist ht)))
+
+  ;; stress test
+  (test-equal 625
+              (let ((ht (make-hash-table)))
+                (do ((i 0 (+ i 1))) ((= i 1000))
+                  (hash-table-set! ht i (* i i)))
+                (hash-table-ref/default ht 25 #f)))
+  )
+
+;;-----------------------------------------------------------------------
+(test-section "srfi-98")
 (use srfi-98)
 (test-module 'srfi-98)
 
+;;-----------------------------------------------------------------------
+(test-section "srfi-111")
+(use srfi-111)
+(test-module 'srfi-111)
+
+;; srfi-111 is built-in.
+(test* "box primitives"
+       '(#t #f 2 3)
+       (let1 b (box 2)
+         (list (box? b) (box? 2) (unbox b)
+               (begin(set-box! b 3)
+                     (unbox b)))))
+
+(test* "box compare"
+       '(#t #f #f #t #f)
+       (let ([b1 (box 2)]
+             [b2 (box 2)]
+             [b3 (box 3)])
+         (list (equal? b1 b2)
+               (equal? b2 b3)
+               (equal? b1 2)
+               (eqv?   b1 b1)
+               (eqv?   b1 b2))))
+
+;;-----------------------------------------------------------------------
+;; srfi-113 depends on srfi-114, so we test this first.
+(test-section "srfi-114")
+(use srfi-114)
+(test-module 'srfi-114)
+
+;; builtin comparators are tested in test/compare.scm
+(let ()
+  (define (test-cmp msg cmpr data) ; data = ((a b result) ...)
+    (test* msg data
+           (map (^x (list (car x) (cadr x)
+                          (comparator-compare cmpr (car x) (cadr x))))
+                data)))
+
+  (test-cmp "inexact1"
+            (make-inexact-real-comparator 0.25 'round 'min)
+            '((1.0 1.1 0)
+              (1.1 1.2 -1)
+              (1.2 1.1 1)
+              (1.1 1.0 0)
+              (1.2 1.3 0)
+              (+nan.0 1.1 -1)
+              (1.1 +nan.0 1)
+              (+nan.0 +nan.0 0)))
+
+  (test-cmp "inexact2"
+            (make-inexact-real-comparator 0.25 'round 'max)
+            '((+nan.0 1.1 1)
+              (1.1 +nan.0 -1)
+              (+nan.0 +nan.0 0)))
+
+  (test-cmp "inexact3 - nan handling"
+            ($ make-inexact-real-comparator 0.25 'round
+               (^x (comparator-compare default-comparator 0 x)))
+            '((+nan.0 1.1 -1)
+              (+nan.0 0 0)
+              (+nan.0 -1.1 1)
+              (+nan.0 +nan.0 0)))
+
+  (test-cmp "list" (make-list-comparator
+                    (make-inexact-real-comparator 0.25 'round 'error))
+            '(((1 2 3) (1 2 3) 0)
+              ((1 2 3) (1.1 2 3) 0)
+              ((1 2 3) (1.1 2) 1)
+              ((1 2 3) (1.2 2) -1)
+              ((1 2 3) (1.2 2 3) -1)
+              (() () 0)
+              (() (1) -1)
+              ((1 2 3) (1 2 2.9) 0)
+              ((1 2 3) (1 2.2 2.9) -1)
+              ((1 2.2 2.9) (1 2 3) 1)
+              ))
+            
+  (test-cmp "vector" (make-vector-comparator
+                      (make-inexact-real-comparator 0.25 'round 'error))
+            '((#(1 2 3) #(1 2 3) 0)
+              (#(1 2 3) #(1.1 2 3) 0)
+              (#(1 2 3) #(1.1 2) 1)
+              (#(1 2 3) #(1.2 2) 1)
+              (#(1 2 3) #(1.2 2 3) -1)
+              (#() #() 0)
+              (#() #(1) -1)
+              (#(1 2 3) #(1 2 2.9) 0)
+              (#(1 2 3) #(1 2.2 2.9) -1)
+              (#(1 2.2 2.9) #(1 2 3) 1)
+              ))
+            
+  )
+
+(let ([lw (make-listwise-comparator vector?
+                                    (make-reverse-comparator number-comparator)
+                                    (^x (= (vector-length x) 0))
+                                    (^x (vector-ref x 0))
+                                    (^x (vector-copy x 1)))])
+  (define (test-lw a b expect)
+    (test* (format "listwise ~s ~s" a b)
+           (list (zero? expect) expect (- expect) #t)
+           (list (comparator-equal? lw a b)
+                 (comparator-compare lw a b)
+                 (comparator-compare lw b a)
+                 (integer? (comparator-hash lw a)))))
+  (test-lw '#(1) '#(2) 1)
+  (test-lw '#(1 4) '#(1 3 5) -1)
+  (test-lw '#(1 2) '#(1 3 5) 1)
+  (test-lw '#(1 3 5) '#(1 3 5) 0)
+  (test-lw '#(1 3 6) '#(1 3 5) -1)
+  (test-lw '#() '#() 0)
+  (test-lw '#() '#(1) -1))
+
+(let ([vw (make-vectorwise-comparator list?
+                                      (make-reverse-comparator number-comparator)
+                                      length
+                                      list-ref)])
+  (define (test-vw a b expect)
+    (test* (format "vectorwise ~s ~s" a b)
+           (list (zero? expect) expect (- expect) #t)
+           (list (comparator-equal? vw a b)
+                 (comparator-compare vw a b)
+                 (comparator-compare vw b a)
+                 (integer? (comparator-hash vw a)))))
+  (test-vw '(1) '(2) 1)
+  (test-vw '(1 4) '(1 3 5) -1)
+  (test-vw '(1 2) '(1 3 5) -1)
+  (test-vw '(1 3 5) '(1 3 5) 0)
+  (test-vw '(1 3 6) '(1 3 5) -1)
+  (test-vw '() '() 0)
+  (test-vw '() '(1) -1))
+
+(let ()
+  (define (test-minmax msg cmp min-item max-item args)
+    (test* (format "test-minmax ~a" msg)
+           (list min-item max-item max-item min-item)
+           (list (apply comparator-min cmp args)
+                 (apply comparator-max cmp args)
+                 (apply comparator-min (make-reverse-comparator cmp) args)
+                 (apply comparator-max (make-reverse-comparator cmp) args))))
+
+  (test-minmax "default" default-comparator 1 9
+               '(3 1 4 5 9 2 6 8 7))
+  )
+
+;;-----------------------------------------------------------------------
+(test-section "srfi-113")
+(use srfi-113)
+(test-module 'srfi-113)
+
+;; We use test suite provided by srfi-113 reference implementation.
+;; The following is a quick adaptation of their test suite; the tests
+;; themselves are copied verbatim.
+(let1 current-test-comparator (make-parameter equal?)
+  (define-syntax gauche:parameterize parameterize)
+  (define gauche:test-error test-error)
+  (letrec-syntax
+      ([begin* (syntax-rules ()
+                 [(_ x) (let () x)]
+                 [(_ x . y) (let () x (begin* . y))])]
+       [test-group (syntax-rules () [(_ name . xs) (begin* . xs)])]
+       [test (syntax-rules ()
+               [(_ expected expr)
+                (test* 'expected expected expr (current-test-comparator))]
+               [(_ name expected expr)
+                (test* name expected expr (current-test-comparator))])]
+       [test-assert (syntax-rules ()
+                      [(_ expr) (test* 'expr #t (boolean expr))])]
+       [test-error (syntax-rules ()
+                     [(_ expr)
+                      (test* 'expr (gauche:test-error) expr)])]
+       [parameterize (syntax-rules ()
+                       [(_ bindings . xs)
+                        (gauche:parameterize bindings (begin* . xs))])]
+       )
+
+(test-group "sets"
+(define (big x) (> x 5))
+
+(test-group "sets"
+(test-group "sets/simple"
+  (define nums (set number-comparator))
+  ;; nums is now {}
+  (define syms (set eq-comparator 'a 'b 'c 'd))
+  ;; syms is now {a, b, c, d}
+  (define nums2 (set-copy nums))
+  ;; nums2 is now {}
+  (define syms2 (set-copy syms))
+  ;; syms2 is now {a, b, c, d}
+  (define esyms (set eq-comparator))
+  ;; esyms is now {}
+  (test-assert (set-empty? esyms))
+  (define total 0)
+  (test-assert (set? nums))
+  (test-assert (set? syms))
+  (test-assert (set? nums2))
+  (test-assert (set? syms2))
+  (test-assert (not (set? 'a)))
+  (set-adjoin! nums 2)
+  (set-adjoin! nums 3)
+  (set-adjoin! nums 4)
+  (set-adjoin! nums 4)
+  ;; nums is now {2, 3, 4}
+  (test 4 (set-size (set-adjoin nums 5)))
+  (test 3 (set-size nums))
+  (test 3 (set-size (set-delete syms 'd)))
+  (test 2 (set-size (set-delete-all syms '(c d))))
+  (test 4 (set-size syms))
+  (set-adjoin! syms 'e 'f)
+  ;; syms is now {a, b, c, d, e, f}
+  (test 4 (set-size (set-delete-all! syms '(e f))))
+  ;; syms is now {a, b, c, d}
+  (test 0 (set-size nums2))
+  (test 4 (set-size syms2))
+  (set-delete! nums 2)
+  ;; nums is now {3, 4}
+  (test 2 (set-size nums))
+  (set-delete! nums 1)
+  (test 2 (set-size nums))
+  (set! nums2 (set-map (lambda (x) (* 10 x)) number-comparator nums))
+  ;; nums2 is now {30, 40}
+  (test-assert (set-contains? nums2 30))
+  (test-assert (not (set-contains? nums2 3)))
+  (set-for-each (lambda (x) (set! total (+ total x))) nums2)
+  (test 70 total)
+  (test 10 (set-fold + 3 nums))
+  (set! nums (set eqv-comparator 10 20 30 40 50))
+  ;; nums is now {10, 20, 30, 40, 50}
+  (test-assert
+    (set=? nums (set-unfold
+       (lambda (i) (= i 0))
+       (lambda (i) (* i 10))
+       (lambda (i) (- i 1))
+       5
+       eqv-comparator)))
+  (test '(a) (set->list (set eq-comparator 'a)))
+  (set! syms2 (list->set eq-comparator '(e f)))
+  ;; syms2 is now {e, f}
+  (test 2 (set-size syms2))
+  (test-assert (set-contains? syms2 'e))
+  (test-assert (set-contains? syms2 'f))
+  (list->set! syms2 '(a b))
+  (test 4 (set-size syms2))
+) ; end sets/simple
+
+(test-group "sets/search"
+  (define yam (set char-comparator #\y #\a #\m))
+  (define (failure/insert insert ignore)
+    (insert 1))
+  (define (failure/ignore insert ignore)
+    (ignore 2))
+  (define (success/update element update remove)
+    (update #\b 3))
+  (define (success/remove element update remove)
+    (remove 4))
+  (define yam! (set char-comparator #\y #\a #\m #\!))
+  (define bam (set char-comparator #\b #\a #\m))
+  (define ym (set char-comparator #\y #\m))
+  (define-values (set1 obj1)
+    (set-search! (set-copy yam) #\! failure/insert error))
+  (test-assert (set=? yam! set1))
+  (test 1 obj1)
+  (define-values (set2 obj2)
+    (set-search! (set-copy yam) #\! failure/ignore error))
+  (test-assert (set=? yam set2))
+  (test 2 obj2)
+  (define-values (set3 obj3)
+    (set-search! (set-copy yam) #\y error success/update))
+  (test-assert (set=? bam set3))
+  (test 3 obj3)
+  (define-values (set4 obj4)
+    (set-search! (set-copy yam) #\a error success/remove))
+  (test-assert (set=? ym set4))
+  (test 4 obj4)
+) ; end sets/search
+
+(test-group "sets/subsets"
+  (define set2 (set number-comparator 1 2))
+  (define other-set2 (set number-comparator 1 2))
+  (define set3 (set number-comparator 1 2 3))
+  (define set4 (set number-comparator 1 2 3 4))
+  (define setx (set number-comparator 10 20 30 40))
+  (test-assert (set=? set2 other-set2))
+  (test-assert (not (set=? set2 set3)))
+  (test-assert (not (set=? set2 set3 other-set2)))
+  (test-assert (set<? set2 set3 set4))
+  (test-assert (not (set<? set2 other-set2)))
+  (test-assert (set<=? set2 other-set2 set3))
+  (test-assert (not (set<=? set2 set3 other-set2)))
+  (test-assert (set>? set4 set3 set2))
+  (test-assert (not (set>? set2 other-set2)))
+  (test-assert (set>=? set3 other-set2 set2))
+  (test-assert (not (set>=? other-set2 set3 set2)))
+) ; end sets/subsets
+
+(test-group "sets/ops"
+  ;; Potentially mutable
+  (define abcd (set eq-comparator 'a 'b 'c 'd))
+  (define efgh (set eq-comparator 'e 'f 'g 'h))
+  (define abgh (set eq-comparator 'a 'b 'g 'h))
+  ;; Never get a chance to be mutated
+  (define other-abcd (set eq-comparator 'a 'b 'c 'd))
+  (define other-efgh (set eq-comparator 'e 'f 'g 'h))
+  (define other-abgh (set eq-comparator 'a 'b 'g 'h))
+  (define all (set eq-comparator 'a 'b 'c 'd 'e 'f 'g 'h))
+  (define none (set eq-comparator))
+  (define ab (set eq-comparator 'a 'b))
+  (define cd (set eq-comparator 'c 'd))
+  (define ef (set eq-comparator 'e 'f))
+  (define gh (set eq-comparator 'g 'h))
+  (define cdgh (set eq-comparator 'c 'd 'g 'h))
+  (define abcdgh (set eq-comparator 'a 'b 'c 'd 'g 'h))
+  (define abefgh (set eq-comparator 'a 'b 'e 'f 'g 'h))
+  (test-assert (set-disjoint? abcd efgh))
+  (test-assert (not (set-disjoint? abcd ab)))
+  (parameterize ((current-test-comparator set=?))
+    (test all (set-union abcd efgh))
+    (test abcdgh (set-union abcd abgh))
+    (test abefgh (set-union efgh abgh))
+    (define efgh2 (set-copy efgh))
+    (set-union! efgh2 abgh)
+    (test abefgh efgh2)
+    (test none (set-intersection abcd efgh))
+    (define abcd2 (set-copy abcd))
+    (set-intersection! abcd2 efgh)
+    (test none abcd2)
+    (test ab (set-intersection abcd abgh))
+    (test ab (set-intersection abgh abcd))
+    (test cd (set-difference abcd ab))
+    (test abcd (set-difference abcd gh))
+    (test none (set-difference abcd abcd))
+    (define abcd3 (set-copy abcd))
+    (set-difference! abcd3 abcd)
+    (test none abcd3)
+    (test cdgh (set-xor abcd abgh))
+    (test all (set-xor abcd efgh))
+    (test none (set-xor abcd other-abcd))
+    (define abcd4 (set-copy abcd))
+    ;; don't test xor! effect
+    (test none (set-xor! abcd4 other-abcd))
+    (test "abcd smashed?" other-abcd abcd)
+    (test "efgh smashed?" other-efgh efgh)
+    (test "abgh smashed?" other-abgh abgh))
+) ; end sets/subsets
+
+(test-group "sets/mismatch"
+  (define nums (set number-comparator 1 2 3))
+  (define syms (set eq-comparator 'a 'b 'c))
+  (test-error (set=? nums syms))
+  (test-error (set<? nums syms))
+  (test-error (set<=? nums syms))
+  (test-error (set>? nums syms))
+  (test-error (set>=? nums syms))
+  (test-error (set-union nums syms))
+  (test-error (set-intersection nums syms))
+  (test-error (set-difference nums syms))
+  (test-error (set-xor nums syms))
+  (test-error (set-union! nums syms))
+  (test-error (set-intersection! nums syms))
+  (test-error (set-difference! nums syms))
+  (test-error (set-xor! nums syms))
+) ; end sets/mismatch
+
+(test-group "sets/whole"
+  (define whole (set eqv-comparator 1 2 3 4 5 6 7 8 9 10))
+  (define whole2 (set-copy whole))
+  (define whole3 (set-copy whole))
+  (define whole4 (set-copy whole))
+  (define bottom (set eqv-comparator 1 2 3 4 5))
+  (define top (set eqv-comparator 6 7 8 9 10))
+  (define-values (topx bottomx)
+    (set-partition big whole))
+  (set-partition! big whole4)
+  (parameterize ((current-test-comparator set=?))
+    (test top (set-filter big whole))
+    (test bottom (set-remove big whole))
+    (set-filter! big whole2)
+    (test-assert (not (set-contains? whole2 1)))
+    (set-remove! big whole3)
+    (test-assert (not (set-contains? whole3 10)))
+    (test top topx)
+    (test bottom bottomx)
+    (test top whole4))
+  (test 5 (set-count big whole))
+  (define hetero (set eqv-comparator 1 2 'a 3 4))
+  (define homo (set eqv-comparator 1 2 3 4 5))
+  (test 'a (set-find symbol? hetero (lambda () (error "wrong"))))
+  (test-error  (set-find symbol? homo (lambda () (error "wrong"))))
+  (test-assert (set-any? symbol? hetero))
+  (test-assert (set-any? number? hetero))
+  (test-assert (not (set-every? symbol? hetero)))
+  (test-assert (not (set-every? number? hetero)))
+  (test-assert (not (set-any? symbol? homo)))
+  (test-assert (set-every? number? homo))
+) ; end sets/whole
+
+(test-group "sets/lowlevel"
+  (define bucket (set string-ci-comparator "abc" "def"))
+  (test string-ci-comparator (set-element-comparator bucket))
+  (test-assert (set-contains? bucket "abc"))
+  (test-assert (set-contains? bucket "ABC"))
+  (test "def" (set-member bucket "DEF" "fqz"))
+  (test "fqz" (set-member bucket "lmn" "fqz"))
+  (define nums (set number-comparator 1 2 3))
+  ;; nums is now {1, 2, 3}
+  (define nums2 (set-replace nums 2.0))
+  ;; nums2 is now {1, 2.0, 3}
+  (test-assert (set-any? inexact? nums2))
+  (set-replace! nums 2.0)
+  ;; nums is now {1, 2.0, 3}
+  (test-assert (set-any? inexact? nums))
+  (define sos
+    (set set-comparator
+      (set eqv-comparator 1 2)
+      (set eqv-comparator 1 2)))
+  (test 1 (set-size sos))
+) ; end sets/lowlevel
+
+) ; end sets
+
+(test-group "bags"
+(test-group "bags/simple"
+  (define nums (bag number-comparator))
+  ;; nums is now {}
+  (define syms (bag eq-comparator 'a 'b 'c 'd))
+  ;; syms is now {a, b, c, d}
+  (define nums2 (bag-copy nums))
+  ;; nums2 is now {}
+  (define syms2 (bag-copy syms))
+  ;; syms2 is now {a, b, c, d}
+  (define esyms (bag eq-comparator))
+  ;; esyms is now {}
+  (test-assert (bag-empty? esyms))
+  (define total 0)
+  (test-assert (bag? nums))
+  (test-assert (bag? syms))
+  (test-assert (bag? nums2))
+  (test-assert (bag? syms2))
+  (test-assert (not (bag? 'a)))
+  (bag-adjoin! nums 2)
+  (bag-adjoin! nums 3)
+  (bag-adjoin! nums 4)
+  ;; nums is now {2, 3, 4}
+  (test 4 (bag-size (bag-adjoin nums 5)))
+  (test 3 (bag-size nums))
+  (test 3 (bag-size (bag-delete syms 'd)))
+  (test 2 (bag-size (bag-delete-all syms '(c d))))
+  (test 4 (bag-size syms))
+  (bag-adjoin! syms 'e 'f)
+  ;; syms is now {a, b, c, d, e, f}
+  (test 4 (bag-size (bag-delete-all! syms '(e f))))
+  ;; syms is now {a, b, c, d}
+  (test 3 (bag-size nums))
+  (bag-delete! nums 1)
+  (test 3 (bag-size nums))
+  (set! nums2 (bag-map (lambda (x) (* 10 x)) number-comparator nums))
+  ;; nums2 is now {20, 30, 40}
+  (test-assert (bag-contains? nums2 30))
+  (test-assert (not (bag-contains? nums2 3)))
+  (bag-for-each (lambda (x) (set! total (+ total x))) nums2)
+  (test 90 total)
+  (test 12 (bag-fold + 3 nums))
+  (set! nums (bag eqv-comparator 10 20 30 40 50))
+  ;; nums is now {10, 20, 30, 40, 50}
+  (test-assert
+    (bag=? nums (bag-unfold
+       (lambda (i) (= i 0))
+       (lambda (i) (* i 10))
+       (lambda (i) (- i 1))
+       5
+       eqv-comparator)))
+  (test '(a) (bag->list (bag eq-comparator 'a)))
+  (set! syms2 (list->bag eq-comparator '(e f)))
+  ;; syms2 is now {e, f}
+  (test 2 (bag-size syms2))
+  (test-assert (bag-contains? syms2 'e))
+  (test-assert (bag-contains? syms2 'f))
+  (list->bag! syms2 '(e f))
+  ;; syms2 is now {e, e, f, f}
+  (test 4 (bag-size syms2))
+) ; end bags/simple
+
+(test-group "bags/search"
+  (define yam (bag char-comparator #\y #\a #\m))
+  (define (failure/insert insert ignore)
+    (insert 1))
+  (define (failure/ignore insert ignore)
+    (ignore 2))
+  (define (success/update element update remove)
+    (update #\b 3))
+  (define (success/remove element update remove)
+    (remove 4))
+  (define yam! (bag char-comparator #\y #\a #\m #\!))
+  (define bam (bag char-comparator #\b #\a #\m))
+  (define ym (bag char-comparator #\y #\m))
+  (define-values (bag1 obj1)
+    (bag-search! (bag-copy yam) #\! failure/insert error))
+  (test-assert (bag=? yam! bag1))
+  (test 1 obj1)
+  (define-values (bag2 obj2)
+    (bag-search! (bag-copy yam) #\! failure/ignore error))
+  (test-assert (bag=? yam bag2))
+  (test 2 obj2)
+  (define-values (bag3 obj3)
+    (bag-search! (bag-copy yam) #\y error success/update))
+  (test-assert (bag=? bam bag3))
+  (test 3 obj3)
+  (define-values (bag4 obj4)
+    (bag-search! (bag-copy yam) #\a error success/remove))
+  (test-assert (bag=? ym bag4))
+  (test 4 obj4)
+) ; end bags/search
+
+(test-group "bags/elemcount"
+  (define mybag (bag eqv-comparator 1 1 1 1 1 2 2))
+  (test 5 (bag-element-count mybag 1))
+  (test 0 (bag-element-count mybag 3))
+) ; end bags/elemcount
+
+(test-group "bags/subbags"
+  (define bag2 (bag number-comparator 1 2))
+  (define other-bag2 (bag number-comparator 1 2))
+  (define bag3 (bag number-comparator 1 2 3))
+  (define bag4 (bag number-comparator 1 2 3 4))
+  (define bagx (bag number-comparator 10 20 30 40))
+  (test-assert (bag=? bag2 other-bag2))
+  (test-assert (not (bag=? bag2 bag3)))
+  (test-assert (not (bag=? bag2 bag3 other-bag2)))
+  (test-assert (bag<? bag2 bag3 bag4))
+  (test-assert (not (bag<? bag2 other-bag2)))
+  (test-assert (bag<=? bag2 other-bag2 bag3))
+  (test-assert (not (bag<=? bag2 bag3 other-bag2)))
+  (test-assert (bag>? bag4 bag3 bag2))
+  (test-assert (not (bag>? bag2 other-bag2)))
+  (test-assert (bag>=? bag3 other-bag2 bag2))
+  (test-assert (not (bag>=? other-bag2 bag3 bag2)))
+) ; end bags/subbags
+
+(test-group "bags/multi"
+  (define one (bag eqv-comparator 10))
+  (define two (bag eqv-comparator 10 10))
+  (test-assert (not (bag=? one two)))
+  (test-assert (bag<? one two))
+  (test-assert (not (bag>? one two)))
+  (test-assert (bag<=? one two))
+  (test-assert (not (bag>? one two)))
+  (test-assert (bag=? two two))
+  (test-assert (not (bag<? two two)))
+  (test-assert (not (bag>? two two)))
+  (test-assert (bag<=? two two))
+  (test-assert (bag>=? two two))
+  (test '((10 . 2))
+    (let ((result '()))
+      (bag-for-each-unique
+         (lambda (x y) (set! result (cons (cons x y) result)))
+         two)
+      result))
+  (test 25 (bag-fold + 5 two))
+  (test 12 (bag-fold-unique (lambda (k n r) (+ k n r)) 0 two))
+) ; end bags/multi
+
+(test-group "bags/ops"
+  ;; Potentially mutable
+  (define abcd (bag eq-comparator 'a 'b 'c 'd))
+  (define efgh (bag eq-comparator 'e 'f 'g 'h))
+  (define abgh (bag eq-comparator 'a 'b 'g 'h))
+  ;; Never get a chance to be mutated
+  (define other-abcd (bag eq-comparator 'a 'b 'c 'd))
+  (define other-efgh (bag eq-comparator 'e 'f 'g 'h))
+  (define other-abgh (bag eq-comparator 'a 'b 'g 'h))
+  (define all (bag eq-comparator 'a 'b 'c 'd 'e 'f 'g 'h))
+  (define none (bag eq-comparator))
+  (define ab (bag eq-comparator 'a 'b))
+  (define cd (bag eq-comparator 'c 'd))
+  (define ef (bag eq-comparator 'e 'f))
+  (define gh (bag eq-comparator 'g 'h))
+  (define cdgh (bag eq-comparator 'c 'd 'g 'h))
+  (define abcdgh (bag eq-comparator 'a 'b 'c 'd 'g 'h))
+  (define abefgh (bag eq-comparator 'a 'b 'e 'f 'g 'h))
+  (test-assert (bag-disjoint? abcd efgh))
+  (test-assert (not (bag-disjoint? abcd ab)))
+  (parameterize ((current-test-comparator bag=?))
+    (test all (bag-union abcd efgh))
+    (test abcdgh (bag-union abcd abgh))
+    (test abefgh (bag-union efgh abgh))
+    (define efgh2 (bag-copy efgh))
+    (bag-union! efgh2 abgh)
+    (test abefgh efgh2)
+    (test none (bag-intersection abcd efgh))
+    (define abcd2 (bag-copy abcd))
+    (bag-intersection! abcd2 efgh)
+    (test none abcd2)
+    (test ab (bag-intersection abcd abgh))
+    (test ab (bag-intersection abgh abcd))
+    (test cd (bag-difference abcd ab))
+    (test abcd (bag-difference abcd gh))
+    (test none (bag-difference abcd abcd))
+    (define abcd3 (bag-copy abcd))
+    (bag-difference! abcd3 abcd)
+    (test none abcd3)
+    (test cdgh (bag-xor abcd abgh))
+    (test all (bag-xor abcd efgh))
+    (test none (bag-xor abcd other-abcd))
+    (define abcd4 (bag-copy abcd))
+    (test none (bag-xor! abcd4 other-abcd))
+    (define abab (bag eq-comparator 'a 'b 'a 'b))
+    (define ab2 (bag-copy ab))
+    (test abab (bag-sum! ab2 ab))
+    (test abab ab2)
+    (test abab (bag-product 2 ab))
+    (define ab3 (bag-copy ab))
+    (bag-product! 2 ab3)
+    (test abab ab3)
+    (test "abcd smashed?" other-abcd abcd)
+    (test "abcd smashed?" other-abcd abcd)
+    (test "efgh smashed?" other-efgh efgh)
+    (test "abgh smashed?" other-abgh abgh))
+) ; end bags/ops
+
+(test-group "bags/mismatch"
+  (define nums (bag number-comparator 1 2 3))
+  (define syms (bag eq-comparator 'a 'b 'c))
+  (test-error (bag=? nums syms))
+  (test-error (bag<? nums syms))
+  (test-error (bag<=? nums syms))
+  (test-error (bag>? nums syms))
+  (test-error (bag>=? nums syms))
+  (test-error (bag-union nums syms))
+  (test-error (bag-intersection nums syms))
+  (test-error (bag-difference nums syms))
+  (test-error (bag-xor nums syms))
+  (test-error (bag-union! nums syms))
+  (test-error (bag-intersection! nums syms))
+  (test-error (bag-difference! nums syms))
+) ; end bags/mismatch
+
+(test-group "bags/whole"
+  (define whole (bag eqv-comparator 1 2 3 4 5 6 7 8 9 10))
+  (define whole2 (bag-copy whole))
+  (define whole3 (bag-copy whole))
+  (define whole4 (bag-copy whole))
+  (define bottom (bag eqv-comparator 1 2 3 4 5))
+  (define top (bag eqv-comparator 6 7 8 9 10))
+  (define-values (topx bottomx)
+    (bag-partition big whole))
+  (bag-partition! big whole4)
+  (parameterize ((current-test-comparator bag=?))
+    (test top (bag-filter big whole))
+    (test bottom (bag-remove big whole))
+    (bag-filter! big whole2)
+    (test-assert (not (bag-contains? whole2 1)))
+    (bag-remove! big whole3)
+    (test-assert (not (bag-contains? whole3 10)))
+    (test top topx)
+    (test bottom bottomx)
+    (test top whole4))
+  (test 5 (bag-count big whole))
+  (define hetero (bag eqv-comparator 1 2 'a 3 4))
+  (define homo (bag eqv-comparator 1 2 3 4 5))
+  (test 'a (bag-find symbol? hetero (lambda () (error "wrong"))))
+  (test-error  (bag-find symbol? homo (lambda () (error "wrong"))))
+  (test-assert (bag-any? symbol? hetero))
+  (test-assert (bag-any? number? hetero))
+  (test-assert (not (bag-every? symbol? hetero)))
+  (test-assert (not (bag-every? number? hetero)))
+  (test-assert (not (bag-any? symbol? homo)))
+  (test-assert (bag-every? number? homo))
+) ; end bags/whole
+
+(test-group "bags/lowlevel"
+  (define bucket (bag string-ci-comparator "abc" "def"))
+  (test string-ci-comparator (bag-element-comparator bucket))
+  (test-assert (bag-contains? bucket "abc"))
+  (test-assert (bag-contains? bucket "ABC"))
+  (test "def" (bag-member bucket "DEF" "fqz"))
+  (test "fqz" (bag-member bucket "lmn" "fqz"))
+  (define nums (bag number-comparator 1 2 3))
+  ;; nums is now {1, 2, 3}
+  (define nums2 (bag-replace nums 2.0))
+  ;; nums2 is now {1, 2.0, 3}
+  (test-assert (bag-any? inexact? nums2))
+  (bag-replace! nums 2.0)
+  ;; nums is now {1, 2.0, 3}
+  (test-assert (bag-any? inexact? nums))
+  (define bob
+    (bag bag-comparator
+      (bag eqv-comparator 1 2)
+      (bag eqv-comparator 1 2)))
+  (test 2 (bag-size bob))
+) ; end bags/lowlevel
+
+
+(test-group "bags/semantics"
+  (define mybag (bag number-comparator 1 2))
+  ;; mybag is {1, 2}
+  (test 2 (bag-size mybag))
+  (bag-adjoin! mybag 1)
+  ;; mybag is {1, 1, 2}
+  (test 3 (bag-size mybag))
+  (test 2 (bag-unique-size mybag))
+  (bag-delete! mybag 2)
+  ;; mybag is {1, 1}
+  (bag-delete! mybag 2)
+  (test 2 (bag-size mybag))
+  (bag-increment! mybag 1 3)
+  ;; mybag is {1, 1, 1, 1, 1}
+  (test 5 (bag-size mybag))
+  (test-assert (bag-decrement! mybag 1 2))
+  ;; mybag is {1, 1, 1}
+  (test 3 (bag-size mybag))
+  (bag-decrement! mybag 1 5)
+  ;; mybag is {}
+  (test 0 (bag-size mybag))
+) ; end bags/semantics
+
+(test-group "bags/convert"
+  (define multi (bag eqv-comparator 1 2 2 3 3 3))
+  (define single (bag eqv-comparator 1 2 3))
+  (define singleset (set eqv-comparator 1 2 3))
+  (define minibag (bag eqv-comparator 'a 'a))
+  (define alist '((a . 2)))
+  (test alist (bag->alist minibag))
+  (test-assert (bag=? minibag (alist->bag eqv-comparator alist)))
+  (test-assert (set=? singleset (bag->set single)))
+  (test-assert (set=? singleset (bag->set multi)))
+  (test-assert (bag=? single (set->bag singleset)))
+  (test-assert (not (bag=? multi (set->bag singleset))))
+  (set->bag! minibag singleset)
+  ;; minibag is now {a, a, a, a, 1, 2, 3}
+  (test-assert (bag-contains? minibag 1))
+) ; end bags/convert
+
+(test-group "bags/sumprod"
+  (define abb (bag eq-comparator 'a 'b 'b))
+  (define aab (bag eq-comparator 'a 'a 'b))
+  (define total (bag-sum abb aab))
+  (test 3 (bag-count (lambda (x) (eqv? x 'a)) total))
+  (test 3 (bag-count (lambda (x) (eqv? x 'b)) total))
+  (test 12 (bag-size (bag-product 2 total)))
+  (define bag1 (bag eqv-comparator 1))
+  (bag-sum! bag1 bag1)
+  (test 2 (bag-size bag1))
+  (bag-product! 2 bag1)
+  (test 4 (bag-size bag1))
+) ; end bag/sumprod
+
+) ; end bags
+
+(test-group "comparators"
+  (define a (set number-comparator 1 2 3))
+  (define b (set number-comparator 1 2 4))
+  (define aa (bag number-comparator 1 2 3))
+  (define bb (bag number-comparator 1 2 4))
+  (test-assert (not (=? set-comparator a b)))
+  (test-assert (=? set-comparator a (set-copy a)))
+  (test-error (<? set-comparator a b))
+  (test-assert (not (=? bag-comparator aa bb)))
+  (test-assert (=? bag-comparator aa (bag-copy aa)))
+  (test-error (<? bag-comparator aa bb))
+  (test-assert (not (=? default-comparator a aa)))
+) ; end comparators
+  
+)))
+
 (test-end)
+

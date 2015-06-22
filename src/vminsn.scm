@@ -1,7 +1,7 @@
 ;;;
 ;;; vminsn.scm - Virtual machine instruction definition
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -36,21 +36,52 @@
 ;;; This file is also used by the compiler.
 ;;;
 ;;;
-;;; (define-insn <name> <num-params> <operand-type> [<combination>] [<body>])
+;;; (define-insn <name> <num-params> <operand-type>
+;;;              :optional (<combination> '())
+;;;                        (<body> #f)
+;;;                        <flags> ...)
 ;;;
 ;;;   <name> - instruction name.  In C, an enum SCM_VM_<name> is defined.
 ;;;
 ;;;   <num-params> - # of parameters the instruction takes.
+;;;                  Can be (N M ...) - in this case, N is the proper
+;;;                  <num-params> of this insn, but vm-build-insn tolerates
+;;;                  the passed insn to have M parameters as well.  If N < M,
+;;;                  extra parameters are ignored.  If N > M, 0 is assumed
+;;;                  for missing parameters.  This is mainly to compile
+;;;                  Gauche itself with the previous version of Gauche.
 ;;;
 ;;;   <operand-type> - none : the insn doesn't take an operand.
 ;;;                    obj  : an ScmObj operand.
 ;;;                    addr : an address the next pc points.
 ;;;                    code : an ScmCompiledCode operand.
 ;;;                    codes: a list of ScmCompiledCodes.
+;;;                    obj+addr : an ScmObj, followed by an address
 ;;;
-;;;   If this insn is a combined insn, <combination> gives a list of
-;;;   insns that combines into this one.  It is used to generate a
-;;;   code-emitting table.
+;;;   <combination>  - If this is a comibined insn, list the ingredients
+;;;                    here.  It is used in multiple purposes:
+;;;                    * The instruction body is generated automatically,
+;;;                      fusing the ingredients' body.
+;;;                    * A DFA is set up in the instruction emitter
+;;;                      that replaces this specific sequence of
+;;;                      insns to the combined insn.  Because of this,
+;;;                      pass5 (instruction generation) doesn't need to
+;;;                      handle instruction combination explicitly.
+;;;
+;;;   <body>         - a CiSE expression that handles the instruction.
+;;;                    can be #f for combined insn.
+;;;
+;;;   <flags>
+;;;           :obsoleted  - mark obsoleted insn.  handled but won't be
+;;;                         generated.
+;;;           :fold-lref  - the insn must be a combination of LREF + something,
+;;;                         with depth and offset parameters.
+;;;                         this indicates that the combined insn should be
+;;;                         emitted even if preceding insn is 'shortcut'
+;;;                         LREFs such as LREF0 or LREF21; that is, instead
+;;;                         of having LREF0-SOMETHING or LREF21-SOMETHING
+;;;                         separately, we'll have LREF-SOMETHING(0,0) and
+;;;                         LREF-SOMETHING(2,1), respectively.
 
 ;;;==============================================================
 ;;; Common Cise macros
@@ -65,22 +96,15 @@
 
 (define-cise-stmt $result
   [(_ expr) `(begin ,@(case (result-type)
-                       [(reg)  `((set! VAL0 ,expr) NEXT1)]
-                       [(push) `((PUSH-ARG ,expr) NEXT1)]
-                       [(call) `((set! VAL0 ,expr))] ; no NEXT1
+                       [(reg)  `((set! VAL0 ,expr)
+                                 (set! (-> vm numVals) 1)
+                                 NEXT_PUSHCHECK)]
+                       [(push) `((PUSH-ARG ,expr) NEXT)]
+                       [(call) `((set! VAL0 ,expr))]
                        [(ret)  `((set! VAL0 ,expr)
                                  (set! (-> vm numVals) 1)
                                  (RETURN-OP)
                                  NEXT)]
-;                        [(w/push) `((if (SCM_VM_INSN_WITH_PUSH code)
-;                                      (PUSH-ARG ,expr)
-;                                      (set! VAL0 ,expr))
-;                                    NEXT1)]
-;                        [(w/ret)  `((set! VAL0 ,expr)
-;                                    (when (SCM_VM_INSN_WITH_RET code)
-;                                      (set! (-> vm numVals) 1)
-;                                      (RETURN-OP))
-;                                    NEXT1)]
                        ))])
 
 ;; variations of $result with type coercion
@@ -91,30 +115,32 @@
               `(let* ([,r :: long ,expr])
                  ($result (SCM_MAKE_INT ,r))))])
 (define-cise-stmt $result:n
-  [(_ expr) (let1 r (gensym "cise__")
-              `(let* ([,r :: long ,expr])
+  [(_ expr) (let ([r (gensym "cise__")]
+                  [v (gensym "cise__")])
+              `(let* ([,r :: long ,expr] [,v])
                  (if (SCM_SMALL_INT_FITS ,r)
-                   ($result (SCM_MAKE_INT ,r))
-                   ($result (Scm_MakeInteger ,r)))))])
+                   (set! ,v (SCM_MAKE_INT ,r))
+                   (set! ,v (Scm_MakeInteger ,r)))
+                 ($result ,v)))])
 (define-cise-stmt $result:u
-  [(_ expr) (let1 r (gensym "cise__")
-              `(let* ([,r :: u_long ,expr])
+  [(_ expr) (let ([r (gensym "cise__")]
+                  [v (gensym "cise__")])
+              `(let* ([,r :: u_long ,expr] [,v])
                  (if (SCM_SMALL_INT_FITS ,r)
-                   ($result (SCM_MAKE_INT ,r))
-                   ($result (Scm_MakeIntegerU ,r)))))])
+                   (set! ,v (SCM_MAKE_INT ,r))
+                   (set! ,v (Scm_MakeIntegerU ,r)))
+                 ($result ,v)))])
 (define-cise-stmt $result:f
   [(_ expr) (let1 r (gensym "cise__")
               `(let* ([,r :: double ,expr])
                  ($result (Scm_VMReturnFlonum ,r))))])
 
-;; Extract local value.  If it is boxed, we need dereference.
+;; Extract local value.
+;; If local var nees unboxing, necessary UNBOX insn will be generated
+;; by the compiler, so we don't need to worry about it.
 (define-cise-stmt $lref!
   [(_ var env off)
-   (let1 v (gensym)
-     `(let* ([,v (ENV-DATA ,env ,off)])
-        (if (SCM_BOXP ,v)
-          (set! ,var (SCM_BOX_VALUE ,v))
-          (set! ,var ,v))))])
+   `(set! ,var (ENV-DATA ,env ,off))])
 
 ;;
 ;; ($w/argr <val> <expr> ...)
@@ -149,7 +175,6 @@
                                                'ENV
                                                `(-> ,(loop (- d 1)) up)))
                                           ,o)))
-                     (if (SCM_BOXP ,val) (set! ,val (SCM_BOX_VALUE ,val)))
                      ,@body)])])
 
 (define-cise-stmt $w/argr               ; use VAL0 default
@@ -219,13 +244,14 @@
 ;;   Branch.  $branch* leaves the result in VAL0.
 ;;
 (define-cise-stmt $branch
-  [(_ expr) `(begin (if ,expr (FETCH-LOCATION PC) INCR-PC) NEXT)])
+  [(_ expr) `(begin (if ,expr (FETCH-LOCATION PC) INCR-PC) CHECK-INTR NEXT)])
 (define-cise-stmt $branch*
   [(_ expr)
    `(begin
       (if ,expr
         (begin (set! VAL0 SCM_FALSE) (FETCH-LOCATION PC))
         (begin (set! VAL0 SCM_TRUE) INCR-PC))
+      CHECK-INTR
       NEXT)])
 
 ;;
@@ -272,9 +298,12 @@
 ;; ($include var)
 ;;   Preprocessor directives.
 ;;
-(define-cise-stmt $undef   [(_ var) `("#undef " ,(x->string var) "\n")])
-(define-cise-stmt $define  [(_ var) `("#define " ,(x->string var) "\n")])
-(define-cise-stmt $include [(_ var) `("#include " ,(write-to-string var) "\n")])
+(define-cise-stmt $undef
+  [(_ var) `("\n" |#reset-line| "#undef " ,(x->string var) "\n")])
+(define-cise-stmt $define
+  [(_ var) `("\n" |#reset-line| "#define " ,(x->string var) "\n")])
+(define-cise-stmt $include
+  [(_ var) `("\n" |#reset-line| "#include " ,(write-to-string var) "\n")])
 
 ;;
 ;; ($lrefNN depth offset)
@@ -282,16 +311,13 @@
 ;;
 (define-cise-stmt $lrefNN
   [(_ depth offset)
-   ;; TODO 0.9.2: Extra check for backward compatibility
    (let1 v (gensym)
      `(let* ([,v :: ScmObj (ENV_DATA ,(let loop ((d depth))
                                         (case d
                                           [(0) 'ENV]
                                           [else `(-> ,(loop (- d 1)) up)]))
                                      ,offset)])
-        (if (SCM_BOXP ,v)
-          ($result (SCM_BOX_VALUE ,v))
-          ($result ,v))))])
+        ($result ,v)))])
 
 ;;
 ;; ($values)
@@ -362,6 +388,7 @@
     (FETCH-LOCATION next)
     (PUSH-CONT next)
     INCR-PC
+    CHECK-INTR
     NEXT))
 
 ;; combined insn
@@ -399,13 +426,13 @@
 ;;  Jump to <addr>.
 ;;
 (define-insn JUMP      0 addr #f
-  (begin (FETCH-LOCATION PC) NEXT))
+  (begin (FETCH-LOCATION PC) CHECK-INTR NEXT))
 
 ;; RET
 ;;  Pop the continuation stack.
 ;;
 (define-insn RET       0 none #f
-  (begin (RETURN-OP) NEXT))
+  (begin (RETURN-OP) CHECK-INTR NEXT))
 
 ;; DEFINE(flag) <symbol>
 ;;  Defines global binding of SYMBOL in the current module.
@@ -421,8 +448,9 @@
     (VM_ASSERT (SCM_IDENTIFIERP var))
     (SCM_FLONUM_ENSURE_MEM val)
     INCR-PC
-    (let* ([mod::ScmModule* (-> (SCM_IDENTIFIER var) module)]
-           [name::ScmSymbol* (-> (SCM_IDENTIFIER var) name)])
+    (let* ([id::ScmIdentifier* (Scm_OutermostIdentifier (SCM_IDENTIFIER var))]
+           [mod::ScmModule* (-> id module)]
+           [name::ScmSymbol* (SCM_SYMBOL (-> id name))])
       (case (SCM_VM_INSN_ARG code)        ;flag
         [(0)                    (Scm_MakeBinding mod name val 0)]
         [(1 SCM_BINDING_CONST)  (Scm_MakeBinding mod name val SCM_BINDING_CONST)]
@@ -492,46 +520,13 @@
   (begin (set! ENV (-> ENV up)) NEXT))
 
 ;; LOCAL-ENV-JUMP(DEPTH) <addr>
-;;  This instruction appears when local function call is optimized.
-;;  The stack already has NLOCALS values.  This instruction creates an
-;;  env frame with them (just like LOCAL-ENV), then jump to <addr>.
-;;  (# of arguments can be known by SP - ARGP).
+;;  Combination of LOCAL-ENV-SHIFT + JUMP.
+;;  We can use this when none of the new environment needs boxing.
 (define-insn LOCAL-ENV-JUMP 1 addr #f
-  (let* ([nargs::int (cast int (- SP ARGP))]
-         [env_depth::int (SCM_VM_INSN_ARG code)]
-         [to::ScmObj*] [tenv::ScmEnvFrame* ENV])
-    ;; We can discard env_depth environment frames.
-    ;; There are several cases:
-    ;;  - if the target env frame (TENV) is in stack:
-    ;;   -- if the current cont frame is over TENV
-    ;;      => shift argframe on top of the current cont frame
-    ;;   -- otherwise => shift argframe on top of TENV
-    ;;  - if TENV is in heap:
-    ;;   -- if the current cont frame is in stack
-    ;;      => shift argframe on top of the current cont frame
-    ;;   -- otherwise => shift argframe at the stack base
-    (while (> (post-- env_depth) 0)
-      (SCM_ASSERT tenv)
-      (set! tenv (-> tenv up)))
-    (cond [(IN-STACK-P (cast ScmObj* tenv))
-           (if (and (IN-STACK-P (cast ScmObj* CONT))
-                    (> (cast ScmObj* CONT) (cast ScmObj* tenv)))
-             (set! to (CONT-FRAME-END CONT))
-             (set! to (+ (cast ScmObj* tenv) ENV_HDR_SIZE)))]
-          [else
-           (if (IN-STACK-P (cast ScmObj* CONT))
-             (set! to (CONT-FRAME-END CONT))
-             (set! to (-> vm stackBase)))]) ; continuation has been saved
-    (when (and (> nargs 0) (!= to ARGP))
-      (let* ([t::ScmObj* to] [a::ScmObj* ARGP])
-        (dotimes [c nargs]
-          (set! (* (post++ t)) (* (post++ a))))))
-    (set! ARGP to)
-    (set! SP (+ to nargs))
-    (if (> nargs 0)
-      (FINISH-ENV SCM_FALSE tenv)
-      (set! ENV tenv))
+  (begin
+    (local_env_shift vm (SCM_VM_INSN_ARG code))
     (FETCH-LOCATION PC)
+    CHECK-INTR
     NEXT))
 
 ;; LOCAL-ENV-CALL(DEPTH)
@@ -557,6 +552,7 @@
     (set! (-> vm base) (SCM_COMPILED_CODE (-> (SCM_CLOSURE VAL0) code)))
     (set! PC (-> vm base code))
     (CHECK-STACK (-> vm base maxstack))
+    CHECK-INTR
     (SCM_PROF_COUNT_CALL vm (SCM_OBJ (-> vm base)))
     NEXT))
 
@@ -668,7 +664,8 @@
              (SCM_APPEND1 rest tail (aref (-> vm vals) (- i 1))))
         (PUSH-ARG rest))
       (FINISH-ENV SCM_FALSE ENV)
-      NEXT1)])
+      (set! (-> vm numVals) 1) ; we already processed extra vals, so reset it
+      NEXT)])
 
 ;; RECEIVE(nargs,restarg) <cont-offset>
 ;;  Primitive operation for receive and call-with-values.
@@ -744,12 +741,11 @@
     (VM-ASSERT (!= e NULL))
     (VM-ASSERT (> (-> e size) off))
     (SCM_FLONUM_ENSURE_MEM VAL0)
-    ;; TODO 0.9.2 : Extra check to maintain compatibility
-    (let* ([box::ScmObj (ENV-DATA e off)])
-      (if (SCM_BOXP box)
-        (SCM_BOX_SET box VAL0)
-        (set! (ENV-DATA e off) VAL0)))
-    NEXT1))
+    (let* ([box (ENV-DATA e off)])
+      (VM_ASSERT (SCM_BOXP box))
+      (SCM_BOX_SET box VAL0))
+    (set! (-> vm numVals) 1)
+    NEXT))
 
 ;; GSET <location>
 ;;  LOCATION may be a symbol or gloc
@@ -764,16 +760,17 @@
       ;; If runtime flag LIMIT_MODULE_MUTATION is set,
       ;; we search only for the id's module, so that set! won't
       ;; mutate bindings in the other module.
-      (let* ([id::ScmIdentifier* (SCM_IDENTIFIER loc)]
+      (let* ([id::ScmIdentifier* (Scm_OutermostIdentifier (SCM_IDENTIFIER loc))]
+             [name::ScmSymbol* (SCM_SYMBOL (-> id name))]
              [limit::int
               (SCM_VM_RUNTIME_FLAG_IS_SET vm SCM_LIMIT_MODULE_MUTATION)]
              [gloc::ScmGloc*
-              (Scm_FindBinding (-> id module) (-> id name)
+              (Scm_FindBinding (-> id module) name
                                (?: limit SCM_BINDING_STAY_IN_MODULE 0))])
         (when (== gloc NULL)
           ;; Do search again for meaningful error message
           (when limit
-            (set! gloc (Scm_FindBinding (-> id module) (-> id name) 0))
+            (set! gloc (Scm_FindBinding (-> id module) name 0))
             (when (!= gloc NULL)
               ($vm-err "can't mutate binding of %S, \
                         which is in another module"
@@ -786,7 +783,8 @@
         (set! (* PC) (SCM_WORD gloc)))]
      [else ($vm-err "GSET: can't be here")])
     INCR-PC
-    NEXT1))
+    (set! (-> vm numVals) 1)
+    NEXT))
 
 ;; LREF(depth,offset)
 ;;  Retrieve local value.
@@ -796,15 +794,8 @@
          [off::int (SCM_VM_INSN_ARG1 code)]
          [e::ScmEnvFrame* ENV])
     (for [() (> dep 0) (post-- dep)]
-         (VM-ASSERT (!= e NULL))
          (set! e (-> e up)))
-    (VM-ASSERT (!= e NULL))
-    (VM-ASSERT (> (-> e size) off))
-    ;; TODO 0.9.2: Extra test to keep compatiblity
-    (let* ((v::ScmObj (ENV-DATA e off)))
-      (if (SCM_BOXP v)
-        ($result (SCM_BOX_VALUE v))
-        ($result v)))))
+    ($result (ENV-DATA e off))))
 
 ;; Shortcut for the frequent depth/offset.
 ;; From statistics, we found that the following depth/offset combinations
@@ -989,7 +980,7 @@
     (POP-ARG VAL0)                      ; get proc
     (TAIL-CALL-INSTRUCTION)
     (set! VAL0 (Scm_VMApply VAL0 cp))
-    NEXT1))
+    NEXT))
 
 (define-insn TAIL-APPLY  1 none #f
   ;; Inlined apply.  Assumes the call is at the tail position.
@@ -1271,14 +1262,25 @@
 ;(define-insn NUMQUOT     0 none)        ; quotient
 ;(define-insn NUMMOD      0 none)        ; modulo
 ;(define-insn NUMREM      0 none)        ; remainder
-;(define-insn ASH         0 none)        ; ash
-;(define-insn LOGAND      0 none)        ; logand
-;(define-insn LOGIOR      0 none)        ; logior
-;(define-insn LOGXOR      0 none)        ; logxor
-;(define-insn LOGNOT      0 none)        ; lognot
-;(define-insn LOGANDI     1 none)        ; logand w/ immediate small int
-;(define-insn LOGIORI     1 none)        ; logior w/ immediate small int
-;(define-insn LOGXORI     1 none)        ; logxor w/ immediate small int
+
+(define-insn ASHI         1 none #f
+  (let* ([cnt::ScmSmallInt (SCM_VM_INSN_ARG code)])
+    ($w/argr arg ($result (Scm_Ash arg cnt)))))
+(define-insn LOGAND       0 none #f
+  ($w/argp x ($result (Scm_LogAnd x VAL0))))
+(define-insn LOGIOR       0 none #f
+  ($w/argp x ($result (Scm_LogIor x VAL0))))
+(define-insn LOGXOR       0 none #f
+  ($w/argp x ($result (Scm_LogXor x VAL0))))
+(define-insn LOGANDC      0 obj #f
+  (let* ([obj])
+    ($w/argr x (FETCH-OPERAND obj) INCR-PC ($result (Scm_LogAnd x obj)))))
+(define-insn LOGIORC      0 obj #f
+  (let* ([obj])
+    ($w/argr x (FETCH-OPERAND obj) INCR-PC ($result (Scm_LogIor x obj)))))
+(define-insn LOGXORC      0 obj #f
+  (let* ([obj])
+    ($w/argr x (FETCH-OPERAND obj) INCR-PC ($result (Scm_LogXor x obj)))))
 
 (define-insn READ-CHAR   1 none #f      ; read-char
   (let* ([nargs::int (SCM_VM_INSN_ARG code)] [ch::int 0] [port::ScmPort*])
@@ -1374,18 +1376,57 @@
     (set! (-> vm handlers) (SCM_CDR (-> vm handlers)))
     NEXT))
 
-
 ;;
 ;; Experimental
 ;;
 
 (define-insn-lref* LREF-RET 0 none (LREF RET))
 
-(define-insn BOX 0 none #f              ; replace VAL0 with box(VAL0)
-  (begin
-    (SCM_FLONUM_ENSURE_MEM VAL0)
-    (let* ((b::ScmBox* (Scm_MakeBox VAL0)))
-      (set! VAL0 (SCM_OBJ b)))
+;; if param == 0, VAL0 <- box(VAL0)
+;; else if param > 0,  ENV[param-1] <- box(ENV[param-1])
+;; The second case is for arguments that are mutated.
+(define-insn BOX 1 none #f
+  (let* ([param::int (SCM_VM_INSN_ARG code)])
+    (cond [(== param 0)
+           (SCM_FLONUM_ENSURE_MEM VAL0)
+           (let* ([b::ScmBox* (Scm_MakeBox VAL0)])
+             (set! VAL0 (SCM_OBJ b)))]
+          [(> param 0)
+           (let* ([off::int (- param 1)])
+             (VM-ASSERT (> (-> ENV size) off))
+             (let* ([v (ENV-DATA ENV off)])
+               (SCM_FLONUM_ENSURE_MEM v)
+               (let* ([b::ScmBox* (Scm_MakeBox v)])
+                 (set! (ENV-DATA ENV off) (SCM_OBJ b)))))])
     NEXT))
 
+;; ENV-SET(offset)
+;;  Mutate the top env's specified slot with VAL0
+;;  This is used with LOCAL-ENV-CLOSURES to initialize non-procedure
+;;  slots of the env.  We used to use LSET for this purpose, but now
+;;  LSET counts on that all mutable lvars are boxed, so we need a separete
+;;  insn that directly initialize the env frame.
+(define-insn ENV-SET 1 none #f
+  (let* ([off::int (SCM_VM_INSN_ARG code)])
+    (VM-ASSERT (> (-> ENV size) off))
+    (SCM_FLONUM_ENSURE_MEM VAL0)
+    (set! (ENV-DATA ENV off) VAL0)
+    NEXT))
 
+;; UNBOX
+;;  VAL0 <- unbox(VAL0)
+(define-insn UNBOX 0 none #f
+  ($w/argr v
+    (set! VAL0 (SCM_BOX_VALUE v))
+    NEXT))
+
+(define-insn LREF-UNBOX 2 none (LREF UNBOX) #f :fold-lref)
+
+;; LOCAL-ENV-SHIFT(DEPTH)
+;;  This instruction appears when local function call is optimized.
+;;  The stack already has NLOCALS values.  We discard DEPTH env frames,
+;;  and creates a new local env from the stack value.
+(define-insn LOCAL-ENV-SHIFT 1 none #f
+  (begin
+    (local_env_shift vm (SCM_VM_INSN_ARG code))
+    NEXT))

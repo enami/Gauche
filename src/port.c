@@ -1,7 +1,7 @@
 /*
  * port.c - port implementation
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -34,7 +34,7 @@
 #define LIBGAUCHE_BODY
 #include "gauche.h"
 #include "gauche/class.h"
-#include "gauche/port.h"
+#include "gauche/priv/portP.h"
 
 #include <string.h>
 #include <fcntl.h>
@@ -46,6 +46,11 @@
 #define MAX(a, b) ((a)>(b)? (a) : (b))
 #define MIN(a, b) ((a)<(b)? (a) : (b))
 
+#define SCM_PORT_BUFFER_MODE(obj) \
+    (SCM_PORT(obj)->src.buf.mode & SCM_PORT_BUFFER_MODE_MASK)
+#define SCM_PORT_BUFFER_SIGPIPE_SENSITIVE_P(obj) \
+    (SCM_PORT(obj)->src.buf.mode & SCM_PORT_BUFFER_SIGPIPE_SENSITIVE)
+
 /*================================================================
  * Class stuff
  */
@@ -56,6 +61,49 @@ static void register_buffered_port(ScmPort *port);
 static void unregister_buffered_port(ScmPort *port);
 static void bufport_flush(ScmPort*, int, int);
 static void file_closer(ScmPort *p);
+
+static ScmObj get_port_name(ScmPort *port)
+{
+    return Scm_PortName(port);
+}
+
+static ScmObj get_port_current_line(ScmPort *port)
+{
+    return SCM_MAKE_INT(Scm_PortLine(port));
+}
+
+static ScmObj get_port_buffering(ScmPort *port)
+{
+    return Scm_GetPortBufferingModeAsKeyword(port);
+}
+
+static void set_port_buffering(ScmPort *port, ScmObj val)
+{
+    if (SCM_PORT_TYPE(port) != SCM_PORT_FILE) {
+        Scm_Error("can't set buffering mode to non-buffered port: %S", port);
+    }
+    Scm_SetPortBufferingMode(port,Scm_BufferingMode(val,port->direction,-1));
+}
+
+static ScmObj get_port_sigpipe_sensitive(ScmPort *port)
+{
+    return SCM_MAKE_BOOL(Scm_GetPortBufferSigpipeSensitive(port));
+}
+
+static void set_port_sigpipe_sensitive(ScmPort *port, ScmObj val)
+{
+    Scm_SetPortBufferSigpipeSensitive(port, SCM_BOOL_VALUE(val));
+}
+
+static ScmClassStaticSlotSpec port_slots[] = {
+    SCM_CLASS_SLOT_SPEC("name", get_port_name, NULL),
+    SCM_CLASS_SLOT_SPEC("buffering", get_port_buffering,
+                        set_port_buffering),
+    SCM_CLASS_SLOT_SPEC("sigpipe-sensitive?", get_port_sigpipe_sensitive,
+                        set_port_sigpipe_sensitive),
+    SCM_CLASS_SLOT_SPEC("current-line", get_port_current_line, NULL),
+    SCM_CLASS_SLOT_SPEC_END()
+};
 
 SCM_DEFINE_BASE_CLASS(Scm_PortClass,
                       ScmPort, /* instance type */
@@ -126,9 +174,7 @@ static void port_finalize(ScmObj obj, void* data)
  */
 static ScmPort *make_port(ScmClass *klass, int dir, int type)
 {
-    ScmPort *port;
-
-    port = SCM_ALLOCATE(ScmPort, klass);
+    ScmPort *port = SCM_ALLOCATE(ScmPort, klass);
     SCM_SET_CLASS(port, klass);
     port->direction = dir;
     port->type = type;
@@ -145,7 +191,8 @@ static ScmPort *make_port(ScmClass *klass, int dir, int type)
     (void)SCM_INTERNAL_FASTLOCK_INIT(port->lock);
     port->lockOwner = NULL;
     port->lockCount = 0;
-    port->data = SCM_FALSE;
+    port->recursiveContext = SCM_FALSE;
+    port->attrs = SCM_NIL;
     port->line = 1;
 
     Scm_RegisterFinalizer(SCM_OBJ(port), port_finalize, NULL);
@@ -165,7 +212,7 @@ void Scm_ClosePort(ScmPort *port)
                        if (!SCM_PORT_CLOSED_P(port)) {
                            port_cleanup(port);
                        }
-                   } while (0));
+                   } while (0), /*no cleanup*/);
     PORT_UNLOCK(port);
 }
 
@@ -173,36 +220,22 @@ void Scm_ClosePort(ScmPort *port)
  * Locking ports
  */
 
-/*
- * External routine to access port exclusively
- */
-static ScmObj with_port_locking_pre_thunk(ScmObj *args, int nargs, void *data)
-{
-    ScmPort *p = (ScmPort*)data;
-    ScmVM *vm = Scm_VM();
-    PORT_LOCK(p, vm);
-    return SCM_UNDEFINED;
-}
-
-static ScmObj with_port_locking_post_thunk(ScmObj *args, int nargs, void *data)
-{
-    ScmPort *p = (ScmPort*)data;
-    PORT_UNLOCK(p);
-    return SCM_UNDEFINED;
-}
-
+/* OBSOLETED */
+/* C routines can use PORT_SAFE_CALL, so we reimplemented this in libio.scm.
+   Kept here for ABI compatibility; will be gone by 1.0.  */
 ScmObj Scm_VMWithPortLocking(ScmPort *port, ScmObj closure)
 {
-    ScmObj before = Scm_MakeSubr(with_port_locking_pre_thunk, (void*)port,
-                                 0, 0, SCM_FALSE);
-    ScmObj after = Scm_MakeSubr(with_port_locking_post_thunk, (void*)port,
-                                0, 0, SCM_FALSE);
-    return Scm_VMDynamicWind(before, closure, after);
+    static ScmObj with_port_locking_proc = SCM_UNDEFINED;
+    SCM_BIND_PROC(with_port_locking_proc, "with-port-locking",
+                  Scm_GaucheModule());
+    return Scm_ApplyRec1(with_port_locking_proc, closure);
 }
 
 /*===============================================================
  * Getting information
+ * NB: Port attribute access API is in portapi.c
  */
+
 ScmObj Scm_PortName(ScmPort *port)
 {
     return port->name;
@@ -241,7 +274,7 @@ int Scm_PortFileNo(ScmPort *port)
    file ports. */
 void Scm_PortFdDup(ScmPort *dst, ScmPort *src)
 {
-    int r, srcfd, dstfd;
+    int r;
 
     if (SCM_PORT_TYPE(dst) != SCM_PORT_FILE)
         Scm_Error("file port required, but got %S", dst);
@@ -251,8 +284,8 @@ void Scm_PortFdDup(ScmPort *dst, ScmPort *src)
         Scm_Error("port direction mismatch: got %S and %S",
                   src, dst);
 
-    srcfd = (int)(intptr_t)src->src.buf.data;
-    dstfd = (int)(intptr_t)dst->src.buf.data;
+    int srcfd = (int)(intptr_t)src->src.buf.data;
+    int dstfd = (int)(intptr_t)dst->src.buf.data;
 
     if (dst->direction == SCM_PORT_INPUT) {
         /* discard the current buffer */
@@ -499,13 +532,12 @@ ScmObj Scm_MakeBufferedPort(ScmClass *klass,
                             int ownerp,  /* owner flag*/
                             ScmPortBuffer *bufrec)
 {
-    ScmPort *p;
     int size = bufrec->size;
     char *buf = bufrec->buffer;
 
     if (size <= 0) size = SCM_PORT_DEFAULT_BUFSIZ;
     if (buf == NULL) buf = SCM_NEW_ATOMIC2(char*, size);
-    p = make_port(klass, dir, SCM_PORT_FILE);
+    ScmPort *p = make_port(klass, dir, SCM_PORT_FILE);
     p->name = name;
     p->ownerp = ownerp;
     p->src.buf.buffer = buf;
@@ -529,6 +561,50 @@ ScmObj Scm_MakeBufferedPort(ScmClass *klass,
     return SCM_OBJ(p);
 }
 
+/* some accessor APIs */
+int Scm_GetPortBufferingMode(ScmPort *port)
+{
+    return SCM_PORT_BUFFER_MODE(port);
+}
+
+void Scm_SetPortBufferingMode(ScmPort *port, int mode)
+{
+    port->src.buf.mode =
+        (port->src.buf.mode & ~SCM_PORT_BUFFER_MODE_MASK)
+        | (mode & SCM_PORT_BUFFER_MODE_MASK);
+}
+
+int Scm_GetPortBufferSigpipeSensitive(ScmPort *port)
+{
+    return (SCM_PORT_BUFFER_SIGPIPE_SENSITIVE_P(port) != FALSE);
+}
+
+void Scm_SetPortBufferSigpipeSensitive(ScmPort *port, int sensitive)
+{
+    if (sensitive) {
+        port->src.buf.mode |=  SCM_PORT_BUFFER_SIGPIPE_SENSITIVE;
+    } else {
+        port->src.buf.mode &= ~SCM_PORT_BUFFER_SIGPIPE_SENSITIVE;
+    }
+}
+
+/* Port case folding mode is usually set at port creation, according
+   to the VM's case folding mode.   In rare occasion we need to switch
+   it (but it's not generally recommended). */
+int Scm_GetPortCaseFolding(ScmPort *port)
+{
+    return (SCM_PORT_CASE_FOLDING(port) != FALSE);
+}
+
+void Scm_SetPortCaseFolding(ScmPort *port, int folding)
+{
+    if (folding) {
+        SCM_PORT_FLAGS(port) |=  SCM_PORT_CASE_FOLD;
+    } else {
+        SCM_PORT_FLAGS(port) &= ~SCM_PORT_CASE_FOLD;
+    }
+}
+
 /* flushes the buffer, to make a room of cnt bytes.
    cnt == 0 means all the available data.   Note that, unless forcep == TRUE,
    this function only does "best effort" to make room, but doesn't
@@ -536,11 +612,10 @@ ScmObj Scm_MakeBufferedPort(ScmClass *klass,
 static void bufport_flush(ScmPort *p, int cnt, int forcep)
 {
     int cursiz = SCM_PORT_BUFFER_AVAIL(p);
-    int nwrote, force = FALSE;
 
     if (cursiz == 0) return;
-    if (cnt <= 0)  { cnt = cursiz; force = TRUE; }
-    nwrote = p->src.buf.flusher(p, cnt, forcep);
+    if (cnt <= 0)  { cnt = cursiz; }
+    int nwrote = p->src.buf.flusher(p, cnt, forcep);
     if (nwrote < 0) {
         p->src.buf.current = p->src.buf.buffer; /* for safety */
         p->error = TRUE;
@@ -595,7 +670,7 @@ static int bufport_fill(ScmPort *p, int min, int allow_less)
         p->src.buf.current = p->src.buf.end = p->src.buf.buffer;
     }
     if (min <= 0) min = SCM_PORT_BUFFER_ROOM(p);
-    if (p->src.buf.mode != SCM_PORT_BUFFER_NONE) {
+    if (SCM_PORT_BUFFER_MODE(p) != SCM_PORT_BUFFER_NONE) {
         toread = SCM_PORT_BUFFER_ROOM(p);
     } else {
         toread = min;
@@ -623,10 +698,10 @@ static int bufport_fill(ScmPort *p, int min, int allow_less)
  */
 static int bufport_read(ScmPort *p, char *dst, int siz)
 {
-    int nread = 0, r, req;
+    int nread = 0;
     int avail = (int)(p->src.buf.end - p->src.buf.current);
 
-    req = MIN(siz, avail);
+    int req = MIN(siz, avail);
     if (req > 0) {
         memcpy(dst, p->src.buf.current, req);
         p->src.buf.current += req;
@@ -638,15 +713,15 @@ static int bufport_read(ScmPort *p, char *dst, int siz)
         /* We check data availability first, since we might already get
            some data from the remanings in the buffer, and it is enough
            if buffering mode is not full. */
-        if (nread && (p->src.buf.mode != SCM_PORT_BUFFER_FULL)) {
+        if (nread && (SCM_PORT_BUFFER_MODE(p) != SCM_PORT_BUFFER_FULL)) {
             if (p->src.buf.ready
                 && p->src.buf.ready(p) == SCM_FD_WOULDBLOCK) {
                 break;
             }
         }
 
-        req = MIN(siz, p->src.buf.size);
-        r = bufport_fill(p, req, TRUE);
+        int req = MIN(siz, p->src.buf.size);
+        int r = bufport_fill(p, req, TRUE);
         if (r <= 0) break; /* EOF or an error*/
         if (r >= siz) {
             memcpy(dst, p->src.buf.current, siz);
@@ -743,14 +818,12 @@ static void register_buffered_port(ScmPort *port)
    The ports collected by GC are automatically unregistered. */
 static void unregister_buffered_port(ScmPort *port)
 {
-    int i, h, c;
-    ScmObj p;
-
-    h = i = (int)PORT_HASH(port);
-    c = 0;
+    int h = (int)PORT_HASH(port);
+    int i = h;
+    int c = 0;
     (void)SCM_INTERNAL_MUTEX_LOCK(active_buffered_ports.mutex);
     do {
-        p = Scm_WeakVectorRef(active_buffered_ports.ports, i, SCM_FALSE);
+        ScmObj p = Scm_WeakVectorRef(active_buffered_ports.ports, i, SCM_FALSE);
         if (!SCM_FALSEP(p) && SCM_EQ(SCM_OBJ(port), p)) {
             Scm_WeakVectorSet(active_buffered_ports.ports, i, SCM_FALSE);
             break;
@@ -771,15 +844,13 @@ static void unregister_buffered_port(ScmPort *port)
  */
 void Scm_FlushAllPorts(int exitting)
 {
-    ScmWeakVector *ports;
-    ScmVector *save;
     ScmObj p = SCM_FALSE;
-    int i, saved = 0;
+    int saved = 0;
 
-    save = SCM_VECTOR(Scm_MakeVector(PORT_VECTOR_SIZE, SCM_FALSE));
-    ports = active_buffered_ports.ports;
+    ScmVector *save = SCM_VECTOR(Scm_MakeVector(PORT_VECTOR_SIZE, SCM_FALSE));
+    ScmWeakVector *ports = active_buffered_ports.ports;
 
-    for (i=0; i<PORT_VECTOR_SIZE;) {
+    for (int i=0; i<PORT_VECTOR_SIZE;) {
         (void)SCM_INTERNAL_MUTEX_LOCK(active_buffered_ports.mutex);
         for (; i<PORT_VECTOR_SIZE; i++) {
             p = Scm_WeakVectorRef(ports, i, SCM_FALSE);
@@ -801,7 +872,7 @@ void Scm_FlushAllPorts(int exitting)
     }
     if (!exitting && saved) {
         (void)SCM_INTERNAL_MUTEX_LOCK(active_buffered_ports.mutex);
-        for (i=0; i<PORT_VECTOR_SIZE; i++) {
+        for (int i=0; i<PORT_VECTOR_SIZE; i++) {
             p = Scm_VectorRef(save, i, SCM_FALSE);
             if (SCM_PORTP(p)) Scm_WeakVectorSet(ports, i, p);
         }
@@ -815,7 +886,7 @@ static ScmObj key_modest = SCM_UNBOUND;
 static ScmObj key_line   = SCM_UNBOUND;
 static ScmObj key_none   = SCM_UNBOUND;
 
-int Scm_BufferingMode(ScmObj flag, int direction, int fallback)
+int Scm_KeywordToBufferingMode(ScmObj flag, int direction, int fallback)
 {
     if (SCM_EQ(flag, key_full)) return SCM_PORT_BUFFER_FULL;
     if (SCM_EQ(flag, key_none)) return SCM_PORT_BUFFER_NONE;
@@ -837,10 +908,10 @@ int Scm_BufferingMode(ScmObj flag, int direction, int fallback)
     return -1;                  /* dummy */
 }
 
-ScmObj Scm_GetBufferingMode(ScmPort *port)
+ScmObj Scm_GetPortBufferingModeAsKeyword(ScmPort *port)
 {
     if (SCM_PORT_TYPE(port) == SCM_PORT_FILE) {
-        switch (port->src.buf.mode) {
+        switch (SCM_PORT_BUFFER_MODE(port)) {
         case SCM_PORT_BUFFER_FULL: return key_full;
         case SCM_PORT_BUFFER_NONE: return key_none;
         default:
@@ -849,6 +920,17 @@ ScmObj Scm_GetBufferingMode(ScmPort *port)
         }
     }
     return SCM_FALSE;
+}
+
+/* For the backward compatibility until release 1.0 */
+int Scm_BufferingMode(ScmObj flag, int direction, int fallback)
+{
+    return Scm_KeywordToBufferingMode(flag, direction, fallback);
+}
+
+ScmObj Scm_GetBufferingMode(ScmPort *port)
+{
+    return Scm_GetPortBufferingModeAsKeyword(port);
 }
 
 /*===============================================================
@@ -866,11 +948,12 @@ ScmObj Scm_GetBufferingMode(ScmPort *port)
 
 static int file_filler(ScmPort *p, int cnt)
 {
-    int nread = 0, r;
+    int nread = 0;
     int fd = (int)(intptr_t)p->src.buf.data;
     char *datptr = p->src.buf.end;
     SCM_ASSERT(fd >= 0);
     while (nread == 0) {
+        int r;
         errno = 0;
         SCM_SYSCALL(r, read(fd, datptr, cnt-nread));
         if (r < 0) {
@@ -889,7 +972,7 @@ static int file_filler(ScmPort *p, int cnt)
 
 static int file_flusher(ScmPort *p, int cnt, int forcep)
 {
-    int nwrote = 0, r;
+    int nwrote = 0;
     int datsiz = SCM_PORT_BUFFER_AVAIL(p);
     int fd = (int)(intptr_t)p->src.buf.data;
     char *datptr = p->src.buf.buffer;
@@ -897,9 +980,19 @@ static int file_flusher(ScmPort *p, int cnt, int forcep)
     SCM_ASSERT(fd >= 0);
     while ((!forcep && nwrote == 0)
            || (forcep && nwrote < cnt)) {
+        int r;
         errno = 0;
         SCM_SYSCALL(r, write(fd, datptr, datsiz-nwrote));
         if (r < 0) {
+            if (SCM_PORT_BUFFER_SIGPIPE_SENSITIVE_P(p)) {
+                /* (sort of) emulate termination by SIGPIPE.
+                   NB: The difference is visible from the outside world
+                   as the process exit status differ (WIFEXITED
+                   instead of WIFSIGNALED).  If it becomes a problem,
+                   we can reset the signal handler to SIG_DFL and
+                   send SIGPIPE to self. */
+                Scm_Exit(1);    /* exit code is somewhat arbitrary */
+            }
             p->error = TRUE;
             Scm_SysError("write failed on %S", p);
         } else {
@@ -936,9 +1029,7 @@ static off_t file_seeker(ScmPort *p, off_t offset, int whence)
 
 ScmObj Scm_OpenFilePort(const char *path, int flags, int buffering, int perm)
 {
-    int fd, dir = 0;
-    ScmObj p;
-    ScmPortBuffer bufrec;
+    int dir = 0;
 
     if ((flags & O_ACCMODE) == O_RDONLY) dir = SCM_PORT_INPUT;
     else if ((flags & O_ACCMODE) == O_WRONLY) dir = SCM_PORT_OUTPUT;
@@ -949,11 +1040,12 @@ ScmObj Scm_OpenFilePort(const char *path, int flags, int buffering, int perm)
 #if defined(GAUCHE_WINDOWS)
     /* Force binary mode if not specified */
     if (!(flags & (O_TEXT|O_BINARY))) {
-	flags |= O_BINARY;
+        flags |= O_BINARY;
     }
 #endif /*GAUCHE_WINDOWS*/
-    fd = open(path, flags, perm);
+    int fd = open(path, flags, perm);
     if (fd < 0) return SCM_FALSE;
+    ScmPortBuffer bufrec;
     bufrec.mode = buffering;
     bufrec.buffer = NULL;
     bufrec.size = 0;
@@ -964,8 +1056,8 @@ ScmObj Scm_OpenFilePort(const char *path, int flags, int buffering, int perm)
     bufrec.filenum = file_filenum;
     bufrec.seeker = file_seeker;
     bufrec.data = (void*)(intptr_t)fd;
-    p = Scm_MakeBufferedPort(SCM_CLASS_PORT, SCM_MAKE_STR_COPYING(path),
-                             dir, TRUE, &bufrec);
+    ScmObj p = Scm_MakeBufferedPort(SCM_CLASS_PORT, SCM_MAKE_STR_COPYING(path),
+                                    dir, TRUE, &bufrec);
     return p;
 }
 
@@ -979,7 +1071,6 @@ ScmObj Scm_OpenFilePort(const char *path, int flags, int buffering, int perm)
 ScmObj Scm_MakePortWithFd(ScmObj name, int direction,
                           int fd, int bufmode, int ownerp)
 {
-    ScmObj p;
     ScmPortBuffer bufrec;
 
     bufrec.buffer = NULL;
@@ -999,7 +1090,8 @@ ScmObj Scm_MakePortWithFd(ScmObj name, int direction,
         bufrec.seeker = file_seeker;
     }
 
-    p = Scm_MakeBufferedPort(SCM_CLASS_PORT, name, direction, ownerp, &bufrec);
+    ScmObj p = Scm_MakeBufferedPort(SCM_CLASS_PORT, name, direction, ownerp,
+                                    &bufrec);
     return p;
 }
 
@@ -1031,13 +1123,11 @@ ScmObj Scm_MakeOutputStringPort(int privatep)
 
 ScmObj Scm_GetOutputString(ScmPort *port, int flags)
 {
-    ScmObj r;
-    ScmVM *vm;
     if (SCM_PORT_TYPE(port) != SCM_PORT_OSTR)
         Scm_Error("output string port required, but got %S", port);
-    vm = Scm_VM();
+    ScmVM *vm = Scm_VM();
     PORT_LOCK(port, vm);
-    r = Scm_DStringGet(&SCM_PORT(port)->src.ostr, flags);
+    ScmObj r = Scm_DStringGet(&SCM_PORT(port)->src.ostr, flags);
     PORT_UNLOCK(port);
     return r;
 }
@@ -1049,13 +1139,15 @@ ScmObj Scm_GetOutputStringUnsafe(ScmPort *port, int flags)
     return Scm_DStringGet(&SCM_PORT(port)->src.ostr, flags);
 }
 
-/* For backward compatibility */
+/* TRANSIENT: Pre-0.9 Compatibility routine.  Kept for the binary compatibility.
+   Will be removed on 1.0 */
 ScmObj Scm__GetOutputStringCompat(ScmPort *port)
 {
     return Scm_GetOutputString(port, 0);
 }
 
-/* For backward compatibility */
+/* TRANSIENT: Pre-0.9 Compatibility routine.  Kept for the binary compatibility.
+   Will be removed on 1.0 */
 ScmObj Scm__GetOutputStringUnsafeCompat(ScmPort *port)
 {
     return Scm_GetOutputStringUnsafe(port, 0);
@@ -1068,14 +1160,12 @@ static ScmObj get_remaining_input_string_aux(const char *s, int ssiz,
 
 ScmObj Scm_GetRemainingInputString(ScmPort *port, int flags)
 {
-    const char *cp, *ep, *sp;
-
     if (SCM_PORT_TYPE(port) != SCM_PORT_ISTR)
         Scm_Error("input string port required, but got %S", port);
     /* NB: we don't need to lock the port, since the string body
        the port is pointing won't be changed. */
-    ep = port->src.istr.end;
-    cp = port->src.istr.current;
+    const char *ep = port->src.istr.end;
+    const char *cp = port->src.istr.current;
     /* Things gets complicated if there's an ungotten char or bytes.
        We want to share the string body whenever possible, so we
        first check the ungotten stuff matches the content of the
@@ -1084,7 +1174,7 @@ ScmObj Scm_GetRemainingInputString(ScmPort *port, int flags)
         char cbuf[SCM_CHAR_MAX_BYTES];
         int nbytes = SCM_CHAR_NBYTES(port->ungotten);
         SCM_CHAR_PUT(cbuf, port->ungotten);
-        sp = port->src.istr.start;
+        const char *sp = port->src.istr.start;
         if (cp - sp >= nbytes
             && memcmp(cp - nbytes, cbuf, nbytes) == 0) {
             cp -= nbytes;       /* we can reuse buffer */
@@ -1095,7 +1185,7 @@ ScmObj Scm_GetRemainingInputString(ScmPort *port, int flags)
                                                   nbytes, flags);
         }
     } else if (port->scrcnt > 0) {
-        sp = port->src.istr.start;
+        const char *sp = port->src.istr.start;
         if (cp - sp >= (int)port->scrcnt
             && memcmp(cp - port->scrcnt, port->scratch, port->scrcnt) == 0) {
             cp -= port->scrcnt; /* we can reuse buffer */
@@ -1122,7 +1212,8 @@ static ScmObj get_remaining_input_string_aux(const char *s, int ssiz,
     return Scm_MakeString(b, psiz+ssiz, -1, flags);
 }
 
-/* For backward compatibility */
+/* TRANSIENT: Pre-0.9 Compatibility routine.  Kept for the binary compatibility.
+   Will be removed on 1.0 */
 ScmObj Scm__GetRemainingInputStringCompat(ScmPort *port)
 {
     return Scm_GetRemainingInputString(port, 0);
@@ -1250,7 +1341,6 @@ enum {
 static const char *look_for_encoding(const char *buf)
 {
     const char *s;
-    char *encoding;
 
   init:
     for (;;) {
@@ -1296,27 +1386,23 @@ static const char *look_for_encoding(const char *buf)
     }
 
     /* Copy and return the encoding string */
-    encoding = SCM_NEW_ATOMIC2(char*, buf-s+1);
-    memcpy(encoding, s, buf-s);
-    encoding[buf-s] = '\0';
-    return encoding;
+    return SCM_STRDUP_PARTIAL(s, buf-s);
 }
 
 static void coding_port_recognize_encoding(ScmPort *port,
                                            coding_port_data *data)
 {
-    ScmDString ds;
-    int num_newlines = 0, c;
+    int num_newlines = 0;
     int cr_seen = FALSE;
-    const char *encoding = NULL;
 
     SCM_ASSERT(data->source != NULL);
 
     /* Prefetch up to CODING_MAGIC_COMMENT_LINES lines or the first NUL
        character.   data->pbuf ends up holding NUL terminated string. */
+    ScmDString ds;
     Scm_DStringInit(&ds);
     for (;num_newlines < CODING_MAGIC_COMMENT_LINES;) {
-        c = Scm_GetbUnsafe(data->source);
+        int c = Scm_GetbUnsafe(data->source);
         if (c == EOF) break;
         if (c == 0) {
             /* take extra care not to lose '\0' */
@@ -1338,6 +1424,7 @@ static void coding_port_recognize_encoding(ScmPort *port,
     data->pbufsize = (int)strlen(data->pbuf);
 
     /* Look for the magic comment */
+    const char *encoding = NULL;
     encoding = look_for_encoding(data->pbuf);
 
     /* Wrap the source port by conversion port, if necessary. */
@@ -1427,19 +1514,16 @@ static int coding_filenum(ScmPort *p)
 
 ScmObj Scm_MakeCodingAwarePort(ScmPort *iport)
 {
-    ScmObj p;
-    ScmPortBuffer bufrec;
-    coding_port_data *data;
-
     if (!SCM_IPORTP(iport)) {
         Scm_Error("open-coding-aware-port requires an input port, but got %S", iport);
     }
-    data = SCM_NEW(coding_port_data);
+    coding_port_data *data = SCM_NEW(coding_port_data);
     data->source = iport;
     data->state = CODING_PORT_INIT;
     data->pbuf = NULL;
     data->pbufsize = 0;
 
+    ScmPortBuffer bufrec;
     bufrec.mode = SCM_PORT_BUFFER_FULL;
     bufrec.buffer = NULL;
     bufrec.size = 0;
@@ -1450,9 +1534,9 @@ ScmObj Scm_MakeCodingAwarePort(ScmPort *iport)
     bufrec.filenum = coding_filenum;
     bufrec.seeker = NULL;
     bufrec.data = (void*)data;
-    p = Scm_MakeBufferedPort(SCM_CLASS_CODING_AWARE_PORT,
-                             Scm_PortName(iport), SCM_PORT_INPUT,
-                             TRUE, &bufrec);
+    ScmObj p = Scm_MakeBufferedPort(SCM_CLASS_CODING_AWARE_PORT,
+                                    Scm_PortName(iport), SCM_PORT_INPUT,
+                                    TRUE, &bufrec);
     return p;
 }
 
@@ -1632,22 +1716,26 @@ void Scm__InitPort(void)
     active_buffered_ports.ports = SCM_WEAK_VECTOR(Scm_MakeWeakVector(PORT_VECTOR_SIZE));
 
     Scm_InitStaticClass(&Scm_PortClass, "<port>",
-                        Scm_GaucheModule(), NULL, 0);
+                        Scm_GaucheModule(), port_slots, 0);
     Scm_InitStaticClass(&Scm_CodingAwarePortClass, "<coding-aware-port>",
-                        Scm_GaucheModule(), NULL, 0);
+                        Scm_GaucheModule(), port_slots, 0);
 
     scm_stdin  = Scm_MakePortWithFd(SCM_MAKE_STR("(standard input)"),
                                     SCM_PORT_INPUT, 0,
                                     SCM_PORT_BUFFER_FULL, TRUE);
+    /* By default, stdout and stderr are SIGPIPE sensitive */
     scm_stdout = Scm_MakePortWithFd(SCM_MAKE_STR("(standard output)"),
                                     SCM_PORT_OUTPUT, 1,
-                                    isatty(1)
-                                    ? SCM_PORT_BUFFER_LINE
-                                    : SCM_PORT_BUFFER_FULL,
+                                    ((isatty(1)
+                                      ? SCM_PORT_BUFFER_LINE
+                                      : SCM_PORT_BUFFER_FULL)
+                                     | SCM_PORT_BUFFER_SIGPIPE_SENSITIVE),
                                     TRUE);
     scm_stderr = Scm_MakePortWithFd(SCM_MAKE_STR("(standard error output)"),
                                     SCM_PORT_OUTPUT, 2,
-                                    SCM_PORT_BUFFER_NONE, TRUE);
+                                    (SCM_PORT_BUFFER_NONE
+                                     | SCM_PORT_BUFFER_SIGPIPE_SENSITIVE),
+                                    TRUE);
 
     /* The root VM is initialized with bogus standard ports; we need to
        reset them. */
@@ -1737,8 +1825,9 @@ void Scm__SetupPortsForWindows(int has_console)
 {
     if (!has_console) {
         static int initialized = FALSE;
+        static ScmObj orig_stdout = SCM_FALSE;
+        static ScmObj orig_stderr = SCM_FALSE;
         if (!initialized) {
-            static ScmObj orig_stdout, orig_stderr;
             ScmObj trapperPort = make_trapper_port();
             initialized = TRUE;
             SCM_INTERNAL_MUTEX_INIT(win_console_mutex);
@@ -1747,7 +1836,7 @@ void Scm__SetupPortsForWindows(int has_console)
                to those ports will eventually lead to close those fds (when
                those ports are GC-ed), causing complications in the code
                that assumes fds 0, 1 and 2 are reserved.  To make things
-               easier, we just keep original ports. */
+               easier, we just save the original ports. */
             orig_stdout = scm_stdout;
             orig_stderr = scm_stderr;
             scm_stdout = trapperPort;
@@ -1758,5 +1847,3 @@ void Scm__SetupPortsForWindows(int has_console)
     }
 }
 #endif /*defined(GAUCHE_WINDOWS)*/
-
-

@@ -71,6 +71,12 @@
 /* Define to 1 if the system has clearenv */
 #undef HAVE_CLEARENV
 
+/* Define to 1 if the system has clock_getres */
+#undef HAVE_CLOCK_GETRES
+
+/* Define to 1 if the system has clock_gettime */
+#undef HAVE_CLOCK_GETTIME
+
 /* Define to 1 if the system has crt_extern.h */
 #undef HAVE_CRT_EXTERNS_H
 
@@ -88,6 +94,9 @@
 
 /* Define if you have forkpty */
 #undef HAVE_FORKPTY
+
+/* Define if you have fpsetprec */
+#undef HAVE_FPSETPREC
 
 /* Define if you have fpu_control.h */
 #undef HAVE_FPU_CONTROL_H
@@ -202,6 +211,9 @@
 
 /* Define to 1 if the system has setenv */
 #undef HAVE_SETENV
+
+/* Define to 1 if the system has setgroups */
+#undef HAVE_SETGROUPS
 
 /* Define to 1 if the system has sethostname */
 #undef HAVE_SETHOSTNAME

@@ -1,7 +1,7 @@
 ;;;
 ;;; libsys.scm - builtin system inteface
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -51,12 +51,6 @@
 
   (.if "defined(GAUCHE_WINDOWS)"
        (.undef _SC_CLK_TCK)) ;; avoid undefined reference to sysconf
-  (.if "defined(_MSC_VER)"
-       ;; This is a kludge to workaround the configure misdetection
-       (begin
-         (.undef HAVE_GETDOMAINNAME)
-         (.undef HAVE_UNSETENV)
-         (.undef HAVE_GETPGID)))
   ))
 
 ;;---------------------------------------------------------------------
@@ -76,7 +70,7 @@
     (unless (SCM_FALSEP absolute) (logior= flags SCM_PATH_ABSOLUTE))
     (unless (SCM_FALSEP expand)   (logior= flags SCM_PATH_EXPAND))
     (unless (SCM_FALSEP canonicalize) (logior= flags SCM_PATH_CANONICALIZE))
-    (result (Scm_NormalizePathname pathname flags))))
+    (return (Scm_NormalizePathname pathname flags))))
 
 (define-cproc sys-tmpdir () Scm_TmpDir)
 (define-cproc sys-basename (pathname::<string>) Scm_BaseName)
@@ -87,137 +81,159 @@
 
 ;; We won't (and can't) cover every possible errnos, including system
 ;; specific ones.  The following list is taken from Linux asm/errno.h.
+
 (inline-stub
- (define-enum-conditionally E2BIG)
- (define-enum-conditionally EACCES)
- (define-enum-conditionally EADDRINUSE)
- (define-enum-conditionally EADDRNOTAVAIL)
- (define-enum-conditionally EADV)
- (define-enum-conditionally EAFNOSUPPORT)
- (define-enum-conditionally EAGAIN)
- (define-enum-conditionally EALREADY)
- (define-enum-conditionally EBADE)
- (define-enum-conditionally EBADF)
- (define-enum-conditionally EBADFD)
- (define-enum-conditionally EBADMSG)
- (define-enum-conditionally EBADR)
- (define-enum-conditionally EBADRQC)
- (define-enum-conditionally EBADSLT)
- (define-enum-conditionally EBFONT)
- (define-enum-conditionally EBUSY)
- (define-enum-conditionally ECANCELED)
- (define-enum-conditionally ECHILD)
- (define-enum-conditionally ECHRNG)
- (define-enum-conditionally ECOMM)
- (define-enum-conditionally ECONNABORTED)
- (define-enum-conditionally ECONNREFUSED)
- (define-enum-conditionally ECONNRESET)
- (define-enum-conditionally EDEADLK)
- (define-enum-conditionally EDEADLOCK)
- (define-enum-conditionally EDESTADDRREQ)
- (define-enum-conditionally EDOM)
- (define-enum-conditionally EDOTDOT)
- (define-enum-conditionally EDQUOT)
- (define-enum-conditionally EEXIST)
- (define-enum-conditionally EFAULT)
- (define-enum-conditionally EFBIG)
- (define-enum-conditionally EHOSTDOWN)
- (define-enum-conditionally EHOSTUNREACH)
- (define-enum-conditionally EIDRM)
- (define-enum-conditionally EILSEQ)
- (define-enum-conditionally EINPROGRESS)
- (define-enum-conditionally EINTR)
- (define-enum-conditionally EINVAL)
- (define-enum-conditionally EIO)
- (define-enum-conditionally EISCONN)
- (define-enum-conditionally EISDIR)
- (define-enum-conditionally EISNAM)
- (define-enum-conditionally EKEYEXPIRED)
- (define-enum-conditionally EKEYREJECTED)
- (define-enum-conditionally EKEYREVOKED)
- (define-enum-conditionally EL2HLT)
- (define-enum-conditionally EL2NSYNC)
- (define-enum-conditionally EL3HLT)
- (define-enum-conditionally EL3RST)
- (define-enum-conditionally ELIBACC)
- (define-enum-conditionally ELIBBAD)
- (define-enum-conditionally ELIBEXEC)
- (define-enum-conditionally ELIBMAX)
- (define-enum-conditionally ELIBSCN)
- (define-enum-conditionally ELNRNG)
- (define-enum-conditionally ELOOP)
- (define-enum-conditionally EMEDIUMTYPE)
- (define-enum-conditionally EMFILE)
- (define-enum-conditionally EMLINK)
- (define-enum-conditionally EMSGSIZE)
- (define-enum-conditionally EMULTIHOP)
- (define-enum-conditionally ENAMETOOLONG)
- (define-enum-conditionally ENAVAIL)
- (define-enum-conditionally ENETDOWN)
- (define-enum-conditionally ENETRESET)
- (define-enum-conditionally ENETUNREACH)
- (define-enum-conditionally ENFILE)
- (define-enum-conditionally ENOANO)
- (define-enum-conditionally ENOBUFS)
- (define-enum-conditionally ENOCSI)
- (define-enum-conditionally ENODATA)
- (define-enum-conditionally ENODEV)
- (define-enum-conditionally ENOENT)
- (define-enum-conditionally ENOEXEC)
- (define-enum-conditionally ENOKEY)
- (define-enum-conditionally ENOLCK)
- (define-enum-conditionally ENOLINK)
- (define-enum-conditionally ENOMEDIUM)
- (define-enum-conditionally ENOMEM)
- (define-enum-conditionally ENOMSG)
- (define-enum-conditionally ENONET)
- (define-enum-conditionally ENOPKG)
- (define-enum-conditionally ENOPROTOOPT)
- (define-enum-conditionally ENOSPC)
- (define-enum-conditionally ENOSR)
- (define-enum-conditionally ENOSTR)
- (define-enum-conditionally ENOSYS)
- (define-enum-conditionally ENOTBLK)
- (define-enum-conditionally ENOTCONN)
- (define-enum-conditionally ENOTDIR)
- (define-enum-conditionally ENOTEMPTY)
- (define-enum-conditionally ENOTNAM)
- (define-enum-conditionally ENOTSOCK)
- (define-enum-conditionally ENOTTY)
- (define-enum-conditionally ENOTUNIQ)
- (define-enum-conditionally ENXIO)
- (define-enum-conditionally EOPNOTSUPP)
- (define-enum-conditionally EOVERFLOW)
- (define-enum-conditionally EPERM)
- (define-enum-conditionally EPFNOSUPPORT)
- (define-enum-conditionally EPIPE)
- (define-enum-conditionally EPROTO)
- (define-enum-conditionally EPROTONOSUPPORT)
- (define-enum-conditionally EPROTOTYPE)
- (define-enum-conditionally ERANGE)
- (define-enum-conditionally EREMCHG)
- (define-enum-conditionally EREMOTE)
- (define-enum-conditionally EREMOTEIO)
- (define-enum-conditionally ERESTART)
- (define-enum-conditionally EROFS)
- (define-enum-conditionally ESHUTDOWN)
- (define-enum-conditionally ESOCKTNOSUPPORT)
- (define-enum-conditionally ESPIPE)
- (define-enum-conditionally ESRCH)
- (define-enum-conditionally ESRMNT)
- (define-enum-conditionally ESTALE)
- (define-enum-conditionally ESTRPIPE)
- (define-enum-conditionally ETIME)
- (define-enum-conditionally ETIMEDOUT)
- (define-enum-conditionally ETOOMANYREFS)
- (define-enum-conditionally ETXTBSY)
- (define-enum-conditionally EUCLEAN)
- (define-enum-conditionally EUNATCH)
- (define-enum-conditionally EUSERS)
- (define-enum-conditionally EWOULDBLOCK)
- (define-enum-conditionally EXDEV)
- (define-enum-conditionally EXFULL)
- )
+ "ScmHashTable *errno_n2y;"             ;integer -> symbol
+ "ScmHashTable *errno_y2n;"             ;symbol -> integer
+ (initcode
+  (set! errno_n2y (SCM_HASH_TABLE (Scm_MakeHashTableSimple SCM_HASH_EQV 0)))
+  (set! errno_y2n (SCM_HASH_TABLE (Scm_MakeHashTableSimple SCM_HASH_EQ 0)))))
+  
+
+(define-macro (define-errno symbol)
+  `(inline-stub
+    (initcode
+     (.if ,#`"defined(,symbol)"
+          (begin
+            (Scm_Define (Scm_GaucheModule)
+                        (SCM_SYMBOL ',symbol) (SCM_MAKE_INT ,symbol))
+            (Scm_HashTableSet errno_n2y (SCM_MAKE_INT ,symbol) ',symbol 0)
+            (Scm_HashTableSet errno_y2n ',symbol (SCM_MAKE_INT ,symbol) 0))))))
+
+(define-cproc sys-errno->symbol (num::<fixnum>)
+  (return (Scm_HashTableRef errno_n2y (SCM_MAKE_INT num) SCM_FALSE)))
+(define-cproc sys-symbol->errno (name::<symbol>)
+  (return (Scm_HashTableRef errno_y2n (SCM_OBJ name) SCM_FALSE)))
+
+(define-errno E2BIG)
+(define-errno EACCES)
+(define-errno EADDRINUSE)
+(define-errno EADDRNOTAVAIL)
+(define-errno EADV)
+(define-errno EAFNOSUPPORT)
+(define-errno EAGAIN)
+(define-errno EALREADY)
+(define-errno EBADE)
+(define-errno EBADF)
+(define-errno EBADFD)
+(define-errno EBADMSG)
+(define-errno EBADR)
+(define-errno EBADRQC)
+(define-errno EBADSLT)
+(define-errno EBFONT)
+(define-errno EBUSY)
+(define-errno ECANCELED)
+(define-errno ECHILD)
+(define-errno ECHRNG)
+(define-errno ECOMM)
+(define-errno ECONNABORTED)
+(define-errno ECONNREFUSED)
+(define-errno ECONNRESET)
+(define-errno EDEADLK)
+(define-errno EDEADLOCK)
+(define-errno EDESTADDRREQ)
+(define-errno EDOM)
+(define-errno EDOTDOT)
+(define-errno EDQUOT)
+(define-errno EEXIST)
+(define-errno EFAULT)
+(define-errno EFBIG)
+(define-errno EHOSTDOWN)
+(define-errno EHOSTUNREACH)
+(define-errno EIDRM)
+(define-errno EILSEQ)
+(define-errno EINPROGRESS)
+(define-errno EINTR)
+(define-errno EINVAL)
+(define-errno EIO)
+(define-errno EISCONN)
+(define-errno EISDIR)
+(define-errno EISNAM)
+(define-errno EKEYEXPIRED)
+(define-errno EKEYREJECTED)
+(define-errno EKEYREVOKED)
+(define-errno EL2HLT)
+(define-errno EL2NSYNC)
+(define-errno EL3HLT)
+(define-errno EL3RST)
+(define-errno ELIBACC)
+(define-errno ELIBBAD)
+(define-errno ELIBEXEC)
+(define-errno ELIBMAX)
+(define-errno ELIBSCN)
+(define-errno ELNRNG)
+(define-errno ELOOP)
+(define-errno EMEDIUMTYPE)
+(define-errno EMFILE)
+(define-errno EMLINK)
+(define-errno EMSGSIZE)
+(define-errno EMULTIHOP)
+(define-errno ENAMETOOLONG)
+(define-errno ENAVAIL)
+(define-errno ENETDOWN)
+(define-errno ENETRESET)
+(define-errno ENETUNREACH)
+(define-errno ENFILE)
+(define-errno ENOANO)
+(define-errno ENOBUFS)
+(define-errno ENOCSI)
+(define-errno ENODATA)
+(define-errno ENODEV)
+(define-errno ENOENT)
+(define-errno ENOEXEC)
+(define-errno ENOKEY)
+(define-errno ENOLCK)
+(define-errno ENOLINK)
+(define-errno ENOMEDIUM)
+(define-errno ENOMEM)
+(define-errno ENOMSG)
+(define-errno ENONET)
+(define-errno ENOPKG)
+(define-errno ENOPROTOOPT)
+(define-errno ENOSPC)
+(define-errno ENOSR)
+(define-errno ENOSTR)
+(define-errno ENOSYS)
+(define-errno ENOTBLK)
+(define-errno ENOTCONN)
+(define-errno ENOTDIR)
+(define-errno ENOTEMPTY)
+(define-errno ENOTNAM)
+(define-errno ENOTSOCK)
+(define-errno ENOTTY)
+(define-errno ENOTUNIQ)
+(define-errno ENXIO)
+(define-errno EOPNOTSUPP)
+(define-errno EOVERFLOW)
+(define-errno EPERM)
+(define-errno EPFNOSUPPORT)
+(define-errno EPIPE)
+(define-errno EPROTO)
+(define-errno EPROTONOSUPPORT)
+(define-errno EPROTOTYPE)
+(define-errno ERANGE)
+(define-errno EREMCHG)
+(define-errno EREMOTE)
+(define-errno EREMOTEIO)
+(define-errno ERESTART)
+(define-errno EROFS)
+(define-errno ESHUTDOWN)
+(define-errno ESOCKTNOSUPPORT)
+(define-errno ESPIPE)
+(define-errno ESRCH)
+(define-errno ESRMNT)
+(define-errno ESTALE)
+(define-errno ESTRPIPE)
+(define-errno ETIME)
+(define-errno ETIMEDOUT)
+(define-errno ETOOMANYREFS)
+(define-errno ETXTBSY)
+(define-errno EUCLEAN)
+(define-errno EUNATCH)
+(define-errno EUSERS)
+(define-errno EWOULDBLOCK)
+(define-errno EXDEV)
+(define-errno EXFULL)
 
 ;;---------------------------------------------------------------------
 ;; grp.h - groups
@@ -232,12 +248,12 @@
 ;; faster functions; bypassing creation of group object
 (define-cproc sys-gid->group-name (gid::<int>)
   (let* ([g::(struct group*) (getgrgid gid)])
-    (cond [(== g NULL) (Scm_SigCheck (Scm_VM)) (result '#f)]
-          [else (result (SCM_MAKE_STR_COPYING (-> g gr_name)))])))
+    (cond [(== g NULL) (Scm_SigCheck (Scm_VM)) (return '#f)]
+          [else (return (SCM_MAKE_STR_COPYING (-> g gr_name)))])))
 (define-cproc sys-group-name->gid (name::<const-cstring>)
   (let* ([g::(struct group*) (getgrnam name)])
-    (cond [(== g NULL) (Scm_SigCheck (Scm_VM)) (result '#f)]
-          [else (result (Scm_MakeInteger (-> g gr_gid)))])))
+    (cond [(== g NULL) (Scm_SigCheck (Scm_VM)) (return '#f)]
+          [else (return (Scm_MakeInteger (-> g gr_gid)))])))
 
 ;;---------------------------------------------------------------------
 ;; locale.h
@@ -259,7 +275,7 @@
 
 (define-cproc sys-localeconv ()
   (let* ([lc::(struct lconv*) (localeconv)])
-    (result (list (lc-elt SCM_MAKE_STR_COPYING decimal_point)
+    (return (list (lc-elt SCM_MAKE_STR_COPYING decimal_point)
                   (lc-elt SCM_MAKE_STR_COPYING thousands_sep)
                   (lc-elt SCM_MAKE_STR_COPYING grouping)
                   (lc-elt SCM_MAKE_STR_COPYING int_curr_symbol)
@@ -296,12 +312,12 @@
 ;; faster functions; bypassing creation of passwd object
 (define-cproc sys-uid->user-name (uid::<int>)
   (let* ([p::(struct passwd*) (getpwuid uid)])
-    (cond [(== p NULL) (Scm_SigCheck (Scm_VM)) (result '#f)]
-          [else (result (SCM_MAKE_STR_COPYING (-> p pw_name)))])))
+    (cond [(== p NULL) (Scm_SigCheck (Scm_VM)) (return '#f)]
+          [else (return (SCM_MAKE_STR_COPYING (-> p pw_name)))])))
 (define-cproc sys-user-name->uid (name::<const-cstring>)
   (let* ([p::(struct passwd*) (getpwnam name)])
-    (cond [(== p NULL) (Scm_SigCheck (Scm_VM)) (result '#f)]
-          [else (result (Scm_MakeInteger (-> p pw_uid)))])))
+    (cond [(== p NULL) (Scm_SigCheck (Scm_VM)) (return '#f)]
+          [else (return (Scm_MakeInteger (-> p pw_uid)))])))
 
 ;;---------------------------------------------------------------------
 ;; signal.h
@@ -315,16 +331,16 @@
  )
 
 (define-cproc sys-sigset-add! (set::<sys-sigset> :rest sigs)
-  (result (Scm_SysSigsetOp set sigs FALSE)))
+  (return (Scm_SysSigsetOp set sigs FALSE)))
 
 (define-cproc sys-sigset-delete! (set::<sys-sigset> :rest sigs)
-  (result (Scm_SysSigsetOp set sigs TRUE)))
+  (return (Scm_SysSigsetOp set sigs TRUE)))
 
 (define-cproc sys-sigset-fill! (set::<sys-sigset>)
-  (result (Scm_SysSigsetFill set FALSE)))
+  (return (Scm_SysSigsetFill set FALSE)))
 
 (define-cproc sys-sigset-empty! (set::<sys-sigset>)
-  (result (Scm_SysSigsetFill set TRUE)))
+  (return (Scm_SysSigsetFill set TRUE)))
 
 (define-cproc sys-signal-name (sig::<fixnum>) Scm_SignalName)
 
@@ -386,25 +402,25 @@
          (when (< fd 0) (Scm_SysError "mkstemp failed"))
          (close fd)
          (unlink nam)
-         (result (SCM_MAKE_STR_COPYING nam)))
+         (return (SCM_MAKE_STR_COPYING nam)))
        (let* ([s::char* (tmpnam NULL)])
-         (result (SCM_MAKE_STR_COPYING s)))))
+         (return (SCM_MAKE_STR_COPYING s)))))
 
 (define-cproc sys-mkstemp (template::<string>) Scm_SysMkstemp)
 
 ;; ctermid
 (define-cproc sys-ctermid () ::<const-cstring>
   (.if "defined(GAUCHE_WINDOWS)"
-       (result "CON")
+       (return "CON")
        (let* ([buf::(.array char [(+ L_ctermid 1)])])
-         (result (ctermid buf)))))
+         (return (ctermid buf)))))
 
 ;;---------------------------------------------------------------------
 ;; stdlib.h
 
 (define-cproc sys-exit (code::<fixnum>) ::<void> _exit)
 
-(define-cproc sys-getenv (name::<const-cstring>) ::<const-cstring>? getenv)
+(define-cproc sys-getenv (name::<const-cstring>) ::<const-cstring>? Scm_GetEnv)
 
 (define-cproc sys-abort () ::<void> abort)
 
@@ -414,18 +430,18 @@
 ;; NB: on WinNT, system("") aborts, so we filter it.
 (define-cproc sys-system (command::<const-cstring>) ::<int>
   (if (== (aref command 0) 0)
-    (result 0)
+    (return 0)
     (SCM_SYSCALL SCM_RESULT (system command))))
 
 (define-cproc sys-random () ::<long>
   (.cond ["defined(HAVE_RANDOM) && defined(HAVE_SRANDOM)"
-          (result (random))]
+          (return (random))]
          ["defined(LRAND48) && defined(SRAND48)"
-          (result (lrand48))]
+          (return (lrand48))]
          [else
           ;; fallback - we don't want to use rand(), for it is not
           ;; a very good RNG.
-          (result (rand))]))
+          (return (rand))]))
 
 (define-cproc sys-srandom (seed) ::<void>
   (unless (SCM_EXACTP seed) (Scm_Error "exact integer required: %S" seed))
@@ -502,12 +518,12 @@
            (Scm_Error "sys-getloadavg: argument out of range: %d" samples))
          (let* ([count::int (getloadavg samples nsamples)])
            (if (< count 0)
-             (result '#f)
+             (return '#f)
              (let* ([h '()] [t '()])
                (dotimes [i count]
                  (let* ([n (Scm_MakeFlonum (aref samples i))])
                    (SCM_APPEND1 h t n)))
-               (result h)))))
+               (return h)))))
        (Scm_Error "sys-getloadavg isn't supported on this platform")))
 
 (inline-stub
@@ -534,7 +550,7 @@
      (let* ([limit::(struct rlimit)] [ret::int])
        (SCM_SYSCALL ret (getrlimit rsrc (& limit)))
        (when (< ret 0) (Scm_SysError "getrlimit failed"))
-       (result (MAKERLIMIT (ref limit rlim_cur))
+       (return (MAKERLIMIT (ref limit rlim_cur))
                (MAKERLIMIT (ref limit rlim_max)))))
 
    (define-cproc sys-setrlimit (rsrc::<int> cur :optional (max #f)) ::<void>
@@ -587,7 +603,7 @@
             [p::(const char*) (check-trailing-separator path)])
        (SCM_SYSCALL r (,statfn p (SCM_SYS_STAT_STAT s)))
        (when (< r 0) (Scm_SysError "%s failed for %s" ,(x->string statfn) p))
-       (result s))])
+       (return s))])
 
  ;; On Windows stat() fails if PATH has a trailing directory separator,
  ;; except if we're stat()-ing the root directory.  For the convenience
@@ -642,15 +658,15 @@
   (let* ([s::ScmSysStat* (SCM_SYS_STAT (Scm_MakeSysStat))]
          [fd::int (Scm_GetPortFd port-or-fd FALSE)]
          [r::int])
-    (cond [(< fd 0) (result SCM_FALSE)]
+    (cond [(< fd 0) (return SCM_FALSE)]
           [else (SCM_SYSCALL r (fstat fd (SCM_SYS_STAT_STAT s)))
                 (when (< r 0) (Scm_SysError "fstat failed for %d" fd))
-                (result (SCM_OBJ s))])))
+                (return (SCM_OBJ s))])))
 
 (define-cproc file-exists? (path::<const-cstring>) ::<boolean>
   (let* ([r::int])
     (SCM_SYSCALL r (access path F_OK))
-    (result (== r 0))))
+    (return (== r 0))))
 
 (inline-stub
  (define-cise-stmt file-check-common
@@ -662,8 +678,8 @@
          (begin (SCM_SYSCALL r (stat p (& s)))
                 (when (< r 0)
                   (Scm_SysError "stat failed for %s" path))
-                (result (,checker (ref s st_mode))))
-         (result FALSE)))])
+                (return (,checker (ref s st_mode))))
+         (return FALSE)))])
 
  (define-cproc file-is-regular? (path::<const-cstring>) ::<boolean>
    (file-check-common S_ISREG))
@@ -698,7 +714,7 @@
          (.if "defined(CLK_TCK)"
               (set! tick CLK_TCK)   ; older name
               (set! tick 100)))     ; fallback
-    (result (list (Scm_MakeInteger (ref info tms_utime))
+    (return (list (Scm_MakeInteger (ref info tms_utime))
                   (Scm_MakeInteger (ref info tms_stime))
                   (Scm_MakeInteger (ref info tms_cutime))
                   (Scm_MakeInteger (ref info tms_cstime))
@@ -711,25 +727,25 @@
   (.if "!defined(GAUCHE_WINDOWS)"
        (let* ([info::(struct utsname)])
          (when (< (uname (& info)) 0) (Scm_SysError "uname failed"))
-         (result (list (SCM_MAKE_STR_COPYING (ref info sysname))
+         (return (list (SCM_MAKE_STR_COPYING (ref info sysname))
                        (SCM_MAKE_STR_COPYING (ref info nodename))
                        (SCM_MAKE_STR_COPYING (ref info release))
                        (SCM_MAKE_STR_COPYING (ref info version))
                        (SCM_MAKE_STR_COPYING (ref info machine)))))
        ;; TODO: Fill with appropriate info.
-       (result (list SCM_FALSE SCM_FALSE SCM_FALSE SCM_FALSE SCM_FALSE))))
+       (return (list SCM_FALSE SCM_FALSE SCM_FALSE SCM_FALSE SCM_FALSE))))
 
 ;;---------------------------------------------------------------------
 ;; sys/wait.h
 
 ;; returns pid and status
-(define-cproc sys-wait () (result (Scm_SysWait (SCM_MAKE_INT -1) 0)))
+(define-cproc sys-wait () (return (Scm_SysWait (SCM_MAKE_INT -1) 0)))
 
 (define-cproc sys-waitpid (process :key (nohang #f) (untraced #f))
   (let* ([options::int 0])
     (unless (SCM_FALSEP nohang)   (logior= options WNOHANG))
     (unless (SCM_FALSEP untraced) (logior= options WUNTRACED))
-    (result (Scm_SysWait process options))))
+    (return (Scm_SysWait process options))))
 
 ;; status interpretation
 (define-cproc sys-wait-exited? (status::<int>) ::<boolean> WIFEXITED)
@@ -747,13 +763,33 @@
  (define-type <sys-tm> "ScmSysTm*")
  )
 
-(define-cproc sys-time () (result (Scm_MakeSysTime (time NULL))))
+(define-cproc sys-time () (return (Scm_MakeSysTime (time NULL))))
 
 (define-cproc sys-gettimeofday () ::(<ulong> <ulong>)
   (Scm_GetTimeOfDay (& SCM_RESULT0) (& SCM_RESULT1)))
 
 (define-cproc current-microseconds ()   ;EXPERIMENTAL
   ::<long> Scm_CurrentMicroseconds)
+
+;; Returns #f and #f if the system doesn't provide monotonic time.
+(define-cproc sys-clock-gettime-monotonic () ::(<top> <top>)
+  (let* ([sec::u_long] [nsec::u_long]
+         [r::int (Scm_ClockGetTimeMonotonic (& sec) (& nsec))])
+    (if r
+      (begin (set! SCM_RESULT0 (Scm_MakeIntegerU sec))
+             (set! SCM_RESULT1 (Scm_MakeIntegerU nsec)))
+      (begin (set! SCM_RESULT0 SCM_FALSE)
+             (set! SCM_RESULT1 SCM_FALSE)))))
+
+;; Returns #f and #f if the system doesn't provide monotonic time.
+(define-cproc sys-clock-getres-monotonic () ::(<top> <top>)
+  (let* ([sec::u_long] [nsec::u_long]
+         [r::int (Scm_ClockGetResMonotonic (& sec) (& nsec))])
+    (if r
+      (begin (set! SCM_RESULT0 (Scm_MakeIntegerU sec))
+             (set! SCM_RESULT1 (Scm_MakeIntegerU nsec)))
+      (begin (set! SCM_RESULT0 SCM_FALSE)
+             (set! SCM_RESULT1 SCM_FALSE)))))
 
 (define-cproc current-time ()           ;SRFI-18, SRFI-19, SRFI-21
   Scm_CurrentTime)
@@ -768,30 +804,30 @@
   Scm_RealSecondsToTime)
 
 (define-cproc sys-asctime (tm::<sys-tm>)
-  (result (SCM_MAKE_STR_COPYING (asctime (& (SCM_SYS_TM_TM tm))))))
+  (return (SCM_MAKE_STR_COPYING (asctime (& (SCM_SYS_TM_TM tm))))))
 
 (define-cproc sys-ctime (time) ::<const-cstring>
-  (let* ([tim::time_t (Scm_GetSysTime time)]) (result (ctime (& tim)))))
+  (let* ([tim::time_t (Scm_GetSysTime time)]) (return (ctime (& tim)))))
 
 (define-cproc sys-difftime (time1 time0) ::<double>
-  (result (difftime (Scm_GetSysTime time1) (Scm_GetSysTime time0))))
+  (return (difftime (Scm_GetSysTime time1) (Scm_GetSysTime time0))))
 
 (define-cproc sys-strftime (format::<const-cstring> tm::<sys-tm>)
   ::<const-cstring>
   (let* ([tmpbuf::(.array char [256])])
     (strftime tmpbuf (sizeof tmpbuf) format (& (SCM_SYS_TM_TM tm)))
-    (result tmpbuf)))
+    (return tmpbuf)))
 
 (define-cproc sys-gmtime (time)
   (let* ([tim::time_t (Scm_GetSysTime time)])
-    (result (Scm_MakeSysTm (gmtime (& tim))))))
+    (return (Scm_MakeSysTm (gmtime (& tim))))))
 
 (define-cproc sys-localtime (time)
   (let* ([tim::time_t (Scm_GetSysTime time)])
-    (result (Scm_MakeSysTm (localtime (& tim))))))
+    (return (Scm_MakeSysTm (localtime (& tim))))))
 
 (define-cproc sys-mktime (tm::<sys-tm>)
-  (result (Scm_MakeSysTime (mktime (& (SCM_SYS_TM_TM tm))))))
+  (return (Scm_MakeSysTime (mktime (& (SCM_SYS_TM_TM tm))))))
 
 ;;---------------------------------------------------------------------
 ;; unistd.h - miscellaneous functions
@@ -809,7 +845,7 @@
     (when (Scm_IsSugid)
       (Scm_Error "cannot use sys-access in suid/sgid program."))
     (SCM_SYSCALL r (access pathname amode))
-    (result (== r 0))))
+    (return (== r 0))))
 
 (define-cproc sys-chdir (pathname::<const-cstring>) ::<void>
   (let* ([r::int])
@@ -857,7 +893,7 @@
     (GC_gcollect)
     (SCM_SYSCALL pid (fork))
     (when (< pid 0) (Scm_SysError "fork failed"))
-    (result pid)))
+    (return pid)))
 
 ;; NB: the signature of old version was (command args :optional iomap).
 ;; The new version is (command args :key iomap sigmask).
@@ -896,13 +932,9 @@
   (let* ([flags::u_int SCM_EXEC_WITH_FORK])
     (when detached
       (set! flags (logior flags SCM_EXEC_DETACHED)))
-    (result (Scm_SysExec command args iomap sigmask directory flags))))
+    (return (Scm_SysExec command args iomap sigmask directory flags))))
 
-(define-cproc sys-getcwd () ::<const-cstring>
-  (let* ([p::(.array char [1024])]) ; TODO: size needs to be configured
-    (when (== (getcwd p 1023) NULL) (Scm_SysError "getcwd failed"))
-    (result p)))
-
+(define-cproc sys-getcwd () Scm_GetCwd)
 (define-cproc sys-getegid () ::<int> getegid)
 (define-cproc sys-getgid ()  ::<int> getgid)
 (define-cproc sys-geteuid () ::<int> geteuid)
@@ -960,12 +992,31 @@
                  (let* ([h '()] [t '()])
                    (dotimes [i n]
                      (SCM_APPEND1 h t (Scm_MakeInteger (aref pglist i))))
-                   (result h)
+                   (set! SCM_RESULT h)
                    (break)))
                (cond [(== errno EINVAL)
                       (+= size size)
                       (set! pglist (SCM_NEW_ATOMIC_ARRAY gid_t size))]
                      [else (Scm_SysError "getgroups failed")])))))
+
+   (when "defined HAVE_SETGROUPS"
+     (define-cproc sys-setgroups (gids) ::<void>
+       (let* ([ngid::int (Scm_Length gids)]
+              [glist::gid_t* NULL]
+              [k::int 0] [r::int])
+         (when (< ngid 0)
+           (Scm_Error "List of integer gids required, but got: %S" gids))
+         (set! glist (SCM_NEW_ATOMIC_ARRAY gid_t ngid))
+         (for-each (lambda (gid)
+                     (unless (SCM_INTP gid)
+                       (Scm_Error "gid list contains invalud value: %S" gid))
+                     (set! (aref glist k) (SCM_INT_VALUE gid))
+                     (post++ k))
+                   gids)
+         (SCM_SYSCALL r (setgroups ngid glist))
+         (when (< r 0)
+           (Scm_SysError "setgroups failed with %S" gids))))
+     (initcode (Scm_AddFeature "gauche.sys.setgroups" NULL)))
    ) ;; !defined(GAUCHE_WINDOWS)
  )
 
@@ -998,7 +1049,7 @@
     (if (SCM_TRUEP buffered?)
       (set! mode SCM_PORT_BUFFER_FULL) ; for backward compatibility
       (set! mode (Scm_BufferingMode buffering -1 SCM_PORT_BUFFER_LINE)))
-    (result (Scm_MakePortWithFd name SCM_PORT_INPUT (aref fds 0) mode TRUE)
+    (return (Scm_MakePortWithFd name SCM_PORT_INPUT (aref fds 0) mode TRUE)
             (Scm_MakePortWithFd name SCM_PORT_OUTPUT (aref fds 1)mode TRUE))))
 
 ;; close integer file descriptor.  should only be used for
@@ -1026,19 +1077,29 @@
   (cond [(or (SCM_UNBOUNDP mode) (SCM_FALSEP mode))
          (let* ([prev::int (umask 0)])
            (umask prev)
-           (result prev))]
-        [(SCM_INTP mode) (result (umask (SCM_INT_VALUE mode)))]
-        [else (SCM_TYPE_ERROR mode "fixnum or #f") (result 0)]))
+           (return prev))]
+        [(SCM_INTP mode) (return (umask (SCM_INT_VALUE mode)))]
+        [else (SCM_TYPE_ERROR mode "fixnum or #f") (return 0)]))
 
-(define-cproc sys-sleep (seconds::<fixnum>) ::<int>
+(define-cproc sys-sleep (seconds::<fixnum>
+                         :optional (no-retry::<boolean> #f))
+  ::<int>
   (.if "defined(GAUCHE_WINDOWS)"
-       (begin (Sleep (* seconds 1000)) (result 0))
-       (result (sleep seconds))))
+       (begin (Sleep (* seconds 1000)) (return 0))
+       (let* ([k::u_int (cast (u_int) seconds)]
+              [vm::ScmVM* (Scm_VM)])
+         (while (> k 0)
+           (set! k (sleep k))
+           (SCM_SIGCHECK vm)
+           (when no-retry (break)))
+         (return k))))
 
 (inline-stub
  (when "defined(HAVE_NANOSLEEP) || defined(GAUCHE_WINDOWS)"
-   (define-cproc sys-nanosleep (nanoseconds)
-     (let* ([spec::(struct timespec)] [rem::(struct timespec)])
+   (define-cproc sys-nanosleep (nanoseconds
+                                :optional (no-retry::<boolean> #f))
+     (let* ([spec::ScmTimeSpec] [rem::ScmTimeSpec]
+            [vm::ScmVM* (Scm_VM)])
        (cond
         [(SCM_TIMEP nanoseconds)
          (set! (ref spec tv_sec)  (-> (SCM_TIME nanoseconds) sec)
@@ -1057,10 +1118,16 @@
              (-= (ref spec tv_nsec) 1000000000)
              (+= (ref spec tv_sec) 1)))])
        (set! (ref rem tv_sec) 0 (ref rem tv_nsec) 0)
-       (nanosleep (& spec) (& rem))
+       (while (< (Scm_NanoSleep (& spec) (& rem)) 0)
+         (unless (== errno EINTR)
+           (Scm_SysError "nanosleep failed"))
+         (SCM_SIGCHECK vm)
+         (when no-retry (break))
+         (set! spec rem)
+         (set! (ref rem tv_sec) 0 (ref rem tv_nsec) 0))
        (if (and (== (ref rem tv_sec) 0) (== (ref rem tv_nsec) 0))
-         (result '#f)
-         (result (Scm_MakeTime '#f (ref rem tv_sec) (ref rem tv_nsec))))))
+         (return '#f)
+         (return (Scm_MakeTime '#f (ref rem tv_sec) (ref rem tv_nsec))))))
    (initcode (Scm_AddFeature "gauche.sys.nanosleep" NULL))
    ) ; defined(HAVE_NANOSLEEP)||defined(GAUCHE_WINDOWS)
  )
@@ -1074,18 +1141,19 @@
            (chmod pathname #o600)))
     (SCM_SYSCALL r (unlink pathname))
     (if (< r 0)
-      (if (== errno ENOENT)
-        (result '#f)
-        (Scm_SysError "unlink failed on %s" pathname))
-      (result '#t))))
+      (begin
+        (unless (== errno ENOENT)
+          (Scm_SysError "unlink failed on %s" pathname))
+        (return '#f))
+      (return '#t))))
 
 (define-cproc sys-isatty (port_or_fd) ::<boolean>
   (let* ([fd::int (Scm_GetPortFd port_or_fd FALSE)])
-    (result (and (>= fd 0) (isatty fd)))))
+    (return (and (>= fd 0) (isatty fd)))))
 
 (define-cproc sys-ttyname (port_or_fd) ::<const-cstring>?
   (let* ([fd::int (Scm_GetPortFd port_or_fd FALSE)])
-    (result (?: (< fd 0) NULL (ttyname fd)))))
+    (return (?: (< fd 0) NULL (ttyname fd)))))
 
 (define-cproc sys-truncate (path::<const-cstring> length::<integer>)
   ::<void>
@@ -1104,7 +1172,7 @@
  ;; cast the return value of crypt() to avoid it...such a kludge...
  (when "defined(HAVE_CRYPT)"
    (define-cproc sys-crypt (key::<const-cstring> salt::<const-cstring>)
-     ::<const-cstring> (result (cast (const char *) (crypt key salt))))
+     ::<const-cstring> (return (cast (const char *) (crypt key salt))))
    (initcode (Scm_AddFeature "gauche.sys.crypt" NULL))
    )
  )
@@ -1119,18 +1187,18 @@
        (let* ([buf::(.array char [HOSTNAMELEN])] [r::int])
          (SCM_SYSCALL r (gethostname buf HOSTNAMELEN))
          (when (< r 0) (Scm_SysError "gethostname failed"))
-         (result buf))
+         (return buf))
        ;; TODO: find better alternative
-       (result "localhost")))
+       (return "localhost")))
 
 (define-cproc sys-getdomainname () ::<const-cstring>
   (.if "defined HAVE_GETDOMAINNAME"
        (let* ([buf::(.array char [HOSTNAMELEN])] [r::int])
          (SCM_SYSCALL r (getdomainname buf HOSTNAMELEN))
          (when (< r 0) (Scm_SysError "getdomainame failed"))
-         (result buf))
+         (return buf))
        ;; TODO: find better alternative
-       (result "local")))
+       (return "local")))
 
 ;; not supported yet:
 ;;  fpathconf lseek pathconf read sysconf write
@@ -1157,7 +1225,7 @@
        (SCM_SYSCALL n (readlink path buf 1024))
        (when (< n 0) (Scm_SysError "readlink failed on %s" path))
        (when (== n 1024) (Scm_Error "readlink result too long on %s" path))
-       (result (Scm_MakeString buf n -1 SCM_STRING_COPYING))))
+       (return (Scm_MakeString buf n -1 SCM_STRING_COPYING))))
    (initcode (Scm_AddFeature "gauche.sys.readlink" NULL))
    )
  )
@@ -1186,9 +1254,9 @@
      (setter sys-fdset-set!)
      (let* ([fd::int (Scm_GetPortFd pf FALSE)])
        (if (< fd 0)
-         (result TRUE)
+         (return TRUE)
          (begin (check-fd-range fd)
-                (result (FD_ISSET fd (& (-> fdset fdset))))))))
+                (return (FD_ISSET fd (& (-> fdset fdset))))))))
 
    (define-cproc sys-fdset-set! (fdset::<sys-fdset> pf flag::<boolean>) ::<void>
      (let* ([fd::int (Scm_GetPortFd pf FALSE)])
@@ -1204,17 +1272,17 @@
                          (set! (-> fdset maxfd) i)))]))))
 
    (define-cproc sys-fdset-max-fd (fdset::<sys-fdset>) ::<int>
-     (result (-> fdset maxfd)))
+     (return (-> fdset maxfd)))
 
    (define-cproc sys-fdset-clear! (fdset::<sys-fdset>)
      (FD_ZERO (& (-> fdset fdset)))
      (set! (-> fdset maxfd) -1)
-     (result (SCM_OBJ fdset)))
+     (return (SCM_OBJ fdset)))
 
    (define-cproc sys-fdset-copy! (dst::<sys-fdset> src::<sys-fdset>)
      (set! (-> dst fdset) (-> src fdset)
            (-> dst maxfd) (-> src maxfd))
-     (result (SCM_OBJ dst)))
+     (return (SCM_OBJ dst)))
 
    (define-cproc sys-select (rfds wfds efds :optional (timeout #f))
      Scm_SysSelect)
@@ -1225,6 +1293,13 @@
    (initcode (Scm_AddFeature "gauche.sys.select" NULL))
    ) ;; when defined(HAVE_SELECT)
  )
+
+;;---------------------------------------------------------------------
+;; miscellaneous
+
+(inline-stub
+ (define-cproc sys-available-processors () ::<int>
+   Scm_AvailableProcessors))
 
 ;;;
 ;;; Windows-specific utility
@@ -1292,7 +1367,7 @@
      (let* ([fd::int (Scm_GetPortFd port-or-fd TRUE)]
             [h::HANDLE (cast HANDLE (_get_osfhandle fd))])
        (when (== h INVALID_HANDLE_VALUE) (Scm_SysError "get_osfhandle failed"))
-       (result (Scm_MakeWinHandle h '#f))))
+       (return (Scm_MakeWinHandle h '#f))))
 
    ) ;; GAUCHE_WINDOWS
  )

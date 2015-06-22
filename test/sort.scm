@@ -10,10 +10,23 @@
 (test* "autoload" #t (procedure? sort))  ; this triggers sortutil
 (test-module 'gauche.sortutil)
 
+(use gauche.generic-sortutil)
+(test-module 'gauche.generic-sortutil)
+
 (test-section "sort")
+
+(test* "sorted?" #t (sorted? '(1 2 3 4 4 5)))
+(test* "sorted?" #f (sorted? '(1 2 3 4 3 5)))
+(test* "sorted? (less)" #t (sorted? '(5 4 3 3 2 1) >))
+(test* "sorted? (less)" #f (sorted? '(5 4 3 1 2 1) >))
+(test* "sorted? (cmpr)" #t (sorted? '(1 2 3 4 4 5) integer-comparator))
+(test* "sorted? (cmpr)" #f (sorted? '(1 2 3 5 4 2) integer-comparator))
+(test* "sorted? (key)" #t (sorted? '(1 3 1 2 4 2) boolean-comparator even?))
+(test* "sorted? (key)" #f (sorted? '(1 3 1 2 1 3) boolean-comparator even?))
 
 (test* "sort (base)" '() (sort '()))
 (test* "sort (base)" '#() (sort '#()))
+(test* "sort (base)" '"" (sort '""))
 
 (define (sort-test name fn fn! xargs in exp)
   (define (test1 kind fn destructive? gensrc copy genexp)
@@ -27,7 +40,9 @@
                   (genexp res)))))
   (define (test2 fn destructive?)
     (test1 "list"   fn destructive? values list-copy values)
-    (test1 "vector" fn destructive? list->vector vector-copy vector->list))
+    (test1 "vector" fn destructive? list->vector vector-copy vector->list)
+    (when (every char? in)
+      (test1 "string" fn destructive? list->string string-copy string->list)))
 
   (test2 fn  #f)
   (test2 fn! #t)
@@ -74,6 +89,14 @@
  string-ci<?
  '(("Tic" "taC" "tOe") ("taC" "Tic" "tOe")))
 
+(sort-cmp
+ char-ci<?
+ '((#\M #\a #\i #\P #\o #\n) (#\a #\i #\M #\n #\o #\P)))
+
+(sort-cmp
+ char-ci-comparator
+ '((#\M #\a #\i #\P #\o #\n) (#\a #\i #\M #\n #\o #\P)))
+
 ;; stability
 
 (sort-test "stable-sort stability"
@@ -118,5 +141,9 @@
  cdr char-ci<?
  '(((#\a . #\q) (#\T . #\B) (#\s . #\S) (#\k . #\d))
    ((#\T . #\B) (#\k . #\d) (#\a . #\q) (#\s . #\S))))
+
+(sort-by-cmp
+ char->integer >
+ '((#\a #\Z #\3 #\q #\P) (#\q #\a #\Z #\P #\3)))
 
 (test-end)

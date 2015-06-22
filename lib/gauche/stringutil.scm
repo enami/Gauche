@@ -1,7 +1,7 @@
 ;;;
 ;;; auxiliary string utilities.  to be autoloaded.
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -48,12 +48,7 @@
   (unless (or (not limit) (and (integer? limit) (>= limit 0)))
     (error "limit argument must be a nonnegative integer or #f, but got" limit))
   (if (char? splitter)
-    ;; In order to make 0.9.4 build with 0.9.3, we need to adjust
-    ;; arguments to %string-split-by-char.  After 0.9.4 release
-    ;; we can just call 3-arg %string-split-by-char.
-    (if limit
-      (%string-split-by-char string splitter limit)
-      (%string-split-by-char string splitter))
+    (%string-split-by-char string splitter (or limit -1))
     (%string-split string (%string-split-scanner splitter) (or limit -1))))
 
 ;; aux fns

@@ -1,7 +1,7 @@
 ;;;
 ;;; Array operations.  This is superset of SRFI-25.
 ;;;
-;;;  Copyright (c) 2002-2013  Shiro Kawai  <shiro@acm.org>
+;;;  Copyright (c) 2002-2015  Shiro Kawai  <shiro@acm.org>
 ;;;  Copyright(C) 2004      by Alex Shinn  (foof@synthcode.com)
 ;;;
 ;;;  Permission to use, copy, modify, distribute this software and
@@ -494,9 +494,8 @@
 (define (array-size ar)
   (reduce * 1 (map (cute array-length ar <>) (iota (array-rank ar)))))
 
-(define (array-equal? a b . opt)
-  (let ([eq (get-optional opt equal?)]
-        [r (array-rank a)])
+(define (array-equal? a b :optional (eq equal?))
+  (let1 r (array-rank a)
     (and (= r (array-rank b))
          (every (^[dim] (and (= (array-start a dim) (array-start b dim))
                              (= (array-end a dim) (array-end b dim))))

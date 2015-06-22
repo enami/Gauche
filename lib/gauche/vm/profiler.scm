@@ -1,7 +1,7 @@
 ;;;
 ;;; Profiler - profiler interface
 ;;;
-;;;   Copyright (c) 2005-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2005-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -32,9 +32,7 @@
 ;;;
 
 (define-module gauche.vm.profiler
-  (use srfi-1)
   (use srfi-13)
-  (use util.list)
   (use util.match)
   (extend gauche.internal)
   (export profiler-show profiler-get-result
@@ -95,18 +93,18 @@
         (match stats
           [()  (show-results)]
           [((f . t) . more)
-           (receive (_ rest) (cumulate f t more) (start rest))]
+           (receive (_ rest) (cumulate f t 0 more) (start rest))]
           [(_ . more) (start more)] ;; this can't happen, but tolerate
           ))
-      ;; cumulate :: String, Integer, [Stat] -> Integer, [Stat]
-      (define (cumulate filename start-time stats)
+      ;; cumulate :: String, Integer, Integer, [Stat] -> Integer, [Stat]
+      (define (cumulate filename start-time exclude stats)
         (match stats
           [() (show-results)]  ;; premature stats data; we discard current fn.
           [((f . t) . more)
-           (receive (time-spent rest) (cumulate f t more)
-             (cumulate filename (+ start-time time-spent) rest))]
+           (receive (time-spent rest) (cumulate f t 0 more)
+             (cumulate filename start-time (+ exclude time-spent) rest))]
           [(t . more)
-           (set! results (cons (cons filename (- t start-time)) results))
+           (set! results (cons (cons filename (- t start-time exclude)) results))
            (values (- t start-time) more)]))
       (define (show-results)
         (print "Load statistics:")

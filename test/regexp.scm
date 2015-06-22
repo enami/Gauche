@@ -28,7 +28,7 @@
 (define-syntax test-parse
   (syntax-rules ()
     ((_ re ast)
-     (test* #`"regexp-parse \",re\"" ast (regexp-parse re)))))
+     (test* #"regexp-parse \"~re\"" ast (regexp-parse re)))))
 
 ;;-------------------------------------------------------------------------
 (test-section "regexp-parse")
@@ -45,6 +45,11 @@
 (test-parse "a|b" '(0 #f (alt #\a #\b)))
 (test-parse "[ab]" '(0 #f #[ab]))
 (test-parse "[^ab]" '(0 #f (comp . #[ab])))
+(test-parse "\\x0d;\\x0a;" '(0 #f #\return #\newline))
+(test-parse "\\x0dbc\\x0acd" ;legacy fallback
+            '(0 #f (seq #\return #\b #\c) (seq #\newline #\c #\d)))
+(test-parse "\\u000dbc;" '(0 #f (seq #\return #\b #\c #\;)))
+(test-parse "\x0d;[\x0a;-\x0d]" '(0 #f #\return #[\u000a-\u000d]))
 (test-parse "." '(0 #f any))
 (test-parse "^" '(0 #f bol))
 (test-parse "$" '(0 #f eol))
@@ -61,11 +66,11 @@
 (test-parse "(?<=ab)" '(0 #f (assert (lookbehind #\a #\b))))
 (test-parse "(?<!ab)" '(0 #f (nassert (lookbehind #\a #\b))))
 (test-parse "(?<name>a)" '(0 #f (1 name #\a)))
-(test-parse "(?(?=)y)" '(0 #f (cpat (assert) (#\y) #f)))
+(test-parse "(?(?=)y)" '(0 #f (cpat (assert) (#\y) ())))
 (test-parse "(?(?=)y|n)" '(0 #f (cpat (assert) (#\y) (#\n))))
-(test-parse "(?(?<=)y)" '(0 #f (cpat (assert (lookbehind)) (#\y) #f)))
+(test-parse "(?(?<=)y)" '(0 #f (cpat (assert (lookbehind)) (#\y) ())))
 (test-parse "(?(?<=)y|n)" '(0 #f (cpat (assert (lookbehind)) (#\y) (#\n))))
-(test-parse "()(?(1)y)" '(0 #f (1 #f) (cpat 1 (#\y) #f)))
+(test-parse "()(?(1)y)" '(0 #f (1 #f) (cpat 1 (#\y) ())))
 (test-parse "()(?(1)y|n)"'(0 #f (1 #f) (cpat 1 (#\y) (#\n))))
 (test-parse "()\\1" '(0 #f (1 #f) (backref . 1)))
 (test-parse "(?<name>)\\k<name>" '(0 #f (1 name) (backref . 1)))
@@ -92,7 +97,7 @@
             "(a)(b)" "(a|b)c(d)" "(a(b(c|d)|e))f"
             "(?:abc)*" "(ab(?:cd)?e{3,4})" "(?i:ab(?-i:cd)ef)"
             ;; backref
-            "(a)bc\\1" "ab(?<foo>c)(d)\\k<foo>"
+            "(a)bc\\1" "ab(?<foo>c)(d)\\k<foo>" "((.)\\2)"
             ;; once, lookahead, lookbehind
             "(?>abc)" "(?=a*b*c)" "(?!a*b*c)" "(?<=a[bc])" "(?<!a[bc])"
             "(a)(?(1)b)" "(a)(?(1)b|c)" "(a)(?(1)|c)"
@@ -106,7 +111,7 @@
 (define-syntax test-regexp-compile
   (syntax-rules ()
     [(_ pat)
-     (test* #`"regexp-compile \",|pat|\""
+     (test* #"regexp-compile \"~|pat|\""
             (let1 orig (string->regexp pat)
               (list (regexp->string orig)
                     (regexp-num-groups orig)
@@ -166,7 +171,7 @@
 (define-syntax test-regexp-laset
   (syntax-rules ()
     [(_ pat exp)
-     (test* #`"regexp-laset \",|pat|\"" exp
+     (test* #"regexp-laset \"~|pat|\"" exp
             (%regexp-laset (regexp-compile (regexp-parse pat))))]))
 
 (test-regexp-laset "abc" #[a])
@@ -235,6 +240,11 @@
 (test-re #/(.)*/         "abc"     '("abc" "c"))
 (test-re #/(a([^a])*)*/  "abcaBC"  '("abcaBC" "aBC" "C"))
 (test-re #/b|()|a/       "cac"     '("" ""))
+(test-re #/(a)*a/        "a"       '("a" #f))
+(test-re #/(a)*a/        "aa"      '("aa" "a"))
+(test-re #/(a)*a/        "aaa"     '("aaa" "a"))
+(test-re #/(a)*?a/       "a"       '("a" #f))
+(test-re #/(a)*?a/       "aa"      '("a" #f))
 
 ;;-------------------------------------------------------------------------
 (test-section "simple meta")
@@ -515,8 +525,14 @@
 (test-re #/(.+)\1/ "a123123j" '("123123" "123"))
 (test-re #/(.+)\1/i "AbCaBC" '("AbCaBC" "AbC"))
 (test-re #/(.+)\1/ "AbCAb1" '())
+(test-re #/((.)\2)/ "aa" '("aa" "aa" "a"))
+(test-re #/(a)*\1/ "aa" '("aa" "a"))
+(test-re #/(aa)*\1/ "aaa" '())
+(test-re #/(aa)*\1/ "aaaaa" '("aaaa" "aa"))
 (test* "^\\1(.)$" (test-error) (string->regexp "^\\1(.)"))
 (test* "^(\\1)$" (test-error) (string->regexp "^(\\1)$"))
+(test* "(.)\\2" (test-error) (string->regexp "(.)\\2"))
+(test* "((.)\\1)" (test-error) (string->regexp "((.)\\1)"))
 
 ;;-------------------------------------------------------------------------
 (test-section "independent subexpression")
@@ -645,11 +661,11 @@
 (test-re #/(a)(?(1)b)/ "ac" '())
 (test-re #/(a)?(?(1)b|c)/ "xb" '())
 (test-re #/(a)?(?(1)b|c)/ "xc" '("c" #f))
-(test-re #/(?(?<=a)b)/ "ab" '("b"))
-(test-re #/(?(?<=a)b)/ "ac" '())
-(test-re #/(?(?<=a)b)/ "xb" '())
-(test-re #/(?(?<=a)b)/ "ab" '("b"))
-(test-re #/(?(?<=a)b)/ "ac" '())
+(test-re #/(<)?[^<>]+(?(1)>)/ "<foo>" '("<foo>" "<"))
+(test-re #/(<)?[^<>]+(?(1)>)/ "foo" '("foo" #f))
+(test-re #/(?(?<=a)b)/ "ab" '(""))
+(test-re #/(?(?<=a)b)/ "ac" '(""))
+(test-re #/(?(?<=a)b)/ "xb" '(""))
 (test-parse "(?(?a)b|c)" (test-error))
 (test-re #/()(?(1))/ "" '("" ""))
 

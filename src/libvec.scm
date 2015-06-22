@@ -1,7 +1,7 @@
 ;;;
 ;;; libvec.scm - builtin vector procedures
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -45,7 +45,7 @@
 (select-module scheme)
 
 (define-cproc vector (:rest args) (inliner VEC)
-  (result (Scm_ListToVector args 0 -1)))
+  (return (Scm_ListToVector args 0 -1)))
 
 (define-cproc vector? (obj) ::<boolean> :fast-flonum :constant
   (inliner VECTORP) SCM_VECTORP)
@@ -61,8 +61,8 @@
              (>= (SCM_INT_VALUE k) (SCM_VECTOR_SIZE vec)))
          (when (SCM_UNBOUNDP fallback)
            (Scm_Error "vector-ref index out of range: %S" k))
-         (result fallback)]
-        [else (result (SCM_VECTOR_ELEMENT vec (SCM_INT_VALUE k)))]))
+         (return fallback)]
+        [else (return (SCM_VECTOR_ELEMENT vec (SCM_INT_VALUE k)))]))
 
 (define-cproc vector-set! (vec::<vector> k::<integer> obj) ::<void>
   (if (or (SCM_BIGNUMP k)
@@ -83,12 +83,14 @@
   (vec::<vector> fill :optional (start::<fixnum> 0) (end::<fixnum> -1))
   ::<void> Scm_VectorFill)
 
-
-(select-module gauche)
-
 (define-cproc vector-copy
   (v::<vector> :optional (start::<fixnum> 0) (end::<fixnum> -1) fill)
   Scm_VectorCopy)
+
+(define (vector->string v :optional (start 0) (end -1)) ;;R7RS
+  (list->string (vector->list v start end))) ; TODO: can be more efficient
+(define (string->vector s :optional (start 0) (end -1)) ;;R7RS
+  (list->vector (string->list s start end))) ; TOOD: can be more efficient
 
 ;;;
 ;;; Weak vectors
@@ -99,7 +101,7 @@
 (define-cproc make-weak-vector (size::<fixnum>) Scm_MakeWeakVector)
 
 (define-cproc weak-vector-length (wv::<weak-vector>) ::<int>
-  (result (-> wv size)))
+  (return (-> wv size)))
 
 (define-cproc weak-vector-ref
   (wv::<weak-vector> index::<fixnum> :optional fallback)
@@ -116,19 +118,12 @@
 ;; this one internally).
 (select-module gauche.internal)
 
-(define-cproc %uvector-ref (v::<uvector> t::<int> k::<integer>
+(define-cproc %uvector-ref (v::<uvector> t::<int> k::<fixnum>
                                          :optional fallback)
   :constant
   (unless (== (Scm_UVectorType (SCM_CLASS_OF v)) t)
     (Scm_TypeError "vec" (Scm_UVectorTypeName t) (SCM_OBJ v)))
-  (cond [(or (SCM_BIGNUMP k)
-             (< (SCM_INT_VALUE k) 0)
-             (>= (SCM_INT_VALUE k) (SCM_UVECTOR_SIZE v)))
-         (when (SCM_UNBOUNDP fallback)
-           (Scm_Error "%s-ref index out of range: %S"
-                      (Scm_UVectorTypeName t) k))
-         (result fallback)]
-        [else (result (Scm_VMUVectorRef v t (SCM_INT_VALUE k) fallback))]))
+  (return (Scm_VMUVectorRef v t (SCM_INT_VALUE k) fallback)))
 
 (select-module gauche)
 (inline-stub
@@ -149,8 +144,7 @@
   SCM_UVECTOR_SIZE)
 (define-cproc uvector-immutable? (v::<uvector>) ::<boolean>
   SCM_UVECTOR_IMMUTABLE_P)
-
-
-
+(define-cproc uvector? (obj) ::<boolean> :constant
+  SCM_UVECTORP)
 
 

@@ -1,7 +1,7 @@
 ;;;
 ;;; logical.scm - logical (bitwise) operations.  to be autoloaded.
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -54,7 +54,7 @@
       (logand (ash n (- start)) mask))
     0))
 
-(define (copy-bit-field to start end from)
+(define (copy-bit-field to from start end)
   (check-arg integer? start)
   (check-arg integer? end)
   (if (< start end)

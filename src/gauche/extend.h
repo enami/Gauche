@@ -1,7 +1,7 @@
 /*
  * extend.h - Stuff useful to write Gauche extension
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -43,13 +43,23 @@ extern "C" {
 #endif
 
 #if defined(__CYGWIN__)
-#define SCM_INIT_EXTENSION(name)                \
-    do {                                        \
-        Scm_RegisterDL((void*)&_data_start__,   \
-                       (void*)&_data_end__,     \
-                       (void*)&_bss_start__,    \
-                       (void*)&_bss_end__);     \
-    } while (0)
+# ifdef __x86_64__
+#  define SCM_INIT_EXTENSION(name)                 \
+      do {                                         \
+          Scm_RegisterDL((void*)&__data_start__,   \
+                         (void*)&__data_end__,     \
+                         (void*)&__bss_start__,    \
+                         (void*)&__bss_end__);     \
+      } while (0)
+# else
+#  define SCM_INIT_EXTENSION(name)                \
+      do {                                        \
+          Scm_RegisterDL((void*)&_data_start__,   \
+                         (void*)&_data_end__,     \
+                         (void*)&_bss_start__,    \
+                         (void*)&_bss_end__);     \
+      } while (0)
+# endif
 #else /* !__CYGWIN__ */
 #define SCM_INIT_EXTENSION(name) /* nothing */
 #endif /* !__CYGWIN__ */
@@ -60,7 +70,7 @@ extern "C" {
 #define SCM_EXTENSION_ENTRY_QUAL
 #endif
 
-/* MSVC needs dllexport magic */
+/* Windows need dllexport magic */
 #if defined(GAUCHE_WINDOWS)
 #define SCM_EXTENSION_ENTRY SCM_EXTENSION_ENTRY_QUAL __declspec(dllexport)
 #else

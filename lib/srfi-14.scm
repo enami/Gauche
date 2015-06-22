@@ -1,7 +1,7 @@
 ;;;
 ;;; srfi-14.scm - character set
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -51,7 +51,6 @@
 ;;    integer-range->char-set integer-range->char-set!
 
 (define-module srfi-14
-  (use gauche.lazy)
   (export char-set= char-set<= char-set-hash
           char-set-cursor char-set-ref char-set-cursor-next end-of-char-set?
           char-set-fold char-set-unfold char-set-unfold!
@@ -75,9 +74,16 @@
           char-set:graphic char-set:printing char-set:whitespace
           char-set:iso-control char-set:punctuation char-set:symbol
           char-set:hex-digit char-set:blank char-set:ascii
-          char-set:empty char-set:full)
-  )
+          char-set:empty char-set:full
+
+          ;; The followings are defined in core
+          char-set char-set? char-set-contains? char-set-copy
+          char-set-complement char-set-complement!
+          ))
 (select-module srfi-14)
+
+;; used in ->char-set
+(autoload gauche.lazy x->lseq)
 
 ;; some built-in support
 (define %char-set-equal? (with-module gauche.internal %char-set-equal?))

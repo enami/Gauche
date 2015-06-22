@@ -1,7 +1,7 @@
 ;;;
 ;;; compile.scm - The compiler
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -43,8 +43,8 @@
   (.include <gauche/class.h>
             <gauche/code.h>
             <gauche/vminsn.h>
-            <gauche/macro.h>
-            <gauche/builtin-syms.h>)))
+            <gauche/priv/macroP.h>
+            <gauche/priv/builtin-syms.h>)))
 
 ;;; THE COMPILER
 ;;;
@@ -112,7 +112,10 @@
 ;; Compile-time constants
 ;;
 
-;; used by cenv-lookup
+;; used by env-lookup-int
+;; NB: We'll get rid of PATTERN variable lookup after we replace the
+;; macro system, then the distinction of LEXICAL/SYNTAX lookup can be
+;; specified by a boolean flag and we can drop these constants.
 (eval-when (:compile-toplevel)
   (define-constant LEXICAL 0)
   (define-constant SYNTAX  1)
@@ -188,6 +191,8 @@
 (define-constant SMALL_LAMBDA_SIZE 12)
 
 (define-inline (variable? arg) (or (symbol? arg) (identifier? arg)))
+(define-inline (variable-or-keyword? arg)
+  (or (symbol? arg) (keyword? arg) (identifier? arg)))
 
 ;;============================================================
 ;; Data structures
@@ -216,11 +221,14 @@
   (lvar-ref-count-set! lvar 0)
   (lvar-set-count-set! lvar 0))
 
+(define-inline (lvar-immutable? lvar)
+  (= (lvar-set-count lvar) 0))
+
 ;; Returns IForm if this lvar has initval and it never changes.  Only valid
 ;; after lvar reference counting is done (that is, after pass1, and after
 ;; each reset-lvars call.
 (define (lvar-const-value lvar)
-  (and (zero? (lvar-set-count lvar))
+  (and (lvar-immutable? lvar)
        (vector? (lvar-initval lvar))
        (lvar-initval lvar)))
 
@@ -243,7 +251,7 @@
                (SCM_VECTOR_ELEMENT v LVAR_OFFSET_NAME) name
                (SCM_VECTOR_ELEMENT v LVAR_OFFSET_INITVAL) SCM_UNDEFINED)
          (SCM_APPEND1 h t v)))
-     (result h)))
+     (return h)))
 
  (define-cise-stmt update!
    [(_ offset delta)
@@ -284,42 +292,66 @@
 ;;
 ;;     source-path - While processing included file, this slot is set to
 ;;                the full path of the included filename.
-(define-simple-struct cenv #f make-cenv
+(define-simple-struct cenv #f %make-cenv
   (module frames exp-name current-proc (source-path (current-load-path))))
+
+(define (make-cenv module :optional (frames '()) (exp-name #f))
+  (%make-cenv module frames exp-name))
 
 ;; Some cenv-related proceduers are in C for better performance.
 (inline-stub
- ;; cenv-lookup :: Cenv, Name, LookupAs -> Var
+ ;; env-lookup-int :: Name, LookupAs, Module, [Frame] -> Var
  ;;         where Var = Lvar | Identifier | Macro
  ;;
- ;;  LookupAs ::
- ;;      LEXICAL(0) - lookup only lexical bindings
- ;;    | SYNTAX(1)  - lookup lexical and syntactic bindings
- ;;    | PATTERN(2) - lookup lexical, syntactic and pattern bindings
  ;;  PERFORMANCE KLUDGE:
  ;;     - We assume the frame structure is well-formed, so skip some tests.
  ;;     - We assume 'lookupAs' and the car of each frame are small non-negative
  ;;       integers, so we directly compare them without unboxing them.
- (define-cproc cenv-lookup (cenv name lookup-as)
-   (SCM_ASSERT (SCM_VECTORP cenv))
+ (define-cfn env-lookup-int (name lookup-as module::ScmModule* frames) :static
+   ;; First, we look up the identifier directly
+   (when (SCM_IDENTIFIERP name)
+     (dopairs [fp1 frames]
+       (when (> (SCM_CAAR fp1) lookup-as) ; see PERFORMANCE KLUDGE above
+         (continue))
+       ;; inline assq here to squeeze performance.
+       (dolist [vp (SCM_CDAR fp1)]
+         (when (SCM_EQ name (SCM_CAR vp)) (return (SCM_CDR vp))))))
+   ;; Now we 'strip' the identifier's wrapping
    (let* ([name-ident?::int (SCM_IDENTIFIERP name)]
-          [frames (SCM_VECTOR_ELEMENT cenv 1)])
-     (dopairs [fp frames]
-       (when (and name-ident? (== (-> (SCM_IDENTIFIER name) env) fp))
-         ;; strip identifier if we're in the same env (kludge)
-         (set! name (SCM_OBJ (-> (SCM_IDENTIFIER name) name))))
+          [env (?: name-ident?
+                   (-> (SCM_IDENTIFIER name) env)
+                   frames)]
+          [true-name (?: name-ident?
+                         (SCM_OBJ (-> (SCM_IDENTIFIER name) name))
+                         name)])
+     (dopairs [fp env]
        (when (> (SCM_CAAR fp) lookup-as) ; see PERFORMANCE KLUDGE above
          (continue))
        ;; inline assq here to squeeze performance.
        (dolist [vp (SCM_CDAR fp)]
-         (when (SCM_EQ name (SCM_CAR vp)) (return (SCM_CDR vp)))))
+         (when (SCM_EQ true-name (SCM_CAR vp)) (return (SCM_CDR vp)))))
      (if (SCM_SYMBOLP name)
-       (let* ([mod (SCM_VECTOR_ELEMENT cenv 0)])
-         (SCM_ASSERT (SCM_MODULEP mod))
-         (result (Scm_MakeIdentifier (SCM_SYMBOL name) (SCM_MODULE mod) '())))
+       (return (Scm_MakeIdentifier name module '()))
        (begin
          (SCM_ASSERT (SCM_IDENTIFIERP name))
-         (result name)))))
+         (return name)))))
+
+ ;; Internal API - used while macro expansion
+ (define-cproc env-lookup (name module frames)
+   (return (env-lookup-int name (SCM_MAKE_INT 1) ;; SYNTAX
+                           (SCM_MODULE module) frames)))
+ ;; Internal API - for faster CENV lookup
+ (define-cproc cenv-lookup-syntax (cenv name)
+   (return
+    (env-lookup-int name (SCM_MAKE_INT 1)                      ; SYNTAX
+                    (SCM_MODULE (SCM_VECTOR_ELEMENT cenv 0))   ; module
+                    (SCM_VECTOR_ELEMENT cenv 1))))             ; frames
+ ;; Internal API - for faster CENV lookup
+ (define-cproc cenv-lookup-variable (cenv name)
+   (return
+    (env-lookup-int name (SCM_MAKE_INT 0)                      ; LEXICAL
+                    (SCM_MODULE (SCM_VECTOR_ELEMENT cenv 0))   ; module
+                    (SCM_VECTOR_ELEMENT cenv 1))))             ; frames
 
  ;; Check if Cenv is toplevel or not.
  ;;
@@ -335,16 +367,16 @@
  )
 
 (define-macro (cenv-copy-except cenv . kvs)
-  `(make-cenv ,(get-keyword :module kvs `(cenv-module ,cenv))
-              ,(get-keyword :frames kvs `(cenv-frames ,cenv))
-              ,(get-keyword :exp-name kvs `(cenv-exp-name ,cenv))
-              ,(get-keyword :current-proc kvs `(cenv-current-proc ,cenv))
-              ,(get-keyword :source-path kvs `(cenv-source-path ,cenv))))
+  `(%make-cenv ,(get-keyword :module kvs `(cenv-module ,cenv))
+               ,(get-keyword :frames kvs `(cenv-frames ,cenv))
+               ,(get-keyword :exp-name kvs `(cenv-exp-name ,cenv))
+               ,(get-keyword :current-proc kvs `(cenv-current-proc ,cenv))
+               ,(get-keyword :source-path kvs `(cenv-source-path ,cenv))))
 
 (define-macro (make-bottom-cenv . maybe-module)
   (if (null? maybe-module)
-    `(make-cenv (vm-current-module) '())
-    `(make-cenv ,(car maybe-module) '())))
+    `(%make-cenv (vm-current-module) '())
+    `(%make-cenv ,(car maybe-module) '())))
 
 (define-inline (cenv-swap-module cenv mod)
   (cenv-copy-except cenv :module mod))
@@ -512,7 +544,7 @@
 ;;   by this node (let* is expanded to the nested $let in pass 1).
 (define-simple-struct $let $LET $let
   (src       ; original source for debugging
-   type      ; indicates scope: 'let for normal let, 'rec for letrec.
+   type      ; indicates scope: 'let for normal let, 'rec[*] for letrec[*], 
    lvars     ; list of lvars
    inits     ; list of IForms to initialize lvars
    body      ; IForm for the body
@@ -543,8 +575,12 @@
    flag             ; Marks some special state of this node.
                     ;   'dissolved: indicates that this lambda has been
                     ;               inline expanded.
+                    ;   'used: indicates that this lambda has been already dealt
+                    ;          with, and need to be eliminated.  This one is
+                    ;          specifically used for communication between
+                    ;          pass2/$CALL and pass2/$LET.
                     ;   <packed-iform>  : inlinable lambda
-   ;; The following slot(s) is/are used temporarily during pass2-5, and
+   ;; The following slots are used temporarily during pass2-5, and
    ;; need not be saved when packed.
    (calls '())      ; list of call sites
    (free-lvars '()) ; list of free local variables
@@ -617,7 +653,7 @@
 
 ;; The followings are builtin version of standard procedures.
 ;;
-(define-simple-struct $cons $CONS #f (arg0 arg1))
+(define-simple-struct $cons $CONS #f (src arg0 arg1))
 
 ;; quasiquote tends to generate nested $cons, which can be
 ;; packed to $list or $list*.
@@ -673,7 +709,7 @@
 (define (pp-iform iform :optional (lines +inf.0))
   (let/cc return
     (define labels '()) ;; alist of label node and count
-    (define (indent count) (dotimes (i count) (write-char #\space)))
+    (define (indent count) (dotimes [i count] (write-char #\space)))
     (define (id->string id)
       (format "~a#~a" (module-name (slot-ref id'module)) (slot-ref id'name)))
     (define (lvar->string lvar)
@@ -704,8 +740,9 @@
         (rec (+ ind 2) ($if-then iform)) (nl (+ ind 2))
         (rec (+ ind 2) ($if-else iform)) (display ")")]
        [($LET)
-        (let* ([hdr  (format "($let~a (" (case ($let-type iform)
-                                           ((let) "") ((rec) "rec")))]
+        (let* ([hdr  (format "($let~a ("
+                             (case ($let-type iform)
+                               [(let) ""] [(rec) "rec"] [(rec*) "rec*"]))]
                [xind (+ ind (string-length hdr))]
                [first #t])
           (display hdr)
@@ -973,6 +1010,9 @@
 ;;  (free in iform, bound outside iform) should be shared and their
 ;;  refcount should be adjusted.  lv-alist keeps assoc list of
 ;;  old lvar to copied lvar.
+;;  $CALL nodes need special treatment; if it is a call to local proc,
+;;  the target $lambda node may have a list of call sites.  We need to
+;;  add copied $CALL node as a new call site to the target.
 
 (define (iform-copy iform lv-alist)
   (case/unquote
@@ -994,8 +1034,8 @@
              ($let ($*-src iform) ($let-type iform)
                    newlvs
                    (imap (cute iform-copy <> (case ($let-type iform)
-                                               ((let) lv-alist)
-                                               ((rec) newalist)))
+                                               [(let) lv-alist]
+                                               [(rec rec*) newalist]))
                          ($let-inits iform))
                    (iform-copy ($let-body iform) newalist)))]
    [($RECEIVE) (receive (newlvs newalist)
@@ -1020,10 +1060,21 @@
                                (iform-copy ($label-body iform)
                                            (acons iform newnode lv-alist))))])]
    [($SEQ) ($seq (imap (cut iform-copy <> lv-alist) ($seq-body iform)))]
-   [($CALL) ($call ($*-src iform)
-                   (iform-copy ($call-proc iform) lv-alist)
-                   (imap (cut iform-copy <> lv-alist) ($call-args iform))
-                   ($call-flag iform))]
+   [($CALL) (rlet1 copy ($call ($*-src iform)
+                               (iform-copy ($call-proc iform) lv-alist)
+                               (imap (cut iform-copy <> lv-alist)
+                                     ($call-args iform))
+                               ($call-flag iform))
+              (and-let* ([proc ($call-proc iform)]
+                         [ ($lref? proc) ]
+                         [ (lvar-immutable? ($lref-lvar proc)) ]
+                         [target (lvar-initval ($lref-lvar proc))]
+                         [ (vector? target) ]
+                         [ (has-tag? target $LAMBDA) ]
+                         [old (assq iform ($lambda-calls target))])
+                ($lambda-calls-set! target
+                                    (acons copy (cdr old)
+                                           ($lambda-calls target)))))]
    [($ASM) ($asm ($*-src iform) ($asm-insn iform)
                  (imap (cut iform-copy <> lv-alist) ($asm-args iform)))]
    [($PROMISE)($promise ($*-src iform)
@@ -1150,7 +1201,7 @@
 (define (transparent?/rec iform labels)
   (case/unquote
    (iform-tag iform)
-   [($LREF)   (zero? (lvar-set-count ($lref-lvar iform)))]
+   [($LREF)   (lvar-immutable? ($lref-lvar iform))]
    [($GREF)   (gref-inlinable-gloc iform)]
    [($CONST)  #t]
    [($IF)     (and (transparent?/rec ($if-test iform) labels)
@@ -1346,20 +1397,13 @@
   (let1 cenv (cond [(module? env) (make-bottom-cenv env)]
                    [(vector? env) env] ; assumes env is cenv
                    [else (make-bottom-cenv)]) ; use default module
-    (guard
-        (e
-         [else
-          ;; TODO: check if e is an expected error (such as syntax error) or
-          ;; an unexpected error (compiler bug).
-          (let1 srcinfo (and (pair? program)
-                             (pair-attribute-get program 'source-info #f))
-            (if srcinfo
-              (errorf "Compile Error: ~a\n~s:~d:~,,,,40:s\n"
-                      (slot-ref e 'message) (car srcinfo)
-                      (cadr srcinfo) program)
-              (errorf "Compile Error: ~a\n" (slot-ref e 'message))))])
+    (guard (e [else
+               ;; TODO: check if e is an expected error (such as syntax error)
+               ;; or an unexpected error (compiler bug).
+               ($ raise $ make-compound-condition e
+                  $ make <compile-error-mixin> :expr program)])
       (pass5 (pass2-4 (pass1 program cenv) (cenv-module cenv))
-             (make-compiled-code-builder 0 0 '%toplevel #f #f)
+             (make-compiled-code-builder 0 0 '%toplevel #f #f #f)
              '() 'tail))))
 
 ;; stub for future extension
@@ -1367,23 +1411,23 @@
 (define (compile-finish cc) #f)
 
 ;; For testing
-(define (compile-p1 program)
-  (pp-iform (pass1 program (make-bottom-cenv))))
+(define (compile-p1 program :optional (env (vm-current-module)))
+  (pp-iform (pass1 program (make-bottom-cenv env))))
 
-(define (compile-p2 program)
-  (pp-iform (pass2 (pass1 program (make-bottom-cenv)))))
+(define (compile-p2 program :optional (env (vm-current-module)))
+  (pp-iform (pass2 (pass1 program (make-bottom-cenv env)))))
 
-(define (compile-p3 program :optional (show? #f))
-  (pp-iform (pass3 (pass2 (pass1 program (make-bottom-cenv))) show?)))
+(define (compile-p3 program :optional (show? #f) (env (vm-current-module)))
+  (pp-iform (pass3 (pass2 (pass1 program (make-bottom-cenv env))) show?)))
 
-(define (compile-p4 program)
-  (let1 cenv (make-bottom-cenv)
+(define (compile-p4 program :optional (env (vm-current-module)))
+  (let1 cenv (make-bottom-cenv env)
     (pp-iform (pass2-4 (pass1 program cenv) (cenv-module cenv)))))
 
-(define (compile-p5 program)
-  (let1 cenv (make-bottom-cenv)
+(define (compile-p5 program :optional (env (vm-current-module)))
+  (let1 cenv (make-bottom-cenv env)
     (vm-dump-code (pass5 (pass2-4 (pass1 program cenv) (cenv-module cenv))
-                         (make-compiled-code-builder 0 0 '%toplevel #f #f)
+                         (make-compiled-code-builder 0 0 '%toplevel #f #f #f)
                          '() 'tail))))
 
 ;;===============================================================
@@ -1415,12 +1459,11 @@
 ;; It would be a large change, so this is a compromise...
 (define-inline (pass1/lookup-head head cenv)
   (or (and (variable? head)
-           (cenv-lookup cenv head SYNTAX))
+           (cenv-lookup-syntax cenv head))
       (and (pair? head)
            (module-qualified-variable? head cenv)
            (let1 mod (ensure-module (cadr head) 'with-module #f)
-             (cenv-lookup (cenv-swap-module cenv mod)
-                          (caddr head) SYNTAX)))))
+             (cenv-lookup-syntax (cenv-swap-module cenv mod) (caddr head))))))
 
 ;;--------------------------------------------------------------
 ;; pass1 :: Sexpr, Cenv -> IForm
@@ -1438,7 +1481,7 @@
       (if gval
         (case type
           [(macro)
-           (pass1 (call-macro-expander gval program (cenv-frames cenv)) cenv)]
+           (pass1 (call-macro-expander gval program cenv) cenv)]
           [(syntax)
            (call-syntax-handler gval program cenv)]
           [(inline)
@@ -1490,14 +1533,14 @@
               [(identifier? h) (pass1/global-call h)]
               [(lvar? h) (pass1/call program ($lref h) (cdr program) cenv)]
               [(macro? h) ;; local macro
-               (pass1 (call-macro-expander h program (cenv-frames cenv)) cenv)]
+               (pass1 (call-macro-expander h program cenv) cenv)]
               [(syntax? h);; locally rebound syntax
                (call-syntax-handler h program cenv)]
               [else (error "[internal] unknown resolution of head:" h)]))]
      [else (pass1/call program (pass1 (car program) (cenv-sans-name cenv))
                        (cdr program) cenv)])]
    [(variable? program)                 ; variable reference
-    (let1 r (cenv-lookup cenv program LEXICAL)
+    (let1 r (cenv-lookup-variable cenv program)
       (cond [(lvar? r) ($lref r)]
             [(identifier? r)
              (or (and-let* ([const (find-const-binding r)]) ($const const))
@@ -1512,9 +1555,9 @@
 (define (module-qualified-variable? expr cenv)
   (match expr
     [((? variable? wm) mod (? variable? v))
-     (and-let* ([var (cenv-lookup cenv wm SYNTAX)]
+     (and-let* ([var (cenv-lookup-syntax cenv wm)]
                 [ (identifier? var) ])
-       (bound-id=? var (global-id 'with-module)))]
+       (global-identifier=? var (global-id 'with-module)))]
     [_ #f]))
 
 ;;--------------------------------------------------------------
@@ -1562,6 +1605,7 @@
              (pass1/body-macro-expand-rec head exprs intdefs cenv)]
             [(syntax? head) ; when (let-syntax ((xif if)) (xif ...)) etc.
              (pass1/body-finish intdefs exprs cenv)]
+            [(not (identifier? head)) (error "[internal] pass1/body" head)]
             [(global-eq? head 'define cenv)
              (let1 def (match args
                          [((name . formals) . body)
@@ -1569,13 +1613,23 @@
                          [(var init) `(,var ,init . ,src)]
                          [_ (error "malformed internal define:" (caar exprs))])
                (pass1/body-rec rest (cons def intdefs) cenv))]
-            [(global-eq? head 'begin cenv) ;intersperse forms
+            [(global-eq? head 'define-syntax cenv) ; internal syntax definition
+             (match args
+               [(name trans-spec)
+                (let* ([trans (pass1/eval-macro-rhs
+                               'define-syntax trans-spec
+                               (cenv-add-name cenv (variable-name name)))]
+                       [newenv (cenv-extend cenv `((,name . ,trans)) SYNTAX)])
+                  (pass1/body-rec rest intdefs newenv))]
+               [_ (error "syntax-error: malformed internal define-syntax:"
+                         `(,op ,@args))])]
+            [(global-identifier=? head begin.) ;intersperse forms
              (pass1/body-rec (append (imap (cut cons <> src) args) rest)
                              intdefs cenv)]
-            [(global-eq? head 'include cenv)
+            [(global-identifier=? head include.)
              (let1 sexpr&srcs (pass1/expand-include args cenv #f)
                (pass1/body-rec (append sexpr&srcs rest) intdefs cenv))]
-            [(global-eq? head 'include-ci cenv)
+            [(global-identifier=? head include-ci.)
              (let1 sexpr&srcs (pass1/expand-include args cenv #t)
                (pass1/body-rec (append sexpr&srcs rest) intdefs cenv))]
             [(identifier? head)
@@ -1590,7 +1644,7 @@
 
 (define (pass1/body-macro-expand-rec mac exprs intdefs cenv)
   (pass1/body-rec
-   (acons (call-macro-expander mac (caar exprs) (cenv-frames cenv))
+   (acons (call-macro-expander mac (caar exprs) cenv)
           (cdar exprs) ;src
           (cdr exprs)) ;rest
    intdefs cenv))
@@ -1604,7 +1658,7 @@
            [vars  (map car intdefs.)]
            [lvars (imap make-lvar+ vars)]
            [newenv (cenv-extend cenv (%map-cons vars lvars) LEXICAL)])
-      ($let #f 'rec lvars
+      ($let #f 'rec* lvars
             (imap2 (cut pass1/body-init <> <> newenv) lvars (map cdr intdefs.))
             (pass1/body-rest exprs newenv)))))
 
@@ -1640,7 +1694,7 @@
 (define (ensure-identifier sym-or-id cenv)
   (if (identifier? sym-or-id)
     sym-or-id
-    (make-identifier sym-or-id (cenv-module cenv) '())))
+    (make-identifier sym-or-id (cenv-module cenv) (cenv-frames cenv))))
 
 ;; Does the given argument list satisfy procedure's reqargs/optarg?
 (define (argcount-ok? args reqargs optarg?)
@@ -1693,22 +1747,37 @@
 ;;
 
 (define-macro (define-pass1-syntax formals module . body)
-  (let ([mod (case module ((:null) 'null) ((:gauche) 'gauche))]
+  (let ([mod (ecase module
+               [(:null) 'null]
+               [(:gauche) 'gauche]
+               [(:internal) 'gauche.internal])]
         ;; a trick to assign comprehensive name to body:
         [name (string->symbol #`"syntax/,(car formals)")])
     `(let ((,name (^ ,(cdr formals) ,@body)))
-       (%insert-binding (find-module ',mod) ',(car formals)
-                        (make-syntax ',(car formals) ,name)))))
+       (%insert-syntax-binding (find-module ',mod) ',(car formals)
+                               (make-syntax ',(car formals) ,name)))))
 
 (define (global-id id) (make-identifier id (find-module 'gauche) '()))
+(define (global-id% id) (make-identifier id (find-module 'gauche.internal) '()))
 
-(define lambda. (global-id 'lambda))
+(define define.      (global-id 'define))
+(define lambda.      (global-id 'lambda))
+(define r5rs-define. (make-identifier 'define (find-module 'null) '()))
 (define r5rs-lambda. (make-identifier 'lambda (find-module 'null) '()))
-(define setter. (global-id 'setter))
-(define lazy.   (global-id 'lazy))
-(define eager.  (global-id 'eager))
-(define values. (global-id 'values))
-(define begin.  (global-id 'begin))
+(define setter.      (global-id 'setter))
+(define lazy.        (global-id 'lazy))
+(define eager.       (global-id 'eager))
+(define values.      (global-id 'values))
+(define begin.       (global-id 'begin))
+(define include.     (global-id 'include))
+(define include-ci.  (global-id 'include-ci))
+(define else.        (global-id 'else))
+(define =>.          (global-id '=>))
+(define current-module. (global-id 'current-module))
+
+(define %make-primitive-transformer. (global-id% '%make-primitive-transformer))
+(define %make-er-transformer.        (global-id% '%make-er-transformer))
+(define %make-toplevel-cenv.         (global-id% '%make-toplevel-cenv))
 
 ;; Definitions ........................................
 
@@ -1748,15 +1817,31 @@
   (match form
     [(_ (name . args) body ...)
      (pass1/define `(define ,name
-                      (,(if extended? lambda. r5rs-lambda.) ,args ,@body))
+                      ,(with-original-source
+                        `(,(if extended? lambda. r5rs-lambda.) ,args ,@body)
+                        oform))
                    oform flags extended? module cenv)]
     [(_ name expr)
      (unless (variable? name) (error "syntax-error:" oform))
      (let1 cenv (cenv-add-name cenv (variable-name name))
-       ($define oform flags
-                (make-identifier (unwrap-syntax name) module '())
-                (pass1 expr cenv)))]
+       ;; If NAME is an identifier, it is inserted by macro expander; we
+       ;; can't simply place it in $define, since it would insert a toplevel
+       ;; definition into the toplevel of macro-definition environment---
+       ;; we don't want a mere macro call would modify different module.
+       ;; We rename it to uninterned symbol, so, even the binding itself
+       ;; is into the macro-definiting module, it won't be visible from
+       ;; other code except the code generated in the same macro expansion.
+       ;; A trick - we directly modify the identifier, so that other forms
+       ;; referring to the same (eq?) identifier can keep referring it.
+       (let1 id (if (identifier? name)
+                  (%rename-toplevel-identifier! name)
+                  (make-identifier name module '()))
+         ($define oform flags id (pass1 expr cenv))))]
     [_ (error "syntax-error:" oform)]))
+
+(define (%rename-toplevel-identifier! identifier)
+  (slot-set! identifier 'name (gensym #"~(identifier-name identifier)."))
+  identifier)
 
 ;; Inlinable procedure.
 ;;   Inlinable procedure has both properties of a macro and a procedure.
@@ -1886,8 +1971,11 @@
       (set! (%procedure-inliner dummy-proc) (pass1/inliner-procedure packed)))))
 
 (define (pass1/make-inlinable-binding form name iform cenv)
-  ($define form '(inlinable)
-           (make-identifier (unwrap-syntax name) (cenv-module cenv) '()) iform))
+  ;; See the comment in pass1/define about renaming the toplevel identifier.
+  (let1 id (if (identifier? name)
+             (%rename-toplevel-identifier! name)
+             (make-identifier name (cenv-module cenv) '()))
+    ($define form '(inlinable) id iform)))
 
 (define (pass1/inliner-procedure inline-info)
   (unless (vector? inline-info)
@@ -1909,13 +1997,15 @@
      (let1 trans
          (make-macro-transformer name
                                  (eval `(,lambda. ,formals ,@body) module))
-       (%insert-binding module name trans)
+       ;; See the "Hygiene alert" in pass1/define.
+       (%insert-syntax-binding module (unwrap-syntax name) trans)
        ($const-undef))]
     [(_ name expr)
      (unless (variable? name) (error "syntax-error:" oform))
      ;; TODO: macro autoload
      (let1 trans (make-macro-transformer name (eval expr module))
-       (%insert-binding module name trans)
+       ;; See the "Hygiene alert" in pass1/define.
+       (%insert-syntax-binding module (unwrap-syntax name) trans)
        ($const-undef))]
     [_ (error "syntax-error:" oform)]))
 
@@ -1927,7 +2017,9 @@
     [(_ name expr)
      (let* ([cenv (cenv-add-name cenv (variable-name name))]
             [transformer (pass1/eval-macro-rhs 'define-syntax expr cenv)])
-       (%insert-binding (cenv-module cenv) name transformer)
+       ;; See the "Hygiene alert" in pass1/define.
+       (%insert-syntax-binding (cenv-module cenv) (unwrap-syntax name)
+                               transformer)
        ($const-undef))]
     [_ (error "syntax-error: malformed define-syntax:" form)]))
 
@@ -1941,20 +2033,82 @@
 
 (inline-stub
  (define-cproc make-toplevel-closure (code::<compiled-code>)
-  (result (Scm_MakeClosure (SCM_OBJ code) NULL)))
+  (return (Scm_MakeClosure (SCM_OBJ code) NULL)))
  )
 
 ;; Macros ...........................................
 
+(define-pass1-syntax (primitive-macro-transformer form cenv) :gauche
+  (match form
+    [(_ xformer)
+     ;; We need to capture the current CENV as the macro definition
+     ;; environment.  There's a catch, though---if we're AOT compiling
+     ;; a macro, the captured CENV must be serializable to a file,
+     ;; which isn't generally the case.
+     ;; So, if we're compiling toplevel, we emit code that reconstruct
+     ;; cenv at runtime.  Runtime CENV construction
+     ;; will incur some overhead, but it's just per macro definition so
+     ;; it won't be an issue.
+     ;; If cenv has local environment, we don't bother that, for the macro
+     ;; will be fully expanded during AOT compilation.  HOWEVER - we can't
+     ;; embed cenv as a vector literal (e.g. `',cenv) since quoting will
+     ;; strip all identifier information in cenv.  The right thing would be
+     ;; to make cenv as a record.  For now, we take advantage that unquoted
+     ;; vector evaluates to itself, and insert cenv without quoting.  This
+     ;; has to change if we prohibit unquoted vector literals.
+     (let1 def-env-form (if (null? (cenv-frames cenv))
+                          `(,%make-toplevel-cenv. ',(cenv-exp-name cenv))
+                          cenv)
+       (pass1 `(,%make-primitive-transformer. ,xformer ,def-env-form)
+              cenv))]
+    [_ (error "syntax-error: malformed primitive-macro-transformer:" form)]))
+
+;; %make-toplevel-cenv is a procedure, so it refers the runtime module.
+;; In general it doesn't need to be the same as the compile-time module.
+;; However, as far as this form is inserted by primitive-macro-transformer
+;; or er-macro-transformer for the toplevel macro definition, it won't be an
+;; issue.
+;; TODO: Check if it's ok to have something like this:
+;;    (begin (define-syntax ...) (select-module ...) (define-syntax ...)
+(define (%make-toplevel-cenv name) :internal
+  (%make-cenv (vm-current-module) '() name))
+
 (define-pass1-syntax (%macroexpand form cenv) :gauche
   (match form
-    [(_ expr) ($const (%internal-macro-expand expr (cenv-frames cenv) #f))]
+    [(_ expr) ($const (%internal-macro-expand expr cenv #f))]
     [_ (error "syntax-error: malformed %macroexpand:" form)]))
 
 (define-pass1-syntax (%macroexpand-1 form cenv) :gauche
   (match form
-    [(_ expr) ($const (%internal-macro-expand expr (cenv-frames cenv) #t))]
+    [(_ expr) ($const (%internal-macro-expand expr cenv #t))]
     [_ (error "syntax-error: malformed %macroexpand-1:" form)]))
+
+(define (%internal-macro-expand expr cenv once?)
+  (define (xpand expr)
+    (match expr
+      [((? variable? op) . args)
+       (let1 var (cenv-lookup-syntax cenv op)
+         (cond [(macro? var) (call-macro-expander var expr cenv)]
+               [(identifier? var)
+                (if-let1 gval (and-let* ([gloc (id->bound-gloc var)]
+                                         [gval (gloc-ref gloc)]
+                                         [ (macro? gval) ])
+                                gval)
+                  (call-macro-expander gval expr cenv)
+                  expr)]
+               [else expr]))]
+      [((? macro? op) . args) (call-macro-expander op expr cenv)]
+      [_ expr]))
+  (if once?
+    (xpand expr)
+    (let loop ([expr expr])
+      (let1 e2 (xpand expr)
+        (if (eq? e2 expr)
+          expr
+          (loop e2))))))
+
+(define-pass1-syntax (... form cenv) :null
+  (error "invalid syntax:" form))
 
 (define-pass1-syntax (let-syntax form cenv) :null
   (match form
@@ -1982,7 +2136,19 @@
 (define-pass1-syntax (syntax-rules form cenv) :null
   (match form
     [(_ (literal ...) rule ...)
-     ($const (compile-syntax-rules (cenv-exp-name cenv) literal rule
+     ($const (compile-syntax-rules (cenv-exp-name cenv) '... literal rule
+                                   (cenv-module cenv)
+                                   (cenv-frames cenv)))]
+    [(_ (? variable-or-keyword? elli) (literal ...) rule ...)
+     ;; NB: Stripping identifier from elli may be broken in macro-defining-macro.
+     ;; Fix it once we have proper low-level macro system.
+     ;; NB: We allow keyword for ellipsis, so that something like ::: can be
+     ;; used.
+     ($const (compile-syntax-rules (cenv-exp-name cenv)
+                                   (if (identifier? elli)
+                                     (slot-ref elli 'name)
+                                     elli)
+                                   literal rule
                                    (cenv-module cenv)
                                    (cenv-frames cenv)))]
     [_ (error "syntax-error: malformed syntax-rules:" form)]))
@@ -2037,6 +2203,11 @@
             ($seq (imap (cut pass1 <> cenv) body))))]
     [_ (error "syntax-error: malformed unless:" form)]))
 
+(define-pass1-syntax (else form cenv) :null
+  (error "invalid syntax:" form))
+(define-pass1-syntax (=> form cenv) :null
+  (error "invalid syntax:" form))
+
 (define-pass1-syntax (cond form cenv) :null
   (define (process-clauses cls)
     (match cls
@@ -2080,6 +2251,10 @@
             ($it)
             (process-clauses rest))]
       [((test exprs ...) . rest)          ; (test . exprs)
+       ;; The following check will be unnecessary once we release 0.9.5
+       ;; that includes the bug fix in util.match (commit 867419d44).
+       (unless (list? exprs)
+         (error "syntax-error: bad clause in cond:" form))
        ($if (car cls) (pass1 test (cenv-sans-name cenv))
             ($seq (imap (cut pass1 <> cenv) exprs))
             (process-clauses rest))]
@@ -2152,9 +2327,9 @@
             (process-binds more body cenv)
             ($it))]
       [(([? variable? var] init) . more)
-       (let* ((lvar (make-lvar var))
-              (newenv (cenv-extend cenv `((,var . ,lvar)) LEXICAL))
-              (itree (pass1 init (cenv-add-name cenv var))))
+       (let* ([lvar (make-lvar var)]
+              [newenv (cenv-extend cenv `((,var . ,lvar)) LEXICAL)]
+              [itree (pass1 init (cenv-add-name cenv var))])
          (lvar-initval-set! lvar itree)
          ($let form 'let
                (list lvar)
@@ -2295,13 +2470,22 @@
 
 (define-pass1-syntax (lambda form cenv) :null
   (match form
-    [(_ formals . body) (pass1/lambda form formals body cenv #f)]
+    [(_ formals . body)
+     (pass1/lambda (add-arg-info form formals) formals body cenv #f)]
     [_ (error "syntax-error: malformed lambda:" form)]))
 
 (define-pass1-syntax (lambda form cenv) :gauche
   (match form
-    [(_ formals . body) (pass1/lambda form formals body cenv #t)]
+    [(_ formals . body)
+     (pass1/lambda (add-arg-info form formals) formals body cenv #t)]
     [_ (error "syntax-error: malformed lambda:" form)]))
+
+;; Add formals list as 'arg-info attributes of the source form
+(define (add-arg-info form formals)
+  (rlet1 xform (if (extended-pair? form)
+                 form
+                 (extended-cons (car form) (cdr form)))
+    (pair-attribute-set! xform 'arg-info formals)))
 
 (define (pass1/lambda form formals body cenv extended?)
   (receive (args reqargs optarg kargs) (parse-lambda-args formals)
@@ -2329,8 +2513,8 @@
        (unless (null? kargs)
          (error "syntax-error: extended lambda list isn't allowed in receive:"
                 form))
-       (let* ((lvars (imap make-lvar+ args))
-              (newenv (cenv-extend cenv (%map-cons args lvars) LEXICAL)))
+       (let* ([lvars (imap make-lvar+ args)]
+              [newenv (cenv-extend cenv (%map-cons args lvars) LEXICAL)])
          ($receive form reqargs optarg lvars (pass1 expr cenv)
                    (pass1/body body newenv))))]
     [_ (error "syntax-error: malformed receive:" form)]))
@@ -2338,10 +2522,10 @@
 ;; Returns <list of args>, <# of reqargs>, <has optarg?>, <kargs>
 ;; <kargs> is like (:optional (x #f) (y #f) :rest k) etc.
 (define (parse-lambda-args formals)
-  (let loop ((formals formals) (args '()) (n 0))
+  (let loop ([formals formals] [args '()] [n 0])
     (match formals
       [()      (values (reverse args) n 0 '())]
-      [((? keyword?) . _) (values (reverse args) n 1 formals)]
+      [((? keyword-like?) . _) (values (reverse args) n 1 formals)]
       [(x . y) (loop (cdr formals) (cons (car formals) args) (+ n 1))]
       [x       (values (reverse (cons x args)) n 1 '())])))
 
@@ -2351,25 +2535,25 @@
   (define (collect-args xs r)
     (match xs
       [() (values (reverse r) '())]
-      [((? keyword?) . _) (values (reverse r) xs)]
+      [((? keyword-like?) . _) (values (reverse r) xs)]
       [(var . rest) (collect-args rest (cons var r))]))
   (define (parse-kargs xs os ks r a)
     (match xs
       [() (expand-opt os ks r a)]
-      [(:optional . xs)
+      [(':optional . xs)
        (unless (null? os) (too-many :optional))
        (receive (os xs) (collect-args xs '()) (parse-kargs xs os ks r a))]
-      [(:key . xs)
+      [(':key . xs)
        (unless (null? ks) (too-many :key))
        (receive (ks xs) (collect-args xs '()) (parse-kargs xs os ks r a))]
-      [(:rest . xs)
+      [(':rest . xs)
        (when r (too-many :rest))
        (receive (rs xs) (collect-args xs '())
          (match rs
            [(r) (parse-kargs xs os ks r a)]
            [_ (error ":rest keyword in the extended lambda list must be \
                       followed by exactly one argument:" kargs)]))]
-      [(:allow-other-keys . xs)
+      [(':allow-other-keys . xs)
        (when a (too-many :allow-other-keys))
        (receive (a xs) (collect-args xs '())
          (match a
@@ -2501,21 +2685,19 @@
     [_ (error "syntax-error: malformed let*:" form)]))
 
 (define-pass1-syntax (letrec form cenv) :null
-  (pass1/letrec form cenv "letrec"))
+  (pass1/letrec form cenv "letrec" 'rec))
 
-;; letrec* isn't supported yet since $let optiomization can change the order
-;; of execution of init expressions.
-;;(define-pass1-syntax (letrec* form cenv) :gauche
-;;  (pass1/letrec form cenv "letrec*"))
+(define-pass1-syntax (letrec* form cenv) :gauche
+  (pass1/letrec form cenv "letrec*" 'rec*))
 
-(define (pass1/letrec form cenv name)
+(define (pass1/letrec form cenv name type)
   (match form
     [(_ () body ...)
      (pass1/body body cenv)]
     [(_ ((var expr) ...) body ...)
      (let* ([lvars (imap make-lvar+ var)]
             [newenv (cenv-extend cenv (%map-cons var lvars) LEXICAL)])
-       ($let form 'rec lvars
+       ($let form type lvars
              (map (^[lv init]
                     (rlet1 iexpr
                         (pass1 init (cenv-add-name newenv (lvar-name lv)))
@@ -2573,7 +2755,7 @@
     [(_ name expr)
      (unless (variable? name)
        (error "syntax-error: malformed set!:" form))
-     (let ([var (cenv-lookup cenv name LEXICAL)]
+     (let ([var (cenv-lookup-variable cenv name)]
            [val (pass1 expr cenv)])
        (if (lvar? var)
          ($lset var val)
@@ -2649,8 +2831,15 @@
 
 (define-pass1-syntax (import form cenv) :gauche
   (define (ensure m) (or (find-module m) (error "unknown module" m)))
+  (define (symbol-but-not-keyword? x)
+    (and (symbol? x) (not (keyword? x))))
   (dolist [f (cdr form)]
     (match f
+      [((? symbol-but-not-keyword? a) (? symbol-but-not-keyword? b) . r)
+       ;;likely to be an r7rs-style import
+       (error "This import form looks like R7RS `import', as opposed to \
+               Gauche `import'.  If you're in REPL, type (use r7rs) \
+               and (select-module r7rs.user) to enter the R7RS namespace.")]
       [(m . r) (process-import (cenv-module cenv) (ensure m) r)]
       [m       (process-import (cenv-module cenv) (ensure m) '())]))
   ($const-undef))
@@ -2661,25 +2850,25 @@
              [prefix #f])
     (match args
       [() (%import-module current imported prefix)]
-      [(:prefix p . rest)
+      [(':prefix p . rest)
        (loop imported rest (if prefix (string->symbol #`",p,prefix") p))]
-      [(:only (ss ...) . rest)
+      [(':only (ss ...) . rest)
        (let1 m (%make-wrapper-module imported prefix)
          (process-import:mapsym
           :only (unwrap-syntax ss) #f prefix
           (^[sym orig-sym] (unless (%alias-binding m orig-sym imported orig-sym)
-                             (errorf "during processing :once clause: \
+                             (errorf "during processing :only clause: \
                                       binding of ~a isn't exported from ~a"
                                      orig-sym imported))))
          (%extend-module m '())
          (loop m rest #f))]
-      [(:except (ss ...) . rest)
+      [(':except (ss ...) . rest)
        (let1 m (%make-wrapper-module imported prefix)
          (process-import:mapsym
           :except (unwrap-syntax ss) #f prefix
           (^[sym orig-sym] (%hide-binding m orig-sym)))
          (loop m rest #f))]
-      [(:rename ((ss ds) ...) . rest)
+      [(':rename ((ss ds) ...) . rest)
        (let* ([ss (unwrap-syntax ss)]
               [ds (unwrap-syntax ds)]
               [m0 (if prefix (%make-wrapper-module imported prefix) imported)]
@@ -2749,10 +2938,11 @@
       (port-case-fold-set! iport case-fold?)
       (pass1/report-include iport #t)
       (unwind-protect
-          ;; This may be replaced using generator->list once we release 0.9.4.
+          ;; This could be written simpler using port->sexp-list, but it would
+          ;; trigger autoload and reenters to the compiler.
           (let loop ([r (read iport)] [forms '()])
             (if (eof-object? r)
-              `((begin ,@(reverse forms)) . ,(port-name iport))
+              `((,begin. ,@(reverse forms)) . ,(port-name iport))
               (loop (read iport) (cons r forms))))
         (pass1/report-include iport #f)
         (close-input-port iport))))
@@ -2761,24 +2951,19 @@
 ;; If filename is relative, we try to resolve it with the source file.
 ;; whenever possible.
 (define (pass1/open-include-file path includer-path)
-  ;; We can't use cond-expand, since a host that compiles this file
-  ;; may not be the same as the host that runs this compiler.
-  (define windows? (assq 'gauche.os.windows (cond-features)))
-  ;; NB: we can't depend on file.util.
-  (define (absolute-path? path)
-    (if windows? (#/^[\/\\]|^[A-Za-z]:/ path) (#/^\// path)))
-  (define (build-path path file)
-    (if windows? #`",|path|\\,file" #`",|path|/,file"))
-  (define (check path)
-    (any (^s (open-input-file #`",|path|,s" :if-does-not-exist #f :encoding #t))
-         (cons "" *load-suffixes*)))
-  (define (bad) (error "include file is not readable:" path))
-
-  (cond [(absolute-path? path) (or (check path) (bad))]
-        [(and includer-path
-              (check (build-path (sys-dirname includer-path) path)))]
-        [(check path)]
-        [else (bad)]))
+  (let1 search-paths (if includer-path
+                       (cons (sys-dirname includer-path) *load-path*)
+                       *load-path*)
+    ;; find-load-file returns either (<found-path> <rest-of-search-paths>)
+    ;; or (<pseudo-path> <rest-of-search-paths> <thunk-to-open-content>)
+    ;; see libeval.scm for the details.
+    (if-let1 path&rest (find-load-file path search-paths
+                                       (cons "" *load-suffixes*)
+                                       :allow-archive #t)
+      (if (pair? (cddr path&rest)) ; archive hook is in effect.
+        ((caddr path&rest))
+        (open-input-file (car path&rest) :encoding #t))
+      (error "include file is not readable:" path))))
 
 ;; Report including.
 (define (pass1/report-include iport open?)
@@ -2789,7 +2974,7 @@
 ;; Class stuff ........................................
 
 ;; KLUDGES.  They should be implemented as macros, but the
-;; current compiler doesn't preserves macro definitions.
+;; current compiler doesn't preserve macro definitions.
 ;; These syntax handler merely expands the given form to
 ;; the call to internal procedures of objlib.scm, which
 ;; returns the macro expanded form.
@@ -2875,7 +3060,7 @@
 ;; Penv is a list of $LAMBDA nodes that we're compiling.   It is used to
 ;; detect self-recursive local calls.  Tail? is a flag to indicate whether
 ;; the expression is tail position or not.
-;; Each hander returns IForm.
+;; Each handler returns IForm.
 ;; *pass2-dispatch-table* is defined below, after all handlers are defined.
 (define-inline (pass2/rec iform penv tail?)
   ((vector-ref *pass2-dispatch-table* (iform-tag iform))
@@ -2909,7 +3094,7 @@
 
 (define (pass2/lref-eliminate iform)
   (let1 lvar ($lref-lvar iform)
-    (if (zero? (lvar-set-count lvar))
+    (if (lvar-immutable? lvar)
       (let1 initval (lvar-initval lvar)
         (cond [(not (vector? initval)) iform]
               [($const? initval)
@@ -2918,7 +3103,7 @@
                ($const-value-set! iform ($const-value initval))
                iform]
               [(and ($lref? initval)
-                    (zero? (lvar-set-count ($lref-lvar initval))))
+                    (lvar-immutable? ($lref-lvar initval)))
                (when (eq? iform initval)
                  (error "circular reference appeared in letrec bindings:"
                         (lvar-name lvar)))
@@ -2985,20 +3170,60 @@
 ;;   this iform into a simple $seq.
 ;;
 ;;  -- Special case: If the lvars are immediately "consumed" as the
-;;     arguments to a function callss in the first expression of let,
-;;     we can eliminate lvars.  This case often occurs after macro
+;;     arguments to a function calls in the first expression of let,
+;;     and the rest of the argument of the first expression is side-effect
+;;     free, we can eliminate lvars.  This case often occurs after macro
 ;;     expansion.
 ;;       (let ([p (f a)] [q (g b)]) (h p q) (foo))
 ;;         => (begin (h (f a) (g b)) (foo))
+;;
+;;     NB: In the following pattern, we can't do the conversion unless p is
+;;     constant or unmodified $LREF, for (g b) might modify p.
+;;     
+;;       (let ([q (g b)]) (h p q) (foo))
+;;
+;;     NB: We don't need to consider the possibility that (g b) modifies h,
+;;     since h is evaluated after all the arguments are evaluated, even
+;;     in the form of (h p (g b)).
 ;;
 ;; - Closure optimization: when an lvar is bound to a $LAMBDA node, we
 ;;   may be able to optimize the calls to it.  It is done here since
 ;;   we need to run pass2 for all the call sites of the lvar to analyze
 ;;   its usage.
+;;
+;; CAVEAT: When we go through pass2 on ($let-inits iform), it may inline expand
+;; lvars that appear later in the bindings, e.g.:
+;;
+;;   (letrec ((foo (lambda () (bar x)))
+;;            (bar (lambda (a) (baz a))))
+;;     ...)
+;;
+;; In this case, while we're at pass2[(lambda () (bar x))], pass2/$CALL
+;; inlines the call of bar to make it (lambda () (let ((a x)) (baz a))).
+;; The important thing is that the IForm of original (lambda (a) (baz a))
+;; is directly used to inline the call, so we shouldn't rescan it.
+;; pass2/$CALL marks the inlined lambda node as 'used, so that we can skip
+;; it here.
 
 (define (pass2/$LET iform penv tail?)
-  (let ([lvars ($let-lvars iform)]
-        [inits (imap (cut pass2/rec <> penv #f) ($let-inits iform))])
+  ;; Run pass2 on let-inits, returns new lvars and inits
+  (define (process-inits lvars inits)
+    (let loop ([lvars lvars] [inits inits]
+               [new-lvars '()] [new-inits '()])
+      (cond [(null? lvars) (values (reverse! new-lvars) (reverse! new-inits))]
+            [(let1 lv (car lvars)
+               (and (= (lvar-ref-count lv) 0)
+                    (lvar-immutable? lv)
+                    (has-tag? (car inits) $LAMBDA)
+                    (eq? ($lambda-flag (car inits)) 'used)))
+             ;; This lambda node has already been inlinded, so we can skip.
+             (loop (cdr lvars) (cdr inits) new-lvars new-inits)]
+            [else
+             (loop (cdr lvars) (cdr inits)
+                   (cons (car lvars) new-lvars)
+                   (cons (pass2/rec (car inits) penv #f) new-inits))])))
+
+  (receive (lvars inits) (process-inits ($let-lvars iform) ($let-inits iform))
     (ifor-each2 (^[lv in] (lvar-initval-set! lv in)) lvars inits)
     (let1 obody (pass2/rec ($let-body iform) penv tail?)
       ;; NB: We have to run optimize-closure after pass2 of body.
@@ -3008,7 +3233,7 @@
 (define (pass2/shrink-let-frame iform lvars obody)
   (pass2/intermediate-lref-removal lvars obody)
   (receive (new-lvars new-inits removed-inits)
-      (pass2/remove-unused-lvars lvars)
+      (pass2/remove-unused-lvars lvars ($let-type iform))
     (cond [(null? new-lvars)
            (if (null? removed-inits)
              obody
@@ -3040,9 +3265,10 @@
          (let1 lv ($lref-lvar n)
            (if (memq lv lvars)
              (and (= (lvar-ref-count lv) 1)
-                  (= (lvar-set-count lv) 0)
+                  (lvar-immutable? lv)
                   (loop args (cons n ilrefs) subcall-node))
-             (loop args ilrefs subcall-node)))]
+             (and (lvar-immutable? lv)
+                  (loop args ilrefs subcall-node))))]
         [((? $call? n) . args) (if subcall-node
                                  #f
                                  (loop args ilrefs n))]
@@ -3064,19 +3290,33 @@
                                      arg))
                            ($call-args node)))))
 
-(define (pass2/remove-unused-lvars lvars)
+;; Scan LVARS and returns three values:
+;;   - List of needed lvars
+;;   - List of init expressions, corresponding to the first return value.
+;;   - List of non-transparent init expressions for removed lvars---they
+;;     need to be executed at the top of the body of the binding construct.
+;;
+;; We have to be careful optimizing letrec* - we can't reorder init
+;; when it can have side effects.  However, we still have to remove lambda
+;; form that is no longer used---that means the lambda form is inlined
+;; elsewhere, and its body has been modified to suit the inlined environment,
+;; so we can no longer compile the $lambda node safely.
+(define (pass2/remove-unused-lvars lvars type)
   (let loop ([lvars lvars] [rl '()] [ri '()] [rr '()])
     (cond [(null? lvars)
            (values (reverse rl) (reverse ri) (reverse rr))]
           [(and (zero? (lvar-ref-count (car lvars)))
-                (zero? (lvar-set-count (car lvars))))
-           (loop (cdr lvars) rl ri
-                 (let1 init (lvar-initval (car lvars))
-                   (cond [($lref? init)
-                          (lvar-ref--! ($lref-lvar init))
-                          rr]
-                         [(transparent? init) rr]
-                         [else (cons init rr)])))]
+                (lvar-immutable? (car lvars)))
+           (let1 init (lvar-initval (car lvars))
+             (if (and (eq? type 'rec*)
+                      (not (transparent? init)))
+               (loop (cdr lvars) (cons (car lvars) rl) (cons init ri) rr)
+               (loop (cdr lvars) rl ri
+                     (cond [($lref? init)
+                            (lvar-ref--! ($lref-lvar init))
+                            rr]
+                           [(transparent? init) rr]
+                           [else (cons init rr)]))))]
           [else
            (loop (cdr lvars)
                  (cons (car lvars) rl)
@@ -3149,7 +3389,7 @@
 ;;
 
 (define (pass2/optimize-closure lvar lambda-node)
-  (when (and (zero? (lvar-set-count lvar))
+  (when (and (lvar-immutable? lvar)
              (> (lvar-ref-count lvar) 0)
              (has-tag? lambda-node $LAMBDA))
     (or (and (= (lvar-ref-count lvar) (length ($lambda-calls lambda-node)))
@@ -3345,7 +3585,12 @@
                ;; node is the lvar's single reference, so we know the inlined
                ;; procedure is never called recursively.  Thus we can safely
                ;; traverse the inlined body without going into infinite loop.
-               ($call-proc-set! iform result)
+               ;;
+               ;; We directly embed the iform (result), which is a lambda expr
+               ;; bound to PROC.  The lambda iform may not be scanned yet by
+               ;; pass2/$LET, though.  We mark the node 'used, so that
+               ;; pass2/$LET can skip processing it.
+               ($lambda-flag-set! result 'used)
                (pass2/rec (expand-inlined-procedure ($*-src iform) result args)
                           penv tail?)]
               [else
@@ -3378,10 +3623,10 @@
              [ (has-tag? initval $LAMBDA) ])
     (cond
      [(pass2/self-recursing? initval penv) (if tail? 'tail-rec 'rec)]
-     [(= (lvar-ref-count lvar) 1)
+     [(and (= (lvar-ref-count lvar) 1)
+           (lvar-immutable? lvar))
       ;; we can inline this lambda directly.
       (lvar-ref--! lvar)
-      (lvar-initval-set! lvar ($const-undef))
       initval]
      [else 'local])))
 
@@ -3461,12 +3706,16 @@
 
 (define (pass2/const-numop1 proc args)
   (let1 n ($const-value (car args))
-    (and (number? n) ($const (proc n)))))
+    (and (number? n)
+         (not (and (eq? proc /) (eqv? y 0))) ; don't fold zero-division case
+         ($const (proc n)))))
 
 (define (pass2/const-numop2 proc args)
   (let ([x ($const-value (car args))]
         [y ($const-value (cadr args))])
-    (and (number? x) (number? y) ($const (proc x y)))))
+    (and (number? x) (number? y)
+         (not (and (eq? proc /) (exact? x) (eqv? y 0))) ; ditto
+         ($const (proc x y)))))
 
 (define (pass2/const-vecref args)       ;args has always 2 elements
   (let ([v ($const-value (car args))]
@@ -3814,9 +4063,9 @@
     (,(global-id 'procedure?) . ,pass3/pred:procedure?)))
 
 (define (pass3/find-deducible-predicate id)
-  (let loop ((tab *pass3/pred-table*))
+  (let loop ([tab *pass3/pred-table*])
     (cond [(null? tab) pass3/pred:fallback]
-          [(bound-id=? id (caar tab)) (cdar tab)]
+          [(global-identifier=? id (caar tab)) (cdar tab)]
           [else (loop (cdr tab))])))
 
 (define (pass3/deduce-predicate-result gref arg)
@@ -3981,7 +4230,7 @@
                     [fs (pass4/scan ($if-then iform) bs fs t? labels)])
                (pass4/scan ($if-else iform) bs fs t? labels))]
   [($LET)    (let* ([new-bs (append ($let-lvars iform) bs)]
-                    [bs (if (eq? ($let-type iform) 'rec) new-bs bs)]
+                    [bs (if (memv ($let-type iform) '(rec rec*)) new-bs bs)]
                     [fs (pass4/scan* ($let-inits iform) bs fs t? labels)])
                (pass4/scan ($let-body iform) new-bs fs #f labels))]
   [($RECEIVE)(let ([fs (pass4/scan ($receive-expr iform) bs fs t? labels)]
@@ -4073,7 +4322,7 @@
                       [fvs ($lambda-free-lvars lm)])
                  (when (or (null? fvs)
                            (and (null? (cdr fvs))
-                                (zero? (lvar-set-count (car fvs)))
+                                (lvar-immutable? (car fvs))
                                 (eq? (lvar-initval (car fvs)) lm)))
                    (let1 gvar (make-identifier (gensym) module '())
                      ($lambda-name-set! lm (list top-name
@@ -4112,7 +4361,7 @@
 (define/case (pass4/subst iform labels)
   (iform-tag iform)
   [($DEFINE) (pass4/subst! ($define-expr iform) labels)]
-  [($LREF)   (or (and-let* ([ (= (lvar-set-count ($lref-lvar iform)) 0) ]
+  [($LREF)   (or (and-let* ([ (lvar-immutable? ($lref-lvar iform)) ]
                             [init (lvar-initval ($lref-lvar iform))]
                             [ (vector? init) ]
                             [ (has-tag? init $LAMBDA) ]
@@ -4231,6 +4480,8 @@
   (receive (depth offset) (renv-lookup renv ($lref-lvar iform))
     (compiled-code-emit2i! ccb LREF depth offset
                            (lvar-name ($lref-lvar iform)))
+    (unless (lvar-immutable? ($lref-lvar iform))
+      (compiled-code-emit0! ccb UNBOX))
     0))
 
 (define (pass5/$LSET iform ccb renv ctx)
@@ -4245,8 +4496,8 @@
     0))
 
 (define (pass5/$GSET iform ccb renv ctx)
-  (let ((d (pass5/rec ($gset-expr iform) ccb renv (normal-context ctx)))
-        (id ($gset-id iform)))
+  (let ([d (pass5/rec ($gset-expr iform) ccb renv (normal-context ctx))]
+        [id ($gset-id iform)])
     (compiled-code-emit0oi! ccb GSET id id)
     d))
 
@@ -4283,8 +4534,8 @@
     ;; Select an appropriate branch instruction
     (cond
      [(has-tag? test $ASM)
-      (let ((code (car ($asm-insn test))); ASM code
-            (args ($asm-args test)))
+      (let ([code (car ($asm-insn test))]; ASM code
+            [args ($asm-args test)])
         (cond
          [(eqv? code NULLP)
           (pass5/if-final iform (car args) BNNULL 0 0
@@ -4367,11 +4618,13 @@
                            0
                            info ccb renv ctx))
       (and ($lref? x)
+           (lvar-immutable? ($lref-lvar x))
            (pass5/if-final iform #f LREF-VAL0-BNUMNE
                            (pass5/if-numcmp-lrefarg x renv)
                            (pass5/rec y ccb renv (normal-context ctx))
                            info ccb renv ctx))
       (and ($lref? y)
+           (lvar-immutable? ($lref-lvar y))
            (pass5/if-final iform #f LREF-VAL0-BNUMNE
                            (pass5/if-numcmp-lrefarg y renv)
                            (pass5/rec x ccb renv (normal-context ctx))
@@ -4388,11 +4641,13 @@
   (define .rev. `((,BNLT . ,LREF-VAL0-BNGT) (,BNLE . ,LREF-VAL0-BNGE)
                   (,BNGT . ,LREF-VAL0-BNLT) (,BNGE . ,LREF-VAL0-BNLE)))
   (or (and ($lref? x)
+           (lvar-immutable? ($lref-lvar x))
            (pass5/if-final iform #f (cdr (assv insn .fwd.))
                            (pass5/if-numcmp-lrefarg x renv)
                            (pass5/rec y ccb renv (normal-context ctx))
                            info ccb renv ctx))
       (and ($lref? y)
+           (lvar-immutable? ($lref-lvar y))
            (pass5/if-final iform #f (cdr (assv insn .rev.))
                            (pass5/if-numcmp-lrefarg y renv)
                            (pass5/rec x ccb renv (normal-context ctx))
@@ -4416,10 +4671,23 @@
 ;;      - if insn is (BF)
 ;;        - then part is ($IT)  => use RT
 ;;        - else part is ($IT)  => use RF
+;;        - then part is jump back to labeled closure
+;;          => use BT, and use the destination of the label. (*)
 ;;      - otherwise, place RET after then clause
 ;;   - otherwise
 ;;      - else part is ($IT)  => we can omit a jump after then clause
 ;;      - otherwise, merge the control after this node.
+;;
+;;  (*) This converts the left asm output to the right one.  This type of
+;;      code appears as the result of the first pattern of $if optimization
+;;      in pass3.
+;;
+;;        L0:                   L0:
+;;            ...                   ...
+;;            BF L1                 BT L0
+;;            JUMP L0               xxx
+;;        L1: xxx                   ...
+;;            ...
 ;;
 ;; We have many variations of branch instrucitons, and the combination
 ;; of arguments reflects them.
@@ -4442,39 +4710,47 @@
   `(,BNEQC ,BNEQVC))
 
 (define (pass5/if-final iform test code arg0/opr depth info ccb renv ctx)
-  (let1 depth (if test
-                (imax (pass5/rec test ccb renv (normal-context ctx)) depth)
-                depth)
+  (let ([depth (if test
+                 (imax (pass5/rec test ccb renv (normal-context ctx)) depth)
+                 depth)]
+        [then-form ($if-then iform)]
+        [else-form ($if-else iform)])
     (cond
      [(tail-context? ctx)
-      (cond
-       [(and (eqv? code BF) ($it? ($if-then iform)))
-        (compiled-code-emit0i! ccb RT info)
-        (imax (pass5/rec ($if-else iform) ccb renv ctx) depth)]
-       [(and (eqv? code BF) ($it? ($if-else iform)))
-        (compiled-code-emit0i! ccb RF info)
-        (imax (pass5/rec ($if-then iform) ccb renv ctx) depth)]
-       [else
-        (let1 elselabel (compiled-code-new-label ccb)
-          (if (memv code .branch-insn-extra-operand.)
-            (compiled-code-emit0oi! ccb code (list arg0/opr elselabel) info)
-            (compiled-code-emit1oi! ccb code arg0/opr elselabel info))
-          (set! depth (imax (pass5/rec ($if-then iform) ccb renv ctx) depth))
-          (compiled-code-emit-RET! ccb)
-          (compiled-code-set-label! ccb elselabel)
-          (imax (pass5/rec ($if-else iform) ccb renv ctx) depth))])]
+      (or (and (eqv? code BF)
+               (cond
+                [($it? then-form)
+                 (compiled-code-emit0i! ccb RT info)
+                 (imax (pass5/rec else-form ccb renv ctx) depth)]
+                [($it? else-form)
+                 (compiled-code-emit0i! ccb RF info)
+                 (imax (pass5/rec then-form ccb renv ctx) depth)]
+                [(and (has-tag? then-form $LABEL)
+                      ($label-label then-form))
+                 => (^[label]
+                      (compiled-code-emit0o! ccb BT label)
+                      (imax (pass5/rec else-form ccb renv ctx) depth))]
+                [else #f]))
+          (let1 elselabel (compiled-code-new-label ccb)
+            (if (memv code .branch-insn-extra-operand.)
+              (compiled-code-emit0oi! ccb code (list arg0/opr elselabel) info)
+              (compiled-code-emit1oi! ccb code arg0/opr elselabel info))
+            (set! depth (imax (pass5/rec then-form ccb renv ctx) depth))
+            (compiled-code-emit-RET! ccb)
+            (compiled-code-set-label! ccb elselabel)
+            (imax (pass5/rec else-form ccb renv ctx) depth)))]
      [else
       (let ([elselabel  (compiled-code-new-label ccb)]
             [mergelabel (compiled-code-new-label ccb)])
         (if (memv code .branch-insn-extra-operand.)
           (compiled-code-emit0oi! ccb code (list arg0/opr elselabel) info)
           (compiled-code-emit1oi! ccb code arg0/opr elselabel info))
-        (set! depth (imax (pass5/rec ($if-then iform) ccb renv ctx) depth))
-        (unless ($it? ($if-else iform))
+        (set! depth (imax (pass5/rec then-form ccb renv ctx) depth))
+        (unless ($it? else-form)
           (compiled-code-emit0o! ccb JUMP mergelabel))
         (compiled-code-set-label! ccb elselabel)
-        (unless ($it? ($if-else iform))
-          (set! depth (imax (pass5/rec ($if-else iform) ccb renv ctx) depth)))
+        (unless ($it? else-form)
+          (set! depth (imax (pass5/rec else-form ccb renv ctx) depth)))
         (compiled-code-set-label! ccb mergelabel)
         depth)])))
 
@@ -4491,8 +4767,10 @@
 ;;     stack is: total env frame size + max of stack depth consumed by
 ;;     one of inits or the body.
 ;;
-
 (define (pass5/$LET iform ccb renv ctx)
+  (when (and (has-tag? ($let-body iform) $LET)
+             (eq? ($let-type iform) 'let))
+    (pass5/flatten-let*! iform))
   (let ([info ($*-src iform)]
         [lvars ($let-lvars iform)]
         [inits ($let-inits iform)]
@@ -4505,41 +4783,45 @@
         [(let)
          (cond
           [(bottom-context? ctx)
-           (let1 dinit (pass5/prepare-args inits lvars ccb renv ctx)
+           (let1 dinit (pass5/prepare-args inits ccb renv ctx)
              (compiled-code-emit1i! ccb LOCAL-ENV nlocals info)
+             (pass5/box-mutable-lvars lvars ccb)
              (let1 dbody (pass5/rec body ccb (cons lvars renv) ctx)
                (unless (tail-context? ctx)
                  (compiled-code-emit0! ccb POP-LOCAL-ENV))
                (imax dinit (+ dbody ENV_HEADER_SIZE nlocals))))]
           [else
-           (compiled-code-emit1o! ccb PRE-CALL nlocals merge-label)
-           (let1 dinit (pass5/prepare-args inits lvars ccb renv ctx)
+           (compiled-code-emit1oi! ccb PRE-CALL nlocals merge-label info)
+           (let1 dinit (pass5/prepare-args inits ccb renv ctx)
              (compiled-code-emit1i! ccb LOCAL-ENV nlocals info)
+             (pass5/box-mutable-lvars lvars ccb)
              (let1 dbody (pass5/rec body ccb (cons lvars renv) 'tail)
                (compiled-code-emit-RET! ccb)
                (compiled-code-set-label! ccb merge-label)
                (imax dinit
-                    (+ dbody CONT_FRAME_SIZE ENV_HEADER_SIZE nlocals))))])]
-        [(rec)
+                     (+ dbody CONT_FRAME_SIZE ENV_HEADER_SIZE nlocals))))])]
+        [(rec rec*)
          (receive (closures others)
              (partition-letrec-inits inits ccb (cons lvars renv) 0 '() '())
            (cond
             [(bottom-context? ctx)
              (compiled-code-emit1oi! ccb LOCAL-ENV-CLOSURES nlocals
                                      closures info)
-             (let* ((dinit (emit-letrec-inits others nlocals ccb
-                                              (cons lvars renv) 0))
-                    (dbody (pass5/rec body ccb (cons lvars renv) ctx)))
+             (emit-letrec-boxers ccb lvars nlocals)
+             (let* ([dinit (emit-letrec-inits others lvars nlocals ccb
+                                              (cons lvars renv) 0)]
+                    [dbody (pass5/rec body ccb (cons lvars renv) ctx)])
                (unless (tail-context? ctx)
                  (compiled-code-emit0! ccb POP-LOCAL-ENV))
                (+ ENV_HEADER_SIZE nlocals (imax dinit dbody)))]
             [else
-             (compiled-code-emit1o! ccb PRE-CALL nlocals merge-label)
+             (compiled-code-emit1oi! ccb PRE-CALL nlocals merge-label info)
              (compiled-code-emit1oi! ccb LOCAL-ENV-CLOSURES nlocals
                                      closures info)
-             (let* ((dinit (emit-letrec-inits others nlocals ccb
-                                              (cons lvars renv) 0))
-                    (dbody (pass5/rec body ccb (cons lvars renv) 'tail)))
+             (emit-letrec-boxers ccb lvars nlocals)
+             (let* ([dinit (emit-letrec-inits others lvars nlocals ccb
+                                              (cons lvars renv) 0)]
+                    [dbody (pass5/rec body ccb (cons lvars renv) 'tail)])
                (compiled-code-emit-RET! ccb)
                (compiled-code-set-label! ccb merge-label)
                (+ CONT_FRAME_SIZE ENV_HEADER_SIZE nlocals
@@ -4549,6 +4831,40 @@
                 ($let-type iform))]
         ))))
 
+;; Nested let can be flattened if the initexpr of inner local vars
+;; does not depend on the values of the local vars of the current frame,
+;; and they don't possibly capture environments/continuations.
+;; $const and $lref to outer frames are certainly safe.
+;; $gref also won't capture frames, but we have to be careful if we ever
+;; provide a mechanism to restart from undefined variable error.
+(define (pass5/flatten-let*! iform)
+  (let loop ([lvars (reverse ($let-lvars iform))]
+             [inits (reverse ($let-inits iform))]
+             [node ($let-body iform)])
+    (let1 ins ($let-inits node)
+      (cond [(everyc safe-lvar-initval-for-flatten? ins lvars)
+             (let ([lvars (reverse ($let-lvars node) lvars)]
+                   [inits (reverse ins inits)])
+               (if (and (has-tag? ($let-body node) $LET)
+                        (eq? ($let-type node) 'let))
+                 (loop lvars inits ($let-body node))
+                 (begin ($let-lvars-set! iform (reverse! lvars))
+                        ($let-inits-set! iform (reverse! inits))
+                        ($let-body-set! iform ($let-body node)))))]
+            [(eq? node ($let-body iform))] ; we didn't do anything
+            [else ($let-lvars-set! iform (reverse! lvars))
+                  ($let-inits-set! iform (reverse! inits))
+                  ($let-body-set! iform node)]))))
+
+(define (safe-lvar-initval-for-flatten? init existing-lvars)
+  (and (or ($const? init)
+           (and ($lref? init)
+                (not (memq ($lref-lvar init) existing-lvars))))))
+
+;; classify init values into closures/constants and non-closure expressions.
+;; returns two lists: a list of init values (closures or #under values)
+;; corresponding to lvar list, and non-closure init iforms, each
+;; paired with an lvar count.
 (define (partition-letrec-inits inits ccb renv cnt closures others)
   (if (null? inits)
     (values (reverse closures) (reverse others))
@@ -4567,13 +4883,29 @@
                                 (cons (undefined) closures)
                                 (acons cnt init others))]))))
 
-(define (emit-letrec-inits init-alist nlocals ccb renv depth)
+;; box set!-able slots in the ENV at stack top.  used in letrec and
+;; receive frame setup.
+(define (emit-letrec-boxers ccb lvars nlocals)
+  (let loop ([lvars lvars] [cnt nlocals])
+    (unless (null? lvars)
+      (unless (lvar-immutable? (car lvars))
+        (compiled-code-emit1! ccb BOX cnt))
+      (loop (cdr lvars) (- cnt 1)))))
+       
+;; emit LSET or ENV-SET insn to initialize lvars that aren't closures or
+;; constants.  init-alist is the second value partition-letrec-inits
+;; returned, which is a list of (<lvar-count> <init-iform>).
+(define (emit-letrec-inits init-alist lvars nlocals ccb renv depth)
   (if (null? init-alist)
     depth
     (let* ([off&expr (car init-alist)]
-           [d (pass5/rec (cdr off&expr) ccb renv 'normal/bottom)])
-      (compiled-code-emit2! ccb LSET 0 (- nlocals 1 (car off&expr)))
-      (emit-letrec-inits (cdr init-alist) nlocals ccb renv (imax depth d)))))
+           [d (pass5/rec (cdr off&expr) ccb renv 'normal/bottom)]
+           [lvar (list-ref lvars (car off&expr))])
+      (if (lvar-immutable? lvar)
+        (compiled-code-emit1! ccb ENV-SET (- nlocals 1 (car off&expr)))
+        (compiled-code-emit2! ccb LSET 0 (- nlocals 1 (car off&expr))))
+      (emit-letrec-inits (cdr init-alist) lvars nlocals ccb renv
+                         (imax depth d)))))
 
 (define (pass5/$RECEIVE iform ccb renv ctx)
   (let ([nargs  ($receive-reqargs iform)]
@@ -4585,6 +4917,7 @@
      [(bottom-context? ctx)
       (let1 dinit (pass5/rec expr ccb renv (normal-context ctx))
         (compiled-code-emit2i! ccb TAIL-RECEIVE nargs optarg ($*-src iform))
+        (emit-letrec-boxers ccb lvars (length lvars))
         (let1 dbody (pass5/rec body ccb (cons lvars renv) ctx)
           (unless (tail-context? ctx)
             (compiled-code-emit0! ccb POP-LOCAL-ENV))
@@ -4594,6 +4927,7 @@
             [dinit (pass5/rec expr ccb renv (normal-context ctx))])
         (compiled-code-emit2oi! ccb RECEIVE nargs optarg
                                 merge-label ($*-src iform))
+        (emit-letrec-boxers ccb lvars (length lvars))
         (let1 dbody (pass5/rec body ccb (cons lvars renv) 'tail)
           (compiled-code-emit-RET! ccb)
           (compiled-code-set-label! ccb merge-label)
@@ -4607,14 +4941,31 @@
   0)
 
 (define (pass5/lambda iform ccb renv)
-  (let1 inliner (cond [($lambda-flag iform) vector? => values]
-                      [else #f])
+  (let* ([inliner (let1 v ($lambda-flag iform)
+                   (and (vector? v) v))]
+         [ccb (make-compiled-code-builder ($lambda-reqargs iform)
+                                          ($lambda-optarg iform)
+                                          ($lambda-name iform)
+                                          ;; TODO: For the time being, if we
+                                          ;; don't have arg-info, we show
+                                          ;; (proc . _).  We can do better, tho.
+                                          (or (and-let* ([p ($lambda-src iform)])
+                                                (pair-attribute-get p 'arg-info #f))
+                                              '_)
+                                          ccb  ; parent
+                                          inliner)])
+    (and-let* ([src ($lambda-src iform)])
+      (compiled-code-push-info! ccb `(definition (source-info . ,src))))
+    ;; If any of procedure parameters are set!, we should box it
+    ;; upon entering the procedure.
+    (let loop ([lvs ($lambda-lvars iform)]
+               [k (length ($lambda-lvars iform))])
+      (unless (null? lvs)
+        (unless (lvar-immutable? (car lvs))
+          (compiled-code-emit1i! ccb BOX k (lvar-name (car lvs))))
+        (loop (cdr lvs) (- k 1))))
     (pass5 ($lambda-body iform)
-           (make-compiled-code-builder ($lambda-reqargs iform)
-                                       ($lambda-optarg iform)
-                                       ($lambda-name iform)
-                                       ccb  ; parent
-                                       inliner)
+           ccb
            (if (null? ($lambda-lvars iform))
              renv
              (cons ($lambda-lvars iform) renv))
@@ -4713,13 +5064,13 @@
   (let* ([args ($call-args iform)]
          [nargs (length args)])
     (if (tail-context? ctx)
-      (let1 dinit (pass5/prepare-args args #f ccb renv ctx)
+      (let1 dinit (pass5/prepare-args args ccb renv ctx)
         (pass5/rec ($call-proc iform) ccb renv 'normal/top)
         (compiled-code-emit1i! ccb LOCAL-ENV-TAIL-CALL nargs ($*-src iform))
         (if (= nargs 0) 0 (imax dinit (+ nargs ENV_HEADER_SIZE))))
       (let1 merge-label (compiled-code-new-label ccb)
-        (compiled-code-emit1o! ccb PRE-CALL nargs merge-label)
-        (let1 dinit (pass5/prepare-args args #f ccb renv ctx)
+        (compiled-code-emit1oi! ccb PRE-CALL nargs merge-label ($*-src iform))
+        (let1 dinit (pass5/prepare-args args ccb renv ctx)
           (pass5/rec ($call-proc iform) ccb renv 'normal/top)
           (compiled-code-emit1i! ccb LOCAL-ENV-CALL nargs ($*-src iform))
           (compiled-code-set-label! ccb merge-label)
@@ -4736,16 +5087,16 @@
          [args ($call-args iform)]
          [nargs (length args)]
          [label ($lambda-body proc)]
-         [newenv (if (= nargs 0)
-                   renv
-                   (cons ($lambda-lvars proc) renv))]
+         [lvars ($lambda-lvars proc)]
+         [newenv (if (= nargs 0) renv (cons lvars renv))]
          [merge-label (compiled-code-new-label ccb)])
     ($call-renv-set! iform (reverse renv))
     (unless (tail-context? ctx)
-      (compiled-code-emit1o! ccb PRE-CALL nargs merge-label))
+      (compiled-code-emit1oi! ccb PRE-CALL nargs merge-label ($*-src iform)))
     (let1 dinit (if (> nargs 0)
-                  (rlet1 d (pass5/prepare-args args #f ccb renv ctx)
-                    (compiled-code-emit1i! ccb LOCAL-ENV nargs ($*-src iform)))
+                  (rlet1 d (pass5/prepare-args args ccb renv ctx)
+                    (compiled-code-emit1i! ccb LOCAL-ENV nargs ($*-src iform))
+                    (pass5/box-mutable-lvars lvars ccb))
                   0)
       (compiled-code-set-label! ccb (pass5/ensure-label ccb label))
       (let1 dbody (pass5/rec ($label-body label) ccb newenv 'tail)
@@ -4765,28 +5116,40 @@
         [embed-node ($call-proc iform)])
     (let ([nargs (length args)]
           [label ($lambda-body ($call-proc embed-node))]
+          [lvars ($lambda-lvars ($call-proc embed-node))]
           [renv-diff (list-remove-prefix ($call-renv embed-node)
                                          (reverse renv))])
       (unless renv-diff
         (errorf "[internal error] $call[jump] appeared out of context of related $call[embed] (~s vs ~s)"
                 ($call-renv embed-node) renv))
       (if (tail-context? ctx)
-        (let1 dinit (pass5/prepare-args args #f ccb renv ctx)
-          (compiled-code-emit1oi! ccb LOCAL-ENV-JUMP (length renv-diff)
-                                  (pass5/ensure-label ccb label)
-                                  ($*-src iform))
+        (let1 dinit (pass5/prepare-args args ccb renv ctx)
+          (pass5/emit-local-env-jump ccb lvars (length renv-diff)
+                                     (pass5/ensure-label ccb label)
+                                     ($*-src iform))
           (if (= nargs 0) 0 (imax dinit (+ nargs ENV_HEADER_SIZE))))
         (let1 merge-label (compiled-code-new-label ccb)
-          (compiled-code-emit1o! ccb PRE-CALL nargs merge-label)
-          (let1 dinit (pass5/prepare-args args #f ccb renv ctx)
-            (compiled-code-emit1oi! ccb LOCAL-ENV-JUMP (length renv-diff)
-                                    (pass5/ensure-label ccb label)
-                                    ($*-src iform))
+          (compiled-code-emit1oi! ccb PRE-CALL nargs merge-label ($*-src iform))
+          (let1 dinit (pass5/prepare-args args ccb renv ctx)
+            (pass5/emit-local-env-jump ccb lvars (length renv-diff)
+                                       (pass5/ensure-label ccb label)
+                                       ($*-src iform))
             (compiled-code-set-label! ccb merge-label)
             (if (= nargs 0)
               CONT_FRAME_SIZE
               (imax dinit (+ nargs ENV_HEADER_SIZE CONT_FRAME_SIZE)))))
         ))))
+
+(define (pass5/emit-local-env-jump ccb lvars env-depth label src)
+  (let loop ([lvs lvars])
+    (cond [(null? lvs)  ; no need of boxing.
+           (compiled-code-emit1oi! ccb LOCAL-ENV-JUMP env-depth label src)]
+          [(not (lvar-immutable? (car lvs))) ; need boxing
+           (compiled-code-emit1i! ccb LOCAL-ENV-SHIFT env-depth src)
+           (pass5/box-mutable-lvars lvars ccb)
+           (compiled-code-emit0oi! ccb JUMP label src)]
+          [else
+           (loop (cdr lvs))])))
 
 ;; Head-heavy call
 (define (pass5/head-heavy-call iform ccb renv ctx)
@@ -4795,14 +5158,14 @@
     (if (tail-context? ctx)
       (let* ([dproc (pass5/rec ($call-proc iform)
                                ccb renv (normal-context ctx))]
-             [dinit (pass5/prepare-args args #f ccb renv 'normal/top)])
+             [dinit (pass5/prepare-args args ccb renv 'normal/top)])
         (compiled-code-emit1i! ccb TAIL-CALL nargs ($*-src iform))
         (imax dinit (+ nargs dproc ENV_HEADER_SIZE)))
       (let1 merge-label (compiled-code-new-label ccb)
-        (compiled-code-emit1o! ccb PRE-CALL nargs merge-label)
+        (compiled-code-emit1oi! ccb PRE-CALL nargs merge-label ($*-src iform))
         (let* ([dproc (pass5/rec ($call-proc iform)
                                  ccb renv (normal-context ctx))]
-               [dinit (pass5/prepare-args args #f ccb renv 'normal/top)])
+               [dinit (pass5/prepare-args args ccb renv 'normal/top)])
           (compiled-code-emit1i! ccb CALL nargs ($*-src iform))
           (compiled-code-set-label! ccb merge-label)
           (+ CONT_FRAME_SIZE (imax dinit (+ nargs dproc ENV_HEADER_SIZE)))))
@@ -4813,13 +5176,13 @@
   (let* ([args ($call-args iform)]
          [nargs (length args)])
     (if (tail-context? ctx)
-      (let* ([dinit (pass5/prepare-args args #f ccb renv ctx)]
+      (let* ([dinit (pass5/prepare-args args ccb renv ctx)]
              [dproc (pass5/rec ($call-proc iform) ccb renv 'normal/top)])
         (compiled-code-emit1i! ccb TAIL-CALL nargs ($*-src iform))
         (imax dinit (+ nargs dproc ENV_HEADER_SIZE)))
       (let1 merge-label (compiled-code-new-label ccb)
-        (compiled-code-emit1o! ccb PRE-CALL nargs merge-label)
-        (let* ([dinit (pass5/prepare-args args #f ccb renv ctx)]
+        (compiled-code-emit1oi! ccb PRE-CALL nargs merge-label ($*-src iform))
+        (let* ([dinit (pass5/prepare-args args ccb renv ctx)]
                [dproc (pass5/rec ($call-proc iform) ccb renv 'normal/top)])
           (compiled-code-emit1i! ccb CALL nargs ($*-src iform))
           (compiled-code-set-label! ccb merge-label)
@@ -4875,6 +5238,8 @@
       (pass5/asm-nummul2 info (car args) (cadr args) ccb renv ctx)]
      [(NUMDIV2)
       (pass5/asm-numdiv2 info (car args) (cadr args) ccb renv ctx)]
+     [(LOGAND LOGIOR LOGXOR)
+      (pass5/asm-bitwise info (car insn) (car args) (cadr args) ccb renv ctx)]
      [(VEC-REF)
       (pass5/asm-vec-ref info (car args) (cadr args) ccb renv ctx)]
      [(VEC-SET)
@@ -4887,7 +5252,7 @@
       (if (tail-context? ctx)
         (pass5/asm-generic ccb insn args info renv)
         (let1 merge-label (compiled-code-new-label ccb)
-          (compiled-code-emit1o! ccb PRE-CALL 0 merge-label)
+          (compiled-code-emit0oi! ccb PRE-CALL merge-label info)
           (let1 d (pass5/asm-generic ccb insn args info renv)
             (compiled-code-set-label! ccb merge-label)
             (+ CONT_FRAME_SIZE d))))]
@@ -4898,15 +5263,13 @@
   ;; general case
   (case (length args)
     [(0) (pass5/emit-asm! ccb insn info) 0]
-    [(1)
-     (rlet1 d (pass5/rec (car args) ccb renv 'normal/top)
-       (pass5/emit-asm! ccb insn info))]
-    [(2)
-     (let1 d0 (pass5/rec (car args) ccb renv 'normal/top)
-       (compiled-code-emit-PUSH! ccb)
-       (let1 d1 (pass5/rec (cadr args) ccb renv 'normal/top)
-         (pass5/emit-asm! ccb insn info)
-         (imax d0 (+ d1 1))))]
+    [(1) (rlet1 d (pass5/rec (car args) ccb renv 'normal/top)
+           (pass5/emit-asm! ccb insn info))]
+    [(2) (let1 d0 (pass5/rec (car args) ccb renv 'normal/top)
+           (compiled-code-emit-PUSH! ccb)
+           (let1 d1 (pass5/rec (cadr args) ccb renv 'normal/top)
+             (pass5/emit-asm! ccb insn info)
+             (imax d0 (+ d1 1))))]
     [else
      (let loop ([args args] [depth 0] [cnt 0])
        (cond [(null? (cdr args))
@@ -4928,27 +5291,36 @@
 ;; Utility macros.  Assumes ccb, renv and ctx are visible.
 
 (define-macro (pass5/builtin-twoargs info code param arg0 arg1)
-  (let ((d0 (gensym))
-        (d1 (gensym)))
+  (let ([d0 (gensym)]
+        [d1 (gensym)])
     `(let1 ,d0 (pass5/rec ,arg0 ccb renv (normal-context ctx))
        (compiled-code-emit-PUSH! ccb)
        (let1 ,d1 (pass5/rec ,arg1 ccb renv 'normal/top)
-         (compiled-code-emit1i! ccb ,code ,param ,info)
-         (imax ,d0 (+ ,d1 1))))
-    ))
+         ,(if (equal? param 0)
+            `(compiled-code-emit0i! ccb ,code ,info)
+            `(compiled-code-emit1i! ccb ,code ,param ,info))
+         (imax ,d0 (+ ,d1 1))))))
 
 (define-macro (pass5/builtin-onearg info code param arg0)
-  (let ((d (gensym)))
+  (let1 d (gensym)
     `(rlet1 ,d (pass5/rec ,arg0 ccb renv (normal-context ctx))
-       (compiled-code-emit1i! ccb ,code ,param ,info))
-    ))
+       ,(if (equal? param 0)
+          `(compiled-code-emit0i! ccb ,code ,info)
+          `(compiled-code-emit1i! ccb ,code ,param ,info)))))
+
+(define-macro (pass5/builtin-onearg+operand info code param operand arg0)
+  (let1 d (gensym)
+    `(rlet1 ,d (pass5/rec ,arg0 ccb renv (normal-context ctx))
+       ,(if (equal? param 0)
+          `(compiled-code-emit0oi! ccb ,code ,operand ,info)
+          `(compiled-code-emit1oi! ccb ,code ,param ,operand ,info)))))
 
 (define-macro (pass5/builtin-nargs info code args)
   `(%pass5/builtin-nargs ccb ,info ,code ,args ccb renv))
 
 (define (%pass5/builtin-nargs ccb info code args ccb renv)
   (if (null? args)
-    (begin (compiled-code-emit1i! ccb code 0 info) 0)
+    (begin (compiled-code-emit0i! ccb code info) 0)
     (let loop ([as args] [depth 0] [cnt 0])
       (cond [(null? (cdr as))
              (let1 d (pass5/rec (car as) ccb renv 'normal/top)
@@ -5009,10 +5381,12 @@
            (integer-fits-insn-arg? ($const-value y))
            (pass5/builtin-onearg info NUMADDI ($const-value y) x))
       (and ($lref? y)
+           (lvar-immutable? ($lref-lvar y))
            (receive (depth offset) (renv-lookup renv ($lref-lvar y))
              (pass5/builtin-onearg info LREF-VAL0-NUMADD2
                                    (+ (ash offset 10) depth) x)))
       (and ($lref? x)
+           (lvar-immutable? ($lref-lvar x))
            (receive (depth offset) (renv-lookup renv ($lref-lvar x))
              (pass5/builtin-onearg info LREF-VAL0-NUMADD2
                                    (+ (ash offset 10) depth) y)))
@@ -5033,6 +5407,15 @@
 (define (pass5/asm-numdiv2 info x y ccb renv ctx)
   (pass5/builtin-twoargs info NUMDIV2 0 x y))
 
+;; if one of arg is constant, it's always x.  see builtin-inline-bitwise below.
+(define (pass5/asm-bitwise info insn x y ccb renv ctx)
+  (define lookup `((,LOGAND . ,LOGANDC)
+                   (,LOGIOR . ,LOGIORC)
+                   (,LOGXOR . ,LOGXORC)))
+  (if ($const? x)
+    (pass5/builtin-onearg+operand info (assv-ref lookup insn)
+                                  0 ($const-value x) y)
+    (pass5/builtin-twoargs info insn 0 x y)))
 
 (define (pass5/asm-vec-ref info vec k ccb renv ctx)
   (cond [(and ($const? k)
@@ -5101,13 +5484,11 @@
 ;; Emit code to evaluate expressions in args and push its result
 ;; into the stack one by one.  Returns the maximum depth of the stack.
 ;; lvars is #f for regular call sequence, or a list of lvars of the same
-;; length of args for $LET.
-(define (pass5/prepare-args args lvars ccb renv ctx)
+;; length of args for $LET or local calls.
+(define (pass5/prepare-args args ccb renv ctx)
   (if (null? args)
     0
     (let1 d (pass5/rec (car args) ccb renv (normal-context ctx))
-      (when (and lvars (> (lvar-set-count (car lvars)) 0))
-        (compiled-code-emit0! ccb BOX))
       (compiled-code-emit-PUSH! ccb)
       ;; NB: We check termination condition here.  This routine is called
       ;; lots of times, and (length args) is usually small (<=2 covers almost
@@ -5117,17 +5498,23 @@
       (if (null? (cdr args))
         d
         (let loop ([args  (cdr args)]
-                   [lvars (and lvars (cdr lvars))]
                    [depth (+ d 1)]
                    [cnt  1])
           (let1 d (pass5/rec (car args) ccb renv 'normal/top)
-            (when (and lvars (> (lvar-set-count (car lvars)) 0))
-              (compiled-code-emit0! ccb BOX))
             (compiled-code-emit-PUSH! ccb)
             (if (null? (cdr args))
               (imax depth d)
-              (loop (cdr args) (and lvars (cdr lvars))
-                    (imax depth (+ d cnt 1)) (+ cnt 1)))))))))
+              (loop (cdr args) (imax depth (+ d cnt 1)) (+ cnt 1)))))))))
+
+;; In case of $LET
+(define (pass5/box-mutable-lvars lvars ccb)
+  (let1 envsize (length lvars)
+    (let loop ([lvars lvars]
+               [k 0])
+      (unless (null? lvars)
+        (unless (lvar-immutable? (car lvars))
+          (compiled-code-emit1i! ccb BOX (- envsize k) (lvar-name (car lvars))))
+        (loop (cdr lvars) (+ k 1))))))
 
 ;;============================================================
 ;; Inliners of builtin procedures
@@ -5171,7 +5558,7 @@
  (define-cproc %procedure-inliner (proc::<procedure>)
    (setter (proc::<procedure> inliner) ::<void>
            (set! (-> proc inliner) inliner))
-   (result (?: (-> proc inliner) (-> proc inliner) '#f)))
+   (return (?: (-> proc inliner) (-> proc inliner) '#f)))
 
  (define-cproc %mark-binding-inlinable! (mod::<module> name::<symbol>) ::<void>
    (let* ([g::ScmGloc* (Scm_FindBinding mod name 0)])
@@ -5307,6 +5694,8 @@
 (define-builtin-inliner-* *  NUMMUL2  $const)
 (define-builtin-inliner-* *. NUMIMUL2 ensure-inexact-const)
 
+;; NB: If we detect exact division-by-zero case, we shouldn't fold
+;; the constant and let it be handled at runtime.  
 (define-macro (define-builtin-inliner-/ op insn const)
   `(define-builtin-inliner ,op
      (^[form cenv]
@@ -5316,13 +5705,21 @@
             (error "procedure requires at least one argument:" form)]
            [(x)
             (receive (num tree) (check-numeric-constant x cenv)
-              (if (number? num)
-                ($const (,op num))
-                ($call form ($gref (ensure-identifier ',op cenv)) `(,tree))))]
+              (if (and (number? num)
+                       ,(if (eq? insn 'NUMDIV2)
+                          `(not (eqv? num 0)) ;exact zero
+                          #t))
+                ($const (,op num)))
+                ($call form ($gref (ensure-identifier ',op cenv))
+                       `(,(or tree (,const num)))))]
            [(x y . more)
             (receive (xval xtree) (check-numeric-constant x cenv)
               (receive (yval ytree) (check-numeric-constant y cenv)
-                (if (and xval yval)
+                (if (and xval yval
+                         ,(if (eq? insn 'NUMDIV2)
+                            `(not (and (eqv? yval 0) ;exact zero
+                                       (exact? xval)))
+                            #t))
                   (if (null? more)
                     ($const (,op xval yval))
                     (inline (cons (,op xval yval) more)))
@@ -5342,6 +5739,56 @@
 (define-builtin-inliner <=  (gen-inliner-arg2 NUMLE2))
 (define-builtin-inliner >   (gen-inliner-arg2 NUMGT2))
 (define-builtin-inliner >=  (gen-inliner-arg2 NUMGE2))
+
+(define-builtin-inliner ash
+  (^[form cenv]
+    (match form
+      [(_ n cnt)
+       (receive (cnt-val cnt-tree) (check-numeric-constant cnt cenv)
+         (receive (n-val n-tree) (check-numeric-constant n cenv)
+           (cond [(and cnt-val n-val) ($const (ash n-val cnt-val))]
+                 [(and cnt-val (integer-fits-insn-arg? cnt-val))
+                  ($asm form `(,ASHI ,cnt-val) (list n-tree))]
+                 [else
+                  ($call form ($gref (ensure-identifier 'ash cenv))
+                         (list (or n-tree (pass1 n cenv))
+                               (or cnt-tree (pass1 cnt cenv))))])))]
+      [else (undefined)])))
+
+;; bitwise and, ior and xor.  we treat (op expr const) case specially.
+(define (builtin-inliner-bitwise opname op opcode unit)
+  ;; Classify the arguments to (integer) constants and non-constants.
+  ;; Integer constants are folded.  Returns cons of the folded constant
+  ;; (#f if no constant argument), and the list of iforms for the rest
+  ;; of arguments.
+  (define (classify-args args cenv)
+    (let loop ([args args] [constval #f] [iforms '()])
+      (if (null? args)
+        (cons constval iforms)
+        (receive (val tree) (check-numeric-constant (car args) cenv)
+          (if (and val (exact-integer? val))
+            (loop (cdr args) (if constval (op constval val) val) iforms)
+            (loop (cdr args) constval (cons (or tree ($const val)) iforms)))))))
+
+  (^[form cenv]
+    (match (classify-args (cdr form) cenv)
+      [(#f)         ($const unit)]
+      [(constval)   ($const constval)]
+      [(constval x) ($asm form `(,opcode) (list ($const constval) x))]
+      [(#f x y)     ($asm form `(,opcode) (list x y))]
+      ;; We fallback to ordinary procedure call in n-ary (n>2) case.
+      ;; We may unfold n-ary case to (op x (op y (op ...))) - need benchmark
+      ;; to see which is effective.
+      [(#f . args)  ($call form ($gref (ensure-identifier opname cenv)) args)]
+      [(constval . args) ($call form ($gref (ensure-identifier opname cenv))
+                                (cons ($const constval) args))])))
+
+(define-builtin-inliner logand
+  (builtin-inliner-bitwise 'logand logand LOGAND -1))
+(define-builtin-inliner logior
+  (builtin-inliner-bitwise 'logior logior LOGIOR 0))
+(define-builtin-inliner logxor
+  (builtin-inliner-bitwise 'logxor logxor LOGXOR 0))
 
 ;;--------------------------------------------------------
 ;; Inlining other operators
@@ -5460,12 +5907,25 @@
 ;; We haven't decided our base mechanism of hygienic macros,
 ;; but for the time being, we mimic explicitly renaming macro.
 
-(define (%bind-inline-er-transformer module name xformer)
-  (%attach-inline-er-transformer (global-variable-ref module name) xformer)
-  (%mark-binding-inlinable! module name)
-  name)
+(define (%bind-inline-er-transformer module name er-xformer)
+  (define macro-def-cenv (%make-cenv module '()))
+  ($ %attach-inline-transformer module name
+     (^[form cenv]
+       ;; Call the transformer with rename and compare procedure,
+       ;; just like explicit renaming macro.  However, THE CURRENT
+       ;; CODE DOES NOT IMPLEMENT PROPER SEMANTICS.  They're just
+       ;; placeholders for experiment.
+       (er-xformer form
+                   (cut ensure-identifier <> macro-def-cenv)
+                   (^[a b] (free-identifier=? (ensure-identifier a cenv)
+                                              (ensure-identifier b cenv)))))))
 
-(define (%attach-inline-er-transformer proc xformer)
+(define (%attach-inline-transformer module name xformer)
+  (define proc (global-variable-ref module name #f))
+
+  (unless proc
+    (errorf "define-compiler-macro: procedure `~s' not defined in ~s"
+            name module))
   ;; If PROC is defined by define-inline (thus have a packed IForm in
   ;; %procedure-inliner), we keep it and applies expand-inline-procedure
   ;; after the compiler macro finishes its job.
@@ -5475,15 +5935,7 @@
              inline transformers." proc))
     (set! (%procedure-inliner proc)
           (^[form cenv]
-            (let1 r
-                ;; Call the transformer with rename and compare procedure,
-                ;; just like explicit renaming macro.  However, THE CURRENT
-                ;; CODE DOES NOT IMPLEMENT PROPER SEMANTICS.  They're just
-                ;; placeholders for experiment.
-                (xformer form
-                         (cut ensure-identifier <> cenv)
-                         (^[a b] ; this is just a placeholder!
-                           (eq? (identifier->symbol a) (identifier->symbol b))))
+            (let1 r (xformer form cenv)
               (cond [(eq? form r) ; no inline operation is triggered.
                      (if (vector? orig-inliner)
                        (expand-inlined-procedure form
@@ -5491,8 +5943,99 @@
                                                  (imap (cut pass1 <> cenv)
                                                        (cdr form)))
                        (undefined))]
-                    [else (pass1 r cenv)]))))))
+                    [else (pass1 r cenv)])))))
+  (%mark-binding-inlinable! module name)
+  name)    
 
+;;============================================================
+;; Macro support basis
+;;
+
+;; Primitive transformer takes the input form, macro-definition
+;; environment, and macro-use environment.
+;;
+;; (Sexpr, Env, Env) -> Sexpr
+;;
+;; The transformer should treat the envionments as opaque data.
+;; Currently it's just Cenv's, but we may change it later.
+
+;; Internal.  The syntax (primitive-macro-transformer xformer)
+;; would be expanded to a call to this procedure.
+(define (%make-primitive-transformer xformer def-env)
+  (%make-macro-transformer (cenv-exp-name def-env)
+                           (^[form use-env]
+                             (xformer form def-env use-env))))
+
+
+;;============================================================
+;; Macro support basis
+;;
+
+;; Primitive transformer takes the input form, macro-definition
+;; environment, and macro-use environment.
+;;
+;; (Sexpr, Env, Env) -> Sexpr
+;;
+;; The transformer should treat the envionments as opaque data.
+;; Currently it's just Cenv's, but we may change it later.
+
+;; Internal.  The syntax (primitive-macro-transformer xformer)
+;; would be expanded to a call to this procedure.
+(define (%make-primitive-transformer xformer def-env)
+  (%make-macro-transformer (cenv-exp-name def-env)
+                           (^[form use-env] (xformer form def-env use-env))))
+
+;; er-renamer :: (Sym-or-id, [Id]) -> (Id, [Id])
+;; Renamer creates an identifier out of bare symbol.  The identifier is
+;; unique per macro invocation.  We keep an alist of sym & created ids
+;; during one macro invocation to guarantee that eq?-ness of the renamed
+;; identifiers.
+(define (er-renamer sym dict module env)
+  (if-let1 id (assq-ref dict sym)
+    (values id dict)
+    (let1 id (make-identifier
+              (cond [(identifier? sym) (identifier-name sym)]
+                    [(symbol? sym) sym]
+                    ;; TODO: better error message
+                    [else (error "Rename received non-symbol argument:" sym)])
+              module
+              env)
+      (values id (acons sym id dict)))))
+
+;; er-comparer :: (Sym-or-id, Sym-or-id, Env, Env) -> Bool
+(define (er-comparer a b uenv cenv)
+  (and (variable? a)
+       (variable? b)
+       (let ([a1 (cenv-lookup-variable uenv a)]
+             [b1 (cenv-lookup-variable uenv b)])
+         (or (eq? a1 b1)
+             (free-identifier=? a1 b1)))))
+
+;; xformer :: (Sexpr, (Sym -> Sym), (Sym, Sym -> Bool)) -> Sexpr
+(define (%make-er-transformer xformer def-env)
+  (define def-module (cenv-module def-env))
+  (define def-frames (cenv-frames def-env))
+  (define (expand form uenv)
+    (let1 dict '()
+      (xformer form
+               (^[sym]
+                 (receive [id dict_] (er-renamer sym dict def-module def-frames)
+                   (set! dict dict_)
+                   id))
+               (^[a b] (er-comparer a b uenv def-env)))))
+  (%make-macro-transformer (cenv-exp-name def-env) expand))
+
+;; this is called during macro expansion
+(define (%expand-er-transformer form cenv)
+  (match form
+    [(_ xformer)
+     ;; See the discussion in primitive-macro-transformer above.
+     (let1 def-env-form (if (null? (cenv-frames cenv))
+                          `(,%make-toplevel-cenv. ',(cenv-exp-name cenv))
+                          cenv)
+       `(,%make-er-transformer. ,xformer ,def-env-form))]
+    [_ (error "Invalid er-macro-transformer form:" form)]))
+     
 ;;============================================================
 ;; Utilities
 ;;
@@ -5525,16 +6068,16 @@
         [(lvar? arg) (lvar-name arg)]
         [else (error "variable required, but got:" arg)]))
 
-;; Returns GLOC if id is bound to one, or #f.  If GLOC is returned,
-;; it is always bound.
-
-(inline-stub
- (define-cproc id->bound-gloc (id::<identifier>)
-   (let* ([gloc::ScmGloc* (Scm_FindBinding (-> id module) (-> id name) 0)])
-     (if (and gloc (not (SCM_UNBOUNDP (SCM_GLOC_GET gloc))))
-       (result (SCM_OBJ gloc))
-       (result SCM_FALSE))))
- )
+;; When the compiler transforms a source ORIGINAL to CONSTRUCTED,
+;; we attach the original source info to the initial pair of the
+;; constructed source.
+(define (with-original-source constructed original)
+  (if (pair? constructed)
+    (rlet1 p (if (extended-pair? constructed)
+               constructed
+               (extended-cons (car constructed) (cdr constructed)))
+      (pair-attribute-set! p 'original original))
+    constructed))
 
 ;; GLOBAL-CALL-TYPE
 ;;
@@ -5572,8 +6115,7 @@
 
  (define-cproc global-call-type (id cenv) ::(<top> <top>)
    (let* ([mod::ScmModule* (-> (SCM_IDENTIFIER id) module)]
-          [gloc::ScmGloc* (Scm_FindBinding mod (-> (SCM_IDENTIFIER id) name) 0)]
-          )
+          [gloc::ScmGloc* (Scm_IdentifierGlobalBinding (SCM_IDENTIFIER id))])
      (set! SCM_RESULT0 '#f SCM_RESULT1 '#f)
      (when gloc
        (let* ([gval (SCM_GLOC_GET gloc)])
@@ -5584,13 +6126,7 @@
                [(and (SCM_PROCEDUREP gval)
                      (SCM_PROCEDURE_INLINER gval) ; inliner may be NULL
                      (not (SCM_FALSEP (SCM_PROCEDURE_INLINER gval)))
-                     ;; Remainder: Enable the following check after 0.9.1 release.
-                     ;; This check is required to suppress inadvertent
-                     ;; inlining of some special constructs such as case-lambda.
-                     ;; However, 0.9's runtime does not have 'inlinable' bindings,
-                     ;; thus enabling this prevents some built-in procedures
-                     ;; from being inlined.
-                     ;;(Scm_GlocInlinableP gloc)
+                     (Scm_GlocInlinableP gloc)
                      (not (SCM_VM_COMPILER_FLAG_IS_SET
                            (Scm_VM) SCM_COMPILE_NOINLINE_GLOBALS)))
                 (set! SCM_RESULT0 gval SCM_RESULT1 'inline)]
@@ -5612,22 +6148,18 @@
      ))
  )
 
-;; (define (id->bound-gloc id)
-;;   (and-let* ([gloc (find-binding (identifier-module id) (identifier-name id) #f)]
-;;              [ (gloc-bound? gloc) ])
-;;     gloc))
+;; Returns #t iff z is a keyword, or an identifier made from a keyword.
+;; TODO: We should also check iff k isn't bound to something else!
+(define (keyword-like? k)
+  (or (keyword? k)
+      (and (identifier? k) (keyword? (identifier-name k)))))
 
 (define (global-eq? var sym cenv)  ; like free-identifier=?, used in pass1.
   (and (variable? var)
-       (let1 v (cenv-lookup cenv var LEXICAL)
+       (let1 v (cenv-lookup-variable cenv var)
          (and (identifier? v)
               (eq? (identifier-name v) sym)
               (null? (identifier-env v))))))
-
-(define (bound-id=? id1 id2) ; like bound-identifier=? but only for toplevel
-  (let ([g1 (id->bound-gloc id1)]
-        [g2 (id->bound-gloc id2)])
-    (and g1 g2 (eq? (gloc-ref g1) (gloc-ref g2)))))
 
 (define (everyc proc lis c)             ;avoid closure allocation
   (or (null? lis)
@@ -5658,14 +6190,10 @@
 ;; Some C routines called from the expanded macro result.
 ;; These procedures are originally implemented in Scheme, but moved
 ;; here for efficiency.
-;; Some procedures depend on the structure defined in compile.scm,
-;; and need to be adjusted if the structure is changed.
-;; In future, precomp should be extended so that these routines can
-;; be written in compile.scm as "inlined C" code.
 (inline-stub
  ;; %imax - max for unsigned integer only, unsafe.
  (define-cproc %imax (x y)
-   (if (> (SCM_WORD x) (SCM_WORD y)) (result x) (result y)))
+   (if (> (SCM_WORD x) (SCM_WORD y)) (return x) (return y)))
 
  ;; (%map1c proc lis c) = (map (cut proc <> c) lis)
  (define-cfn map1c_cc (result data::void**) :static
@@ -5682,14 +6210,14 @@
 
  (define-cproc %map1c (proc lis c)
    (let* ([data::(.array void* [4])])
-     (cond [(SCM_NULLP lis) (result SCM_NIL)]
+     (cond [(SCM_NULLP lis) (return SCM_NIL)]
            [else
             (set! (aref data 0) proc
                   (aref data 1) SCM_NIL
                   (aref data 2) (SCM_CDR lis)
                   (aref data 3) c)
             (Scm_VMPushCC map1c_cc data 4)
-            (result (Scm_VMApply2 proc (SCM_CAR lis) c))])))
+            (return (Scm_VMApply2 proc (SCM_CAR lis) c))])))
 
  ;; (%map1cc proc lis c1 c2) = (map (cut proc <> c1 c2) lis)
  (define-cfn map1cc-cc (result (data :: void**)) :static
@@ -5707,7 +6235,7 @@
 
  (define-cproc %map1cc (proc lis c1 c2)
    (if (SCM_NULLP lis)
-     (result SCM_NIL)
+     (return SCM_NIL)
      (let* ([data::(.array void* [5])])
        (set! (aref data 0) proc
              (aref data 1) SCM_NIL
@@ -5715,7 +6243,7 @@
              (aref data 3) c1
              (aref data 4) c2)
        (Scm_VMPushCC map1cc-cc data 5)
-       (result (Scm_VMApply3 proc (SCM_CAR lis) c1 c2)))))
+       (return (Scm_VMApply3 proc (SCM_CAR lis) c1 c2)))))
 
  ;; (%map-cons lis1 lis2) = (map cons lis1 lis2)
  (define-cproc %map-cons (lis1 lis2)
@@ -5723,85 +6251,7 @@
      (while (and (SCM_PAIRP lis1) (SCM_PAIRP lis2))
        (SCM_APPEND1 h t (Scm_Cons (SCM_CAR lis1) (SCM_CAR lis2)))
        (set! lis1 (SCM_CDR lis1) lis2 (SCM_CDR lis2)))
-     (result h)))
- )
-
-;;============================================================
-;; Compiled code builder interface
-;;
-
-(inline-stub
- (define-cproc make-compiled-code-builder (reqargs::<uint16> optargs::<uint16>
-                                                             name parent intform)
-   Scm_MakeCompiledCodeBuilder)
-
- ;; CompiledCodeEmit is performance critical.  To reduce the overhead of
- ;;  argument passing, we prepare variations for specific code patterns.
- (define-cproc compiled-code-emit0!
-   (cc::<compiled-code> code::<int>) ::<void>
-   (Scm_CompiledCodeEmit cc code 0 0 '#f '#f))
-
- (define-cproc compiled-code-emit-PUSH!
-   (cc::<compiled-code>) ::<void>
-   (Scm_CompiledCodeEmit cc SCM_VM_PUSH 0 0 '#f '#f))
-
- (define-cproc compiled-code-emit-RET!
-   (cc::<compiled-code>) ::<void>
-   (Scm_CompiledCodeEmit cc SCM_VM_RET 0 0 '#f '#f))
-
- (define-cproc compiled-code-emit0o!
-   (cc::<compiled-code> code::<int> operand) ::<void>
-   (Scm_CompiledCodeEmit cc code 0 0 operand '#f))
-
- (define-cproc compiled-code-emit0i!
-   (cc::<compiled-code> code::<int> info) ::<void>
-   (Scm_CompiledCodeEmit cc code 0 0 '#f info))
-
- (define-cproc compiled-code-emit0oi!
-   (cc::<compiled-code> code::<int> operand info) ::<void>
-   (Scm_CompiledCodeEmit cc code 0 0 operand info))
-
- (define-cproc compiled-code-emit1!
-   (cc::<compiled-code> code::<int> arg0::<int>) ::<void>
-   (Scm_CompiledCodeEmit cc code arg0 0 '#f '#f))
-
- (define-cproc compiled-code-emit1o!
-   (cc::<compiled-code> code::<int> arg0::<int> operand) ::<void>
-   (Scm_CompiledCodeEmit cc code arg0 0 operand '#f))
-
- (define-cproc compiled-code-emit1i!
-   (cc::<compiled-code> code::<int> arg0::<int> info) ::<void>
-   (Scm_CompiledCodeEmit cc code arg0 0 '#f info))
-
- (define-cproc compiled-code-emit1oi!
-   (cc::<compiled-code> code::<int> arg0::<int> operand info) ::<void>
-   (Scm_CompiledCodeEmit cc code arg0 0 operand info))
-
- (define-cproc compiled-code-emit2!
-   (cc::<compiled-code> code::<int> arg0::<int> arg1::<int>) ::<void>
-   (Scm_CompiledCodeEmit cc code arg0 arg1 '#f '#f))
-
- (define-cproc compiled-code-emit2o!
-   (cc::<compiled-code> code::<int> arg0::<int> arg1::<int> operand) ::<void>
-   (Scm_CompiledCodeEmit cc code arg0 arg1 operand '#f))
-
- (define-cproc compiled-code-emit2i!
-   (cc::<compiled-code> code::<int> arg0::<int> arg1::<int> info) ::<void>
-   (Scm_CompiledCodeEmit cc code arg0 arg1 '#f info))
-
- (define-cproc compiled-code-emit2oi!
-   (cc::<compiled-code> code::<int> arg0::<int> arg1::<int> operand info)::<void>
-   (Scm_CompiledCodeEmit cc code arg0 arg1 operand info))
-
- (define-cproc compiled-code-new-label (cc::<compiled-code>)
-   Scm_CompiledCodeNewLabel)
-
- (define-cproc compiled-code-set-label! (cc::<compiled-code> label)
-   ::<void> Scm_CompiledCodeSetLabel)
-
- (define-cproc compiled-code-finish-builder (cc::<compiled-code>
-                                             maxstack::<int>)
-   ::<void> Scm_CompiledCodeFinishBuilder)
+     (return h)))
  )
 
 ;;============================================================
@@ -5813,26 +6263,15 @@
  (define-constant ENV_HEADER_SIZE  (c "SCM_MAKE_INT(ENV_SIZE(0))"))
  (define-constant CONT_FRAME_SIZE (c "SCM_MAKE_INT(CONT_FRAME_SIZE)"))
 
- (define-cproc vm-dump-code (code::<compiled-code>) ::<void>
-   Scm_CompiledCodeDump)
- (define-cproc vm-code->list (code::<compiled-code>)
-   Scm_CompiledCodeToList)
- (define-cproc vm-insn-build (insn) ::<ulong>
-   (result (cast u_long (Scm_VMInsnBuild insn))))
- (define-cproc vm-insn-code->name (opcode::<uint>)
-   (result (SCM_INTERN (Scm_VMInsnName opcode))))
- (define-cproc vm-insn-name->code (insn-name) ::<int>
-   Scm_VMInsnNameToCode)
-
  ;; Eval situation flag (for eval-when constrcut)
  (define-cproc vm-eval-situation (:optional val) ::<int>
    (let* ([vm::ScmVM* (Scm_VM)])
-     (cond [(SCM_UNBOUNDP val) (result (-> vm evalSituation))]
+     (cond [(SCM_UNBOUNDP val) (return (-> vm evalSituation))]
            [else
             (unless (SCM_INTP val) (SCM_TYPE_ERROR val "integer"))
             (let* ([prev::int (-> vm evalSituation)])
               (set! (-> vm evalSituation) (SCM_INT_VALUE val))
-              (result prev))])))
+              (return prev))])))
 
  (define-enum SCM_VM_EXECUTING)
  (define-enum SCM_VM_LOADING)
@@ -5840,18 +6279,18 @@
 
  ;; Compiler flags
  (define-cproc vm-compiler-flag-is-set? (flag::<uint>) ::<boolean>
-   (result (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) flag)))
+   (return (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) flag)))
  (define-cproc vm-compiler-flag-set! (flag::<uint>) ::<void>
    (SCM_VM_COMPILER_FLAG_SET (Scm_VM) flag))
  (define-cproc vm-compiler-flag-clear! (flag::<uint>) ::<void>
    (SCM_VM_COMPILER_FLAG_CLEAR (Scm_VM) flag))
 
  (define-cproc vm-compiler-flag-noinline-locals? () ::<boolean>
-   (result (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) SCM_COMPILE_NOINLINE_LOCALS)))
+   (return (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) SCM_COMPILE_NOINLINE_LOCALS)))
  (define-cproc vm-compiler-flag-no-post-inline? () ::<boolean>
-   (result (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) SCM_COMPILE_NO_POST_INLINE_OPT)))
+   (return (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) SCM_COMPILE_NO_POST_INLINE_OPT)))
  (define-cproc vm-compiler-flag-no-lifting? () ::<boolean>
-   (result (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) SCM_COMPILE_NO_LIFTING)))
+   (return (SCM_VM_COMPILER_FLAG_IS_SET (Scm_VM) SCM_COMPILE_NO_LIFTING)))
 
  (define-enum SCM_COMPILE_NOINLINE_GLOBALS)
  (define-enum SCM_COMPILE_NOINLINE_LOCALS)
@@ -5865,7 +6304,7 @@
  (define-enum SCM_COMPILE_ENABLE_CEXPR)
 
  ;; Set/get VM's current module info. (temporary)
- (define-cproc vm-current-module () (result (SCM_OBJ (-> (Scm_VM) module))))
+ (define-cproc vm-current-module () (return (SCM_OBJ (-> (Scm_VM) module))))
  (define-cproc vm-set-current-module (mod::<module>) ::<void>
    (set! (-> (Scm_VM) module) mod))
  )
@@ -5882,28 +6321,29 @@
 ;; Dummy macros
 ;;
 
+(define (%precomp-only name)
+  (warn "The ~a form can only be used for Scheme sources \
+         to be pre-compiled.  Since you're loading the file without \
+         pre-compilation, this form is ignored (Current module=~s)"
+        name (current-module))
+  (undefined))
+
 (select-module gauche)
 
 (declare (keep-private-macro inline-stub define-cproc declare))
 
-;; The form (inline-stub ...) allows genstub directives embedded
-;; within a Scheme source.  It is only valid when the source is
-;; pre-compiled into C.  Technically we can kick C compiler at
-;; runtime, but it'll need some more work, so we signal an error
-;; when inline-stub form is evaluated at runtime.  The precompiler
-;; (precomp) handles this form specially.
+;; Those forms are recognized by the AOT compiler (precomp), and
+;; translated to C.  They can't be evaluated at runtime, so
+;; we have dummy macros to warn.
 (define-macro (inline-stub . _)
-  (warn "The inline-stub form can only be used for Scheme sources \
-         to be pre-compiled.  Since you're loading the file without \
-         pre-compilation, the definitions and expressions in the \
-         inline-stub form are ignored.  (Current module=~s)"
-        (current-module)))
-
-;; So as define-cproc.
+  ((with-module gauche.internal %precomp-only) 'inline-stub))
 (define-macro (define-cproc . _)
-  (warn "The define-cproc form can only be used for Scheme sources \
-         to be pre-compiled.  Since you're loading the file without \
-         pre-compilation, the definition is ignored."))
+  ((with-module gauche.internal %precomp-only) 'define-cproc))
+(define-macro (define-enum . _)
+  ((with-module gauche.internal %precomp-only) 'define-enum))
+(define-macro (define-enum-conditionally . _)
+  ((with-module gauche.internal %precomp-only) 'define-enum-conditionally))
+
 
 ;; The form (declare ...) may be used in wider purpose.  For the time
 ;; being we use it in limited purposes for compilers.  In interpreter

@@ -1,7 +1,7 @@
 ;;;
 ;;; math/prime.scm - utilities related to prime numbers
 ;;;
-;;;   Copyright (c) 2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2013-2015  Shiro Kawai  <shiro@acm.org>
 ;;;   Copyright (c) 2013  @cddddr
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
@@ -39,7 +39,7 @@
   (use gauche.generator)
   (use gauche.sequence)
   (use gauche.threads)
-  (use util.sparse)
+  (use data.sparse)
   (use util.match)
   (export primes *primes* reset-primes
           small-prime? *small-prime-bound*
@@ -83,7 +83,7 @@
           (let1 i (- (take-first-term (integer->index (* p p)) p start-index)
                      start-index)
             (u8vector-multi-copy! bytevec i p *sieve-filler*))
-	  (sieve! qs))))))
+          (sieve! qs))))))
 
 (define (bytevec->generator bytevec start)
   (let1 i 0

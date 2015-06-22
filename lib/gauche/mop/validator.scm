@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche/mop/validator.scm - validator slot option
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -40,26 +40,26 @@
   ())
 
 (define-method compute-get-n-set ((class <validator-meta>) slot)
-  (let ((pre  (slot-definition-option slot :validator #f))
-        (post (slot-definition-option slot :observer #f)))
+  (let ([pre  (slot-definition-option slot :validator #f)]
+        [post (slot-definition-option slot :observer #f)])
     (if (or pre post)
-        (let* ((acc (compute-slot-accessor class slot (next-method)))
-               (getter (lambda (o) (slot-ref-using-accessor o acc)))
-               (bound? (lambda (o) (slot-bound-using-accessor? o acc)))
-               (setter (cond ((and pre post)
-                              (lambda (o v)
-                                (slot-set-using-accessor! o acc (pre o v))
-                                (post o (slot-ref-using-accessor o acc))))
-                             (pre
-                              (lambda (o v)
-                                (slot-set-using-accessor! o acc (pre o v))))
-                             (else
-                              (lambda (o v)
-                                (slot-set-using-accessor! o acc v)
-                                (post o (slot-ref-using-accessor o acc)))))))
-          ;; the last #t enables initialization by :initform etc.
-          (list getter setter bound? #t))
-        (next-method))))
+      (let* ([acc (compute-slot-accessor class slot (next-method))]
+             [getter (^o (slot-ref-using-accessor o acc))]
+             [bound? (^o (slot-bound-using-accessor? o acc))]
+             [setter (cond [(and pre post)
+                            (^[o v]
+                              (slot-set-using-accessor! o acc (pre o v))
+                              (post o (slot-ref-using-accessor o acc)))]
+                           [pre
+                            (^[o v]
+                              (slot-set-using-accessor! o acc (pre o v)))]
+                           [else
+                            (^[o v]
+                              (slot-set-using-accessor! o acc v)
+                              (post o (slot-ref-using-accessor o acc)))])])
+        ;; the last #t enables initialization by :initform etc.
+        (list getter setter bound? #t))
+      (next-method))))
 
 ;; convenience base class.  you can either inherit <validator-mixin>,
 ;; or specifying :metaclass <validator-meta> to your class.

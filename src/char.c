@@ -1,7 +1,7 @@
 /*
  * char.c - character and character set operations
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -79,10 +79,14 @@ int Scm_SupportedCharacterEncodingP(const char *encoding)
 }
 
 /* '0' -> 0, 'a' -> 10, etc.
-   Radix is assumed in the range [2, 36] */
-int Scm_DigitToInt(ScmChar ch, int radix)
+   Radix is assumed in the range [2, 36] if non-extended,
+   [2, 10] if extended.
+   'Extended' means we recognize not only ASCII but all Nd characters.
+*/
+int Scm_DigitToInt(ScmChar ch, int radix, int extended)
 {
     if (ch < '0') return -1;
+    if (radix < 2) return -1;
     if (radix <= 10) {
         if (ch < '0' + radix) return (ch - '0');
     } else {
@@ -92,18 +96,27 @@ int Scm_DigitToInt(ScmChar ch, int radix)
         if (ch < 'a') return -1;
         if (ch < 'a' + radix - 10) return (ch - 'a' + 10);
     }
-    return -1;
+    if (extended && ch > 0x80 && radix <= 10) {
+        ScmChar ucschar = Scm_CharToUcs(ch);
+        int val = ucs_digit_value(ucschar);
+        if (val < 0 || val >= radix) return -1;
+        return val;
+    } else {
+        return -1;
+    }
 }
 
-ScmChar Scm_IntToDigit(int n, int radix)
+ScmChar Scm_IntToDigit(int n, int radix, int basechar1, int basechar2)
 {
     if (n < 0) return SCM_CHAR_INVALID;
+    if (basechar1 == 0) basechar1 = '0';
+    if (basechar2 == 0) basechar2 = 'a';
     if (radix <= 10) {
-        if (n < radix) return (ScmChar)(n + '0');
+        if (n < radix) return (ScmChar)(n + basechar1);
         else return SCM_CHAR_INVALID;
     } else {
-        if (n < 10) return (ScmChar)(n + '0');
-        if (n < radix) return (ScmChar)(n - 10 + 'a');
+        if (n < 10) return (ScmChar)(n + basechar1);
+        if (n < radix) return (ScmChar)(n - 10 + basechar2);
         else return SCM_CHAR_INVALID;
     }
 }
@@ -123,6 +136,8 @@ void Scm__InstallCharconvHooks(ScmChar (*u2c)(int), int (*c2u)(ScmChar))
     char2ucs_hook = c2u;
 }
 
+/* NB: These two variables are no longer used, but kept here for the
+   ABI compatibility.  Remove them on 1.0 release. */
 ScmChar (*Scm_UcsToCharHook)(int ucs4) = NULL;
 int (*Scm_CharToUcsHook)(ScmChar ch) = NULL;
 
@@ -144,8 +159,16 @@ ScmChar Scm_UcsToChar(int n)
     }
     return ucs2char_hook(n);
 #else
+    /* Encoding == 'none'.  It would be safer to reject anything beyond
+       0xff, but it prevents 'none' gosh from reading any source files that
+       have escaped characters in that range, even the section is cond-expanded.
+       That's awfully incovenient, so we use a substitution character '?' here,
+       relying the programmer to properly conditionalize the code.
+       We plan to drop 'none' encoding support in 1.0, so this kludge is
+       just a temporary measure.
+    */
     if (n < 0x100) return (ScmChar)n; /* ISO8859-1 */
-    else return SCM_CHAR_INVALID;
+    else return (ScmChar)'?';
 #endif
 }
 
@@ -221,8 +244,6 @@ static void charset_print(ScmObj obj, ScmPort *out, ScmWriteContext *ctx)
 {
     int prev, code, first = TRUE;
     ScmCharSet *cs = SCM_CHAR_SET(obj);
-    ScmTreeIter iter;
-    ScmDictEntry *e;
 
     Scm_Printf(out, "#[");
     for (prev = -1, code = 0; code < SCM_CHAR_SET_SMALL_CHARS; code++) {
@@ -245,6 +266,8 @@ static void charset_print(ScmObj obj, ScmPort *out, ScmWriteContext *ctx)
             charset_print_ch(out, code-1, FALSE);
         }
     }
+    ScmTreeIter iter;
+    ScmDictEntry *e;
     Scm_TreeIterInit(&iter, &cs->large, NULL);
     while ((e = Scm_TreeIterNext(&iter)) != NULL) {
         charset_print_ch(out, (int)e->key, FALSE);
@@ -288,62 +311,6 @@ ScmObj Scm_CharSetCopy(ScmCharSet *src)
     return SCM_OBJ(dst);
 }
 
-/* Helper functions to read the escaped character code sequence, such as
-   \xXX, \uXXXX, or \UXXXXXXXX.
-   Scm_ReadXdigitsFromString reads from char* buffer (note that hex digits
-   consist of single-byte characters in any encoding, we don't need to
-   do the cumbersome multibyte handling).  Scm_ReadXdigitsFromPort reads
-   from the port.  Both should be called after the prefix 'x', 'u' or 'U'
-   char is read.  NDIGITS specifies either exact number of digits to be
-   expected or maximum number of digits. */
-
-/* If nextbuf == NULL, ndigits specifies exact # of digits.  Returns
-   SCM_CHAR_INVALID if there are less digits.  Otherwise, ndigis specifies
-   max # of digits, and the ptr to the next char is stored in nextbuf. */
-ScmChar Scm_ReadXdigitsFromString(const char *buf, int ndigits,
-                                  const char **nextbuf)
-{
-    int i, val = 0;
-    for (i=0; i<ndigits; i++) {
-        if (!isxdigit(buf[i])) {
-            if (nextbuf == NULL) return SCM_CHAR_INVALID;
-            else {
-                *nextbuf = buf;
-                return val;
-            }
-        }
-        val = val * 16 + Scm_DigitToInt(buf[i], 16);
-    }
-    return (ScmChar)val;
-}
-
-/* ndigits specifies exact # of digits.  read chars are stored in buf
-   so that they can be used in the error message.  Caller must provide
-   a sufficient space for buf. */
-ScmChar Scm_ReadXdigitsFromPort(ScmPort *port, int ndigits,
-                                char *buf, int *nread)
-{
-    int i, c, val = 0, dig;
-
-    for (i = 0; i < ndigits; i++) {
-        SCM_GETC(c, port);
-        if (c == EOF) break;
-        dig = Scm_DigitToInt(c, 16);
-        if (dig < 0) {
-            SCM_UNGETC(c, port);
-            break;
-        }
-        buf[i] = (char)c;       /* we know c is single byte char here. */
-        val = val * 16 + dig;
-    }
-    *nread = i;
-    if (i < ndigits) { /* error */
-        return SCM_CHAR_INVALID;
-    } else {
-        return (ScmChar)val;
-    }
-}
-
 /*-----------------------------------------------------------------
  * Comparison
  */
@@ -375,8 +342,6 @@ int Scm_CharSetEq(ScmCharSet *x, ScmCharSet *y)
 /* whether x <= y */
 int Scm_CharSetLE(ScmCharSet *x, ScmCharSet *y)
 {
-    ScmTreeIter xi;
-    ScmDictEntry *xe, *ye, *yl, *yh;
     if (!Scm_BitsIncludes(y->small, x->small, 0, SCM_CHAR_SET_SMALL_CHARS))
         return FALSE;
     /* For each range of X, check if it is fully contained by a range of Y.
@@ -388,6 +353,8 @@ int Scm_CharSetLE(ScmCharSet *x, ScmCharSet *y)
      *         xk<---------->xv
      *    yk<------------------>yv
      */
+    ScmTreeIter xi;
+    ScmDictEntry *xe, *ye, *yl, *yh;
     Scm_TreeIterInit(&xi, &x->large, NULL);
     for (xe = Scm_TreeIterNext(&xi); xe; xe = Scm_TreeIterNext(&xi)) {
         ye = Scm_TreeCoreClosestEntries(&y->large, xe->key, &yl, &yh);
@@ -451,11 +418,10 @@ ScmObj Scm_CharSetAddRange(ScmCharSet *cs, ScmChar from, ScmChar to)
 
 ScmObj Scm_CharSetAdd(ScmCharSet *dst, ScmCharSet *src)
 {
-    ScmTreeIter iter;
-    ScmDictEntry *e;
-
     if (dst == src) return SCM_OBJ(dst);  /* precaution */
 
+    ScmTreeIter iter;
+    ScmDictEntry *e;
     Scm_BitsOperate(dst->small, SCM_BIT_IOR, dst->small, src->small,
                     0, SCM_CHAR_SET_SMALL_CHARS);
     Scm_TreeIterInit(&iter, &src->large, NULL);
@@ -467,12 +433,11 @@ ScmObj Scm_CharSetAdd(ScmCharSet *dst, ScmCharSet *src)
 
 ScmObj Scm_CharSetComplement(ScmCharSet *cs)
 {
-    int last;
     ScmDictEntry *e, *n;
 
     Scm_BitsOperate(cs->small, SCM_BIT_NOT1, cs->small, NULL,
                     0, SCM_CHAR_SET_SMALL_CHARS);
-    last = SCM_CHAR_SET_SMALL_CHARS-1;
+    int last = SCM_CHAR_SET_SMALL_CHARS-1;
     /* we can't use treeiter, since we modify the tree while traversing it. */
     while ((e = Scm_TreeCoreNextEntry(&cs->large, last)) != NULL) {
         Scm_TreeCoreSearch(&cs->large, e->key, SCM_DICT_DELETE);
@@ -492,23 +457,20 @@ ScmObj Scm_CharSetComplement(ScmCharSet *cs)
 /* Make CS case-insensitive. */
 ScmObj Scm_CharSetCaseFold(ScmCharSet *cs)
 {
-    ScmChar c, uch, lch;
-    ScmTreeIter iter;
-    ScmDictEntry *e;
-    int ch;
-
-    for (ch='a'; ch<='z'; ch++) {
+    for (int ch='a'; ch<='z'; ch++) {
         if (MASK_ISSET(cs, ch) || MASK_ISSET(cs, (ch-('a'-'A')))) {
             MASK_SET(cs, ch);
             MASK_SET(cs, (ch-('a'-'A')));
         }
     }
 
+    ScmTreeIter iter;
+    ScmDictEntry *e;
     Scm_TreeIterInit(&iter, &cs->large, NULL);
     while ((e = Scm_TreeIterNext(&iter)) != NULL) {
-        for (c = e->key; c <= e->value; c++) {
-            uch = Scm_CharUpcase(c);
-            lch = Scm_CharDowncase(c);
+        for (ScmChar c = e->key; c <= e->value; c++) {
+            ScmChar uch = Scm_CharUpcase(c);
+            ScmChar lch = Scm_CharDowncase(c);
             Scm_CharSetAddRange(cs, uch, uch);
             Scm_CharSetAddRange(cs, lch, lch);
         }
@@ -539,27 +501,28 @@ int Scm_CharSetContains(ScmCharSet *cs, ScmChar c)
 /* returns a list of ranges contained in the charset */
 ScmObj Scm_CharSetRanges(ScmCharSet *cs)
 {
-    ScmObj h = SCM_NIL, t = SCM_NIL, cell;
+    ScmObj h = SCM_NIL, t = SCM_NIL;
     int ind, begin = 0, prev = FALSE;
-    ScmTreeIter iter;
-    ScmDictEntry *e;
 
     for (ind = 0; ind < SCM_CHAR_SET_SMALL_CHARS; ind++) {
         int bit = MASK_ISSET(cs, ind);
         if (!prev && bit) begin = ind;
         if (prev && !bit) {
-            cell = Scm_Cons(SCM_MAKE_INT(begin), SCM_MAKE_INT(ind-1));
+            ScmObj cell = Scm_Cons(SCM_MAKE_INT(begin), SCM_MAKE_INT(ind-1));
             SCM_APPEND1(h, t, cell);
         }
         prev = bit;
     }
     if (prev) {
-        cell = Scm_Cons(SCM_MAKE_INT(begin), SCM_MAKE_INT(ind-1));
+        ScmObj cell = Scm_Cons(SCM_MAKE_INT(begin), SCM_MAKE_INT(ind-1));
         SCM_APPEND1(h, t, cell);
     }
+
+    ScmTreeIter iter;
+    ScmDictEntry *e;
     Scm_TreeIterInit(&iter, &cs->large, NULL);
     while ((e = Scm_TreeIterNext(&iter)) != NULL) {
-        cell = Scm_Cons(SCM_MAKE_INT(e->key), SCM_MAKE_INT(e->value));
+        ScmObj cell = Scm_Cons(SCM_MAKE_INT(e->key), SCM_MAKE_INT(e->value));
         SCM_APPEND1(h, t, cell);
     }
     return h;
@@ -567,9 +530,8 @@ ScmObj Scm_CharSetRanges(ScmCharSet *cs)
 
 void Scm_CharSetDump(ScmCharSet *cs, ScmPort *port)
 {
-    int i;
     Scm_Printf(port, "CharSet %p\nmask:", cs);
-    for (i=0; i<SCM_BITS_NUM_WORDS(SCM_CHAR_SET_SMALL_CHARS); i++) {
+    for (int i=0; i<SCM_BITS_NUM_WORDS(SCM_CHAR_SET_SMALL_CHARS); i++) {
 #if SIZEOF_LONG == 4
         Scm_Printf(port, "[%08lx]", cs->small[i]);
 #else
@@ -584,35 +546,6 @@ void Scm_CharSetDump(ScmCharSet *cs, ScmPort *port)
 /*-----------------------------------------------------------------
  * Reader
  */
-
-/* Read \x, \u, \U escape sequence in the charset spec. */
-static ScmChar read_charset_xdigits(ScmPort *port, int ndigs, int key)
-{
-    char buf[8];
-    int nread;
-    ScmChar r;
-    SCM_ASSERT(ndigs <= 8);
-    r = Scm_ReadXdigitsFromPort(port, ndigs, buf, &nread);
-    if (r == SCM_CHAR_INVALID) {
-        ScmDString ds;
-        int c, i;
-        /* skip chars to the end of regexp, so that the reader will read
-           after the erroneous string */
-        for (;;) {
-            SCM_GETC(c, port);
-            if (c == EOF || c == ']') break;
-            if (c == '\\') SCM_GETC(c, port);
-        }
-        /* construct an error message */
-        Scm_DStringInit(&ds);
-        Scm_DStringPutc(&ds, '\\');
-        Scm_DStringPutc(&ds, key);
-        for (i=0; i<nread; i++) Scm_DStringPutc(&ds, (unsigned char)buf[i]);
-        Scm_Error("Bad '\\%c' escape sequence in a char-set literal: %s",
-                  key, Scm_DStringGetz(&ds));
-    }
-    return r;
-}
 
 /* Parse regexp-style character set specification (e.g. [a-zA-Z]).
    Assumes the opening bracket is already read.
@@ -630,24 +563,151 @@ static ScmChar read_charset_xdigits(ScmPort *port, int ndigs, int key)
    whether complement character (caret in the beginning) appeared or not.
    In that case, the returned charset is not complemented. */
 
-static ScmObj read_predef_charset(ScmPort*, ScmObj*, int);
+static ScmObj read_predef_charset(const char**, int);
+static int read_charset_syntax(ScmPort *input, int bracket_syntax,
+                               ScmDString *buf, int *complementp);
 
 ScmObj Scm_CharSetRead(ScmPort *input, int *complement_p,
                        int error_p, int bracket_syntax)
 {
+    int complement = FALSE;
+    ScmDString buf;
+
+    Scm_DStringInit(&buf);
+    if (read_charset_syntax(input, bracket_syntax, &buf, &complement)) {
+        int lastchar = -1, inrange = FALSE, moreset_complement = FALSE;
+        ScmCharSet *set = SCM_CHAR_SET(Scm_MakeEmptyCharSet());
+        int size;
+        const char *cp = Scm_DStringPeek(&buf, &size, NULL);
+        const char *end = cp + size;
+
+        while (cp < end) {
+            ScmChar ch;
+            SCM_CHAR_GET(cp, ch);
+            if (ch == SCM_CHAR_INVALID) goto err;
+            cp += SCM_CHAR_NBYTES(ch);
+
+            ScmObj moreset;
+            switch (ch) {
+            case '-':
+                if (inrange) goto ordchar;
+                inrange = TRUE;
+                continue;
+            case '\\':
+                if (cp >= end) goto err;
+                SCM_CHAR_GET(cp, ch);
+                if (ch == SCM_CHAR_INVALID) goto err;
+                cp += SCM_CHAR_NBYTES(ch);
+                switch (ch) {
+                case 'a': ch = 7; goto ordchar;
+                case 'b': ch = 8; goto ordchar;
+                case 'n': ch = '\n'; goto ordchar;
+                case 'r': ch = '\r'; goto ordchar;
+                case 't': ch = '\t'; goto ordchar;
+                case 'f': ch = '\f'; goto ordchar;
+                case 'e': ch = 0x1b; goto ordchar;
+                case 'x': case 'u': case 'U':
+                    ch = Scm_ReadXdigitsFromString(cp, end-cp, ch,
+                                                   Scm_ReaderLexicalMode(),
+                                                   TRUE, &cp);
+                    if (ch == SCM_CHAR_INVALID) goto err;
+                    goto ordchar;
+                case 'd':
+                    moreset_complement = FALSE;
+                    moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_DIGIT);
+                    break;
+                case 'D':
+                    moreset_complement = TRUE;
+                    moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_DIGIT);
+                    break;
+                case 's':
+                    moreset_complement = FALSE;
+                    moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_SPACE);
+                    break;
+                case 'S':
+                    moreset_complement = TRUE;
+                    moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_SPACE);
+                    break;
+                case 'w':
+                    moreset_complement = FALSE;
+                    moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_WORD);
+                    break;
+                case 'W':
+                    moreset_complement = TRUE;
+                    moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_WORD);
+                    break;
+                default:
+                    goto ordchar;
+                }
+                if (moreset_complement) {
+                    moreset = Scm_CharSetComplement(SCM_CHAR_SET(Scm_CharSetCopy(SCM_CHAR_SET(moreset))));
+                }
+                Scm_CharSetAdd(set, SCM_CHAR_SET(moreset));
+                continue;
+            case '[':
+                moreset = read_predef_charset(&cp, error_p);
+                if (!SCM_CHAR_SET_P(moreset)) goto err;
+                Scm_CharSetAdd(set, SCM_CHAR_SET(moreset));
+                continue;
+            ordchar:
+            default:
+                if (inrange) {
+                    if (lastchar < 0) {
+                        Scm_CharSetAddRange(set, '-', '-');
+                        Scm_CharSetAddRange(set, ch, ch);
+                        lastchar = ch;
+                    } else {
+                        Scm_CharSetAddRange(set, lastchar, ch);
+                        lastchar = -1;
+                    }
+                    inrange = FALSE;
+                } else {
+                    Scm_CharSetAddRange(set, ch, ch);
+                    lastchar = ch;
+                }
+                continue;
+            }
+            break;
+        }
+        if (inrange) {
+            Scm_CharSetAddRange(set, '-', '-');
+            if (lastchar >= 0) Scm_CharSetAddRange(set, lastchar, lastchar);
+        }
+        if (complement_p) {
+            *complement_p = complement;
+            return SCM_OBJ(set);
+        } else {
+            if (complement) Scm_CharSetComplement(set);
+            return SCM_OBJ(set);
+        }
+    }
+  err:
+    if (error_p) {
+        /* TODO: We should deal with the case when input contains \0 */
+        Scm_Error("Invalid charset syntax [%s%s...",
+                  complement? "^" : "",
+                  Scm_DStringPeek(&buf, NULL, NULL));
+    }
+    return SCM_FALSE;
+}
+
+/* Read till the end of char-set syntax and store the chars in BUF.
+   The surrounding brackets are not stored.  The complementing caret
+   ('^' right after opening '[') isn't stored either, but *complementp
+   holds whether it appeared or not.
+   Returns TRUE on success.
+ */
+int read_charset_syntax(ScmPort *input, int bracket_syntax, ScmDString *buf,
+                        int *complementp)
+{
 #define REAL_BEGIN 1
 #define CARET_BEGIN 2
-    int begin = REAL_BEGIN, complement = FALSE;
-    int lastchar = -1, inrange = FALSE, moreset_complement = FALSE;
-    ScmCharSet *set = SCM_CHAR_SET(Scm_MakeEmptyCharSet());
-    ScmObj moreset;
-    ScmObj chars = SCM_NIL;
-    ScmChar ch = 0;
+    int begin = REAL_BEGIN, complement = FALSE, brackets = 0;
 
     for (;;) {
+        int ch;
         SCM_GETC(ch, input);
-        if (ch == EOF) goto err;
-        chars = Scm_Cons(SCM_MAKE_CHAR(ch), chars);
+        if (ch == EOF) return FALSE;
 
         if (begin == REAL_BEGIN && ch == '^') {
             complement = TRUE;
@@ -655,133 +715,43 @@ ScmObj Scm_CharSetRead(ScmPort *input, int *complement_p,
             continue;
         }
         if (bracket_syntax && begin && ch == ']') {
-            Scm_CharSetAddRange(set, ch, ch);
-            lastchar = ch;
             begin = FALSE;
+            Scm_DStringPutc(buf, ch);
             continue;
         }
+        if (ch == ']' && brackets <= 0) break;
         begin = FALSE;
 
+        Scm_DStringPutc(buf, ch);
+
         switch (ch) {
-        case '-':
-            if (inrange) goto ordchar;
-            inrange = TRUE;
-            continue;
-        case ']':
-            if (inrange) {
-                if (lastchar >= 0) {
-                    Scm_CharSetAddRange(set, lastchar, lastchar);
-                    Scm_CharSetAddRange(set, '-', '-');
-                } else {
-                    Scm_CharSetAddRange(set, '-', '-');
-                }
-            }
-            break;
+        case ']': brackets--; break;
+        case '[': brackets++; break;
         case '\\':
             SCM_GETC(ch, input);
-            if (ch == SCM_CHAR_INVALID) goto err;
-            chars = Scm_Cons(SCM_MAKE_CHAR(ch), chars);
-            switch (ch) {
-            case 'a': ch = 7; goto ordchar;
-            case 'b': ch = 8; goto ordchar;
-            case 'n': ch = '\n'; goto ordchar;
-            case 'r': ch = '\r'; goto ordchar;
-            case 't': ch = '\t'; goto ordchar;
-            case 'f': ch = '\f'; goto ordchar;
-            case 'e': ch = 0x1b; goto ordchar;
-            case 'x':
-                ch = read_charset_xdigits(input, 2, 'x'); goto ordchar;
-            case 'u':
-                ch = Scm_UcsToChar(read_charset_xdigits(input, 4, 'u'));
-                goto ordchar;
-            case 'U':
-                ch = Scm_UcsToChar(read_charset_xdigits(input, 8, 'U'));
-                goto ordchar;
-            case 'd':
-                moreset_complement = FALSE;
-                moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_DIGIT);
-                break;
-            case 'D':
-                moreset_complement = TRUE;
-                moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_DIGIT);
-                break;
-            case 's':
-                moreset_complement = FALSE;
-                moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_SPACE);
-                break;
-            case 'S':
-                moreset_complement = TRUE;
-                moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_SPACE);
-                break;
-            case 'w':
-                moreset_complement = FALSE;
-                moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_WORD);
-                break;
-            case 'W':
-                moreset_complement = TRUE;
-                moreset = Scm_GetStandardCharSet(SCM_CHAR_SET_WORD);
-                break;
-            default:
-                goto ordchar;
-            }
-            if (moreset_complement) {
-                moreset = Scm_CharSetComplement(SCM_CHAR_SET(Scm_CharSetCopy(SCM_CHAR_SET(moreset))));
-            }
-            Scm_CharSetAdd(set, SCM_CHAR_SET(moreset));
-            continue;
-        case '[':
-            moreset = read_predef_charset(input, &chars, error_p);
-            if (!SCM_CHAR_SET_P(moreset)) goto err;
-            Scm_CharSetAdd(set, SCM_CHAR_SET(moreset));
-            continue;
-        ordchar:
-        default:
-            if (inrange) {
-                if (lastchar < 0) {
-                    Scm_CharSetAddRange(set, '-', '-');
-                    Scm_CharSetAddRange(set, ch, ch);
-                    lastchar = ch;
-                } else {
-                    Scm_CharSetAddRange(set, lastchar, ch);
-                    lastchar = -1;
-                }
-                inrange = FALSE;
-            } else {
-                Scm_CharSetAddRange(set, ch, ch);
-                lastchar = ch;
-            }
-            continue;
+            if (ch == EOF) return FALSE;
+            Scm_DStringPutc(buf, ch);
+            break;
         }
-        break;
     }
-    if (complement_p) {
-        *complement_p = complement;
-        return SCM_OBJ(set);
-    } else {
-        if (complement) Scm_CharSetComplement(set);
-        return SCM_OBJ(set);
-    }
-  err:
-    if (error_p) {
-        Scm_Error("Invalid charset syntax [%A",
-                  Scm_ListToString(Scm_ReverseX(chars)));
-    }
-    return SCM_FALSE;
+    *complementp = complement;
+    return TRUE;
 }
+
 
 /* Read posix [:alpha:] etc.  The first '[' is already read.
    Return #f on error if errorp is FALSE.
    Set reverse list of read chars in *chars */
 #define MAX_CHARSET_NAME_LEN  10
-ScmObj read_predef_charset(ScmPort *input, ScmObj *chars, int error_p)
+ScmObj read_predef_charset(const char **cp, int error_p)
 {
     int i;
     char name[MAX_CHARSET_NAME_LEN];
-    ScmChar ch;
     for (i=0; i<MAX_CHARSET_NAME_LEN; i++) {
-        SCM_GETC(ch, input);
+        ScmChar ch;
+        SCM_CHAR_GET(*cp, ch);
         if (ch == SCM_CHAR_INVALID) return SCM_FALSE;
-        *chars = Scm_Cons(SCM_MAKE_CHAR(ch), *chars);
+        *cp += SCM_CHAR_NBYTES(ch);
         if (!SCM_CHAR_ASCII_P(ch)) break;
         if (ch != ']') {
             name[i] = (char)ch;
@@ -874,11 +844,10 @@ const ScmCharCaseMap *Scm__CharCaseMap(ScmChar ch,
 {
     if (ch < 0x10000) {
         int subtable = casemap_000[(ch >> 8) & 0xff];
-        unsigned short cmap;
-
         if (subtable == 255) return &casemap_identity;
 
-        cmap = casemap_subtable[subtable][(unsigned char)(ch & 0xff)];
+        unsigned short cmap =
+                casemap_subtable[subtable][(unsigned char)(ch & 0xff)];
         if (cmap == SCM_CHAR_NO_CASE_MAPPING) return &casemap_identity;
         if (cmap & 0x8000) {
             /* mapping is extended. */
@@ -971,11 +940,10 @@ ScmChar Scm_CharTitlecase(ScmChar ch)
 ScmChar Scm_CharFoldcase(ScmChar ch)
 {
     ScmCharCaseMap cm;
-    const ScmCharCaseMap *pcm;
 #if defined(GAUCHE_CHAR_ENCODING_EUC_JP) || defined(GAUCHE_CHAR_ENCODING_SJIS)
     if (Scm__CharInUnicodeP(ch)) {
         ScmChar ucs = (ScmChar)Scm_CharToUcs(ch);
-        pcm = Scm__CharCaseMap(ucs, &cm, FALSE);
+        const ScmCharCaseMap *pcm = Scm__CharCaseMap(ucs, &cm, FALSE);
         if (pcm->to_lower_simple == 0 && pcm->to_upper_simple == 0) {
             /* we don't have case folding */
             return ch;
@@ -996,7 +964,7 @@ ScmChar Scm_CharFoldcase(ScmChar ch)
            U+0131 Turkish i (LATIN SMALL LETTER DOTLESS I) */
         return ch;
     }
-    pcm = Scm__CharCaseMap(ch, &cm, FALSE);
+    const ScmCharCaseMap *pcm = Scm__CharCaseMap(ch, &cm, FALSE);
     if (pcm->to_lower_simple == 0 && pcm->to_upper_simple == 0) {
         /* we don't have case folding */
         return ch;
@@ -1026,15 +994,13 @@ static ScmInternalMutex predef_charsets_mutex;
 
 static void install_charsets(void)
 {
-    int i, code;
-
     SCM_INTERNAL_MUTEX_LOCK(predef_charsets_mutex);
 
 #define CS(n)  predef_charsets[n]
-    for (i = 0; i < SCM_CHAR_SET_NUM_PREDEFINED_SETS; i++) {
+    for (int i = 0; i < SCM_CHAR_SET_NUM_PREDEFINED_SETS; i++) {
         CS(i) = SCM_CHAR_SET(Scm_MakeEmptyCharSet());
     }
-    for (code = 0; code < SCM_CHAR_SET_SMALL_CHARS; code++) {
+    for (int code = 0; code < SCM_CHAR_SET_SMALL_CHARS; code++) {
         if (isalnum(code)) MASK_SET(CS(SCM_CHAR_SET_ALNUM), code);
         if (isalpha(code)) MASK_SET(CS(SCM_CHAR_SET_ALPHA), code);
         if (iscntrl(code)) MASK_SET(CS(SCM_CHAR_SET_CNTRL), code);

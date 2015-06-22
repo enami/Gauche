@@ -331,7 +331,7 @@
 
 ;; let-keywords* combined with syntax rules
 (define-syntax lambda++
-  (syntax-rules ()
+  (syntax-rules (:key)
     ((lambda++ "sub" () (margs ...) kargs . body)
      (lambda (margs ... . rest)
        (let-keywords* rest kargs
@@ -465,7 +465,7 @@
   (for-each (lambda (arg&exp)
               (let [(args (car arg&exp))
                     (exp  (cdr arg&exp))]
-                (test* #`"case-lambda ,sig ,(length args)" exp
+                (test* #"case-lambda ~sig ~(length args)" exp
                        (apply fn args))))
             arg&exp))
 
@@ -542,6 +542,8 @@
   (gen-1arg-test "generator-for-each" "a b c d e" '(e d c b a)
                  (cut generator-for-each (^v (push! r v)) read)
                  (^_ r)))
+(gen-1arg-test "generator-find" "2 4 0 8 3 6 9" 3
+               (cut generator-find odd? read))
 
 (define (gen-2arg-test name input1 input2 expect proc :optional (wrap identity))
   (test* (format "~a, 2 args" name) expect

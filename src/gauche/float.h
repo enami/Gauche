@@ -1,7 +1,7 @@
 /*
  * float.h - auxilirary floating-point number support
  *
- *   Copyright (c) 2007-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2007-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -75,7 +75,7 @@ typedef double          ScmLongDouble;
 #endif
 
 /* NaN and Infinities.  The following works for most Unix platforms w/gcc.
-   However, MSVC requires a different treatment. */
+   However, Windows require a different treatment. */
 #ifndef SCM_DBL_POSITIVE_INFINITY
 #define SCM_DBL_POSITIVE_INFINITY  (1.0/0.0)
 #endif
@@ -117,7 +117,7 @@ extern unsigned int __cdecl _controlfp(unsigned int, unsigned int);
 #define SCM_FP_ENSURE_DOUBLE_PRECISION_END() \
       _controlfp(old_fpc_val__, _MCW_PC); }
 
-#elif defined(_FPU_GETCW)       /* linux */
+#elif defined(_FPU_GETCW) && defined(_FPU_EXTENDED) /* linux x86 */
 
 #define SCM_FP_ENSURE_DOUBLE_PRECISION_BEGIN()        \
     { fpu_control_t old_fpc_val__, new_fpc_val__;     \
@@ -141,6 +141,18 @@ extern unsigned int __cdecl _controlfp(unsigned int, unsigned int);
     } while(0)
     
 #define SCM_FP_ENSURE_DOUBLE_PRECISION_END()
+
+#elif defined(__NetBSD__) && defined(__i386__) && defined(HAVE_FPSETPREC)
+/*
+ * NetBSD 6.99.26 switched to the x87 default control word (0x037f)
+ * as initial value for new processes.
+ */
+#include <ieeefp.h>
+
+#define SCM_FP_ENSURE_DOUBLE_PRECISION_BEGIN()        \
+    { fp_prec_t old_prec__ = fpsetprec(FP_PD);
+#define SCM_FP_ENSURE_DOUBLE_PRECISION_END() \
+      fpsetprec(old_prec__); }
 
 #else  /* fallback */
 #define SCM_FP_ENSURE_DOUBLE_PRECISION_BEGIN() /* nothing */

@@ -1,7 +1,7 @@
 ;;;
 ;;; geninsn - generate VM instruction related files
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -37,14 +37,10 @@
 ;;   ../lib/gauche/vm/insn.scm
 
 (use gauche.cgen)
-(use gauche.cgen.cise)
 (use gauche.parameter)
 (use gauche.sequence)
 (use gauche.vm.insn-core)
 (use gauche.mop.instance-pool)
-(use gauche.experimental.app)
-(use gauche.experimental.ref)
-(use gauche.experimental.lamb)
 (use srfi-13)
 (use text.tr)
 (use file.util)
@@ -92,11 +88,14 @@
     (format #t ";; #x~3,'0x  ~a\n" (~ insn'code) (~ insn'name))
     (format #t "(make <vm-insn-info> :name '~a :code ~a\n"
             (~ insn'name) (~ insn'code))
-    (format #t "  :num-params ~a :operand-type '~a\n"
-            (~ insn'num-params) (~ insn'operand-type))
+    (format #t "  :num-params ~a :alt-num-params '~a\n"
+            (~ insn'num-params) (~ insn'alt-num-params))
+    (format #t "  :operand-type '~a\n" (~ insn'operand-type))
     (format #t "  :obsoleted ~s\n" (~ insn'obsoleted))
+    (format #t "  :fold-lref ~s\n" (~ insn'fold-lref))
     (format #t "  :combined '~s\n" (~ insn'combined))
     (format #t "  :body '~s)\n\n" (~ insn'body)))
+  (make-directory* "../lib/gauche/vm")
   (with-output-to-file "../lib/gauche/vm/insn.scm"
     (^[]
       (write-header)
@@ -180,7 +179,7 @@
 ;; Each state is represented by a table, keyed by input insn codes.
 ;; Each value indicates an action and the next state.
 ;;
-;; In the following descrption, we denote a table as [something],
+;; In the following description, we denote a table as [something],
 ;; and the input code as (something), and the output as {something}.
 ;;
 ;; Actions:
@@ -223,18 +222,18 @@
   (assq-ref (~ state'transitions) insn-name))
 
 (define (state-set-insn! state insn-name stop-insn)
-  (or (and-let* ([arc (state-lookup state insn-name)])
-        (set! (~ arc'stop-insn) stop-insn))
-      (push! (~ state'transitions)
-             (cons insn-name
-                   (make <arc> :input insn-name :stop-insn stop-insn)))))
+  (if-let1 arc (state-lookup state insn-name)
+    (set! (~ arc'stop-insn) stop-insn)
+    (push! (~ state'transitions)
+           (cons insn-name
+                 (make <arc> :input insn-name :stop-insn stop-insn)))))
 
 (define (state-set-state! state insn-name next-state)
-  (or (and-let* ([arc (state-lookup state insn-name)])
-        (set! (~ arc'next-state) next-state))
-      (push! (~ state'transitions)
-             (cons insn-name
-                   (make <arc> :input insn-name :next-state next-state)))))
+  (if-let1 arc (state-lookup state insn-name)
+    (set! (~ arc'next-state) next-state)
+    (push! (~ state'transitions)
+           (cons insn-name
+                 (make <arc> :input insn-name :next-state next-state)))))
 
 ;; Add one insn to a state network.
 ;; If an insn is marked 'obsoleted', we add it to the root insn anyway but
@@ -256,9 +255,14 @@
              (not (~ insn'obsoleted)))
     (let loop ([combined (~ insn'combined)]
                [state    root-state])
-      (if (null? (cdr combined))
-        (state-set-insn! state (car combined) insn)
-        (loop (cdr combined) (substate state (car combined)))))))
+      (cond [(null? (cdr combined))
+             (state-set-insn! state (car combined) insn)]
+            [(and (~ insn'fold-lref) (eq? (car combined) 'LREF))
+             (loop (cdr combined) (substate state 'LREF))
+             (dolist [lref .lrefx.]
+               (loop (cdr combined) (substate state lref)))]
+            [else
+             (loop (cdr combined) (substate state (car combined)))]))))
 
 ;; The second path to fixup the STN.  Assign each arc a command.
 (define (fixup-states! root-state)
@@ -316,7 +320,7 @@
   )
 
 (define (construct-state-table insns)
-  (let ([root (make-state '())])
+  (let1 root (make-state '())
     (for-each (cut add-insn-to-state! root <>) insns)
     (fixup-states! root)
     (emit-states (instance-pool->list <state>))))
@@ -367,11 +371,15 @@
     [(_ name num-params operand-type . opts)
      (let-optionals* opts ([combined #f]
                            [body #f]
-                           [flag #f])
+                           . flags)
        (make <vm-insn-info>
-         :name name :code insn-num :num-params num-params
+         :name name :code insn-num
+         :num-params (if (pair? num-params) (car num-params) num-params)
+         :alt-num-params (if (pair? num-params) (cdr num-params) '())
          :operand-type operand-type :combined combined
-         :body body :obsoleted (eq? flag :obsoleted)))]
+         :body body
+         :obsoleted (boolean (memq :obsoleted flags))
+         :fold-lref (boolean (memq :fold-lref flags))))]
     [else (errorf "unrecognized define-insn form: ~s" definsn)]))
 
 ;;
@@ -408,11 +416,18 @@
       (cgen-body "#ifdef DEFINSN")
       (dolist [insn insns]
         (cgen-extern #`"  ,(c-insn-name (~ insn'name)),,")
-        (cgen-body (format "DEFINSN(~a, \"~a\", ~a, ~a)"
+        (cgen-body (format "DEFINSN(~a, \"~a\", ~a, ~a, ~a)"
                            (c-insn-name (~ insn'name)) (~ insn'name)
                            (~ insn'num-params)
                            (string-tr (x->string (~ insn'operand-type))
-                                      "a-z+-" "A-Z__"))))
+                                      "a-z+-" "A-Z__")
+                           (string-join
+                            (cond-list
+                             [(~ insn'obsoleted) "SCM_VM_INSN_OBSOLETED"]
+                             [(~ insn'fold-lref) "SCM_VM_INSN_FOLD_LREF"]
+                             [#t "0"])
+                            "|")
+                           )))
       (cgen-extern "  SCM_VM_NUM_INSNS" "};")
       (cgen-body "#endif /*DEFINSN*/")
 

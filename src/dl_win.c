@@ -1,7 +1,7 @@
 /*
  * dl_win.c - windows LoadLibrary interface
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -41,19 +41,16 @@
 
 static void *dl_open(const char *path)
 {
-    LPTSTR xpath;
-    xpath = (LPTSTR)SCM_MBS2WCS(path);
+    LPTSTR xpath = (LPTSTR)SCM_MBS2WCS(path);
     return (void*)LoadLibrary(xpath);
 }
 
 static const char *dl_error(void)
 {
-    char buf[80], *p;
+    char buf[80];
     DWORD code = GetLastError();
     snprintf(buf, sizeof(buf), "error code %ld", code);
-    p = SCM_NEW_ATOMIC2(char *, strlen(buf)+1);
-    strcpy(p, buf);
-    return p;
+    return SCM_STRDUP(buf);
 }
 
 static ScmDynLoadInitFn dl_sym(void *handle, const char *name)

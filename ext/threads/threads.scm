@@ -1,7 +1,7 @@
 ;;;
 ;;; threads.scm - thread related procedures.  to be autoloaded
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -34,6 +34,7 @@
 (define-module gauche.threads
   (use gauche.record)
   (export gauche-thread-type
+          current-thread                ;re-exporting the builtin
 
           thread? make-thread thread-name thread-specific-set! thread-specific
           thread-state thread-start! thread-yield! thread-sleep!
@@ -74,9 +75,9 @@
 ;; it should return 'pthreads' instead of 'pthread' on pthreads platform.
 (inline-stub
  (define-cproc gauche-thread-type ()
-   (.cond ["defined(GAUCHE_USE_PTHREADS)" (result 'pthread)]
-          ["defined(GAUCHE_USE_WTHREADS)" (result 'win32)]
-          [else (result 'none)])))
+   (.cond ["defined(GAUCHE_USE_PTHREADS)" (return 'pthread)]
+          ["defined(GAUCHE_USE_WTHREADS)" (return 'win32)]
+          [else (return 'none)])))
 
 ;;===============================================================
 ;; Thread
@@ -99,18 +100,21 @@
      (slot-ref thread 'specific))
    thread-specific-set!))
 
+(define (make-thread thunk :optional (name #f))
+  (rlet1 t (%make-thread thunk name)
+    ((with-module gauche.internal %vm-custom-error-reporter-set!) t (^e #f))))
+
 (inline-stub
  (define-cproc thread-state (vm::<thread>)
    (case (-> vm state)
-     [(SCM_VM_NEW)       (result 'new)]
-     [(SCM_VM_RUNNABLE)  (result 'runnable)]
-     [(SCM_VM_STOPPED)   (result 'stopped)]
-     [(SCM_VM_TERMINATED)(result 'terminated)]
+     [(SCM_VM_NEW)       (return 'new)]
+     [(SCM_VM_RUNNABLE)  (return 'runnable)]
+     [(SCM_VM_STOPPED)   (return 'stopped)]
+     [(SCM_VM_TERMINATED)(return 'terminated)]
      [else (Scm_Error "[internal] thread state has invalid value: %d"
                       (-> vm state))]))
 
- (define-cproc make-thread (thunk::<procedure> :optional (name #f))
-   Scm_MakeThread)
+ (define-cproc %make-thread (thunk::<procedure> name) Scm_MakeThread)
 
  (define-cproc thread-start! (vm::<thread>) Scm_ThreadStart)
 
@@ -176,13 +180,13 @@
      (cond [(SCM_VMP thread) (set! owner (SCM_VM thread))]
            [(SCM_UNBOUNDP thread) (set! owner (Scm_VM))]
            [(not (SCM_FALSEP thread)) (SCM_TYPE_ERROR thread "thread or #f")])
-     (result (Scm_MutexLock mutex timeout owner))))
+     (return (Scm_MutexLock mutex timeout owner))))
 
  (define-cproc mutex-unlock! (mutex::<mutex> :optional (cv #f) (timeout #f))
    (let* ([cond::ScmConditionVariable* NULL])
      (cond [(SCM_CONDITION_VARIABLE_P cv) (set! cond (SCM_CONDITION_VARIABLE cv))]
            [(not (SCM_FALSEP cv)) (SCM_TYPE_ERROR cv "condition variale or #f")])
-     (result (Scm_MutexUnlock mutex cond timeout))))
+     (return (Scm_MutexUnlock mutex cond timeout))))
 
  (define-cproc mutex-locker (mutex::<mutex>) Scm_MutexLocker)
  (define-cproc mutex-unlocker (mutex::<mutex>) Scm_MutexUnlocker)

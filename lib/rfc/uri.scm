@@ -1,7 +1,7 @@
 ;;;
 ;;; uri.scm - parse and construct URIs
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -43,17 +43,22 @@
 ;; RFC2368 The mailto URL Scheme
 ;;  <ftp://ftp.isi.edu/in-notes/rfc2368.txt>
 
+;; Also supports 'data' uri scheme specified in RFC2397.
+
 (define-module rfc.uri
   (use srfi-13)
+  (use util.match)
   (use gauche.regexp)
   (use gauche.charconv)
+  (use gauche.uvector)
   (export uri-scheme&specific uri-decompose-hierarchical
-          uri-decompose-authority uri-parse
+          uri-decompose-authority uri-parse uri-ref
           uri-merge uri-compose
           uri-decode uri-decode-string
           uri-encode uri-encode-string
           *rfc2396-unreserved-char-set*
           *rfc3986-unreserved-char-set*
+          uri-compose-data uri-decompose-data
           )
   )
 (select-module rfc.uri)
@@ -70,21 +75,21 @@
 
 (define (uri-scheme&specific uri)
   (cond [(#/^([A-Za-z][A-Za-z0-9+.-]*):/ uri)
-         => (lambda (m) (values (string-downcase (m 1)) (m 'after)))]
+         => (^m (values (string-downcase (m 1)) (m 'after)))]
         [else (values #f uri)]))
 
 (define (uri-decompose-hierarchical specific)
   (cond
    [(and (string? specific)
          (#/^(?:\/\/([^\/?#]*))?([^?#]+)?(?:\?([^#]*))?(?:#(.*))?$/ specific))
-    => (lambda (m) (values (m 1) (m 2) (m 3) (m 4)))]
+    => (^m (values (m 1) (m 2) (m 3) (m 4)))]
    [else (values #f #f #f #f)]))
 
 (define (uri-decompose-authority authority)
   (cond
    [(and (string? authority)
          (#/^(?:(.*?)@)?([^:]*)(?::(\d*))?$/ authority))
-    => (lambda (m) (values (m 1) (m 2) (m 3)))]
+    => (^m (values (m 1) (m 2) (m 3)))]
    [else (values #f #f #f)]))
 
 ;; A common cliche (suggested by Kouhei Sutou)
@@ -108,6 +113,50 @@
                 query
                 fragment)))))
 
+;; Convenience utility
+;;  (uri-ref "http://foo:8080/baz?q" 'host) => "foo"
+;;  (uri-ref "http://foo:8080/baz?q" 'host+port) => "foo:8080"
+;;  (uri-ref "http://foo:8080/baz?q" 'path+query) => "/baz?q"
+(define (uri-ref uri parts)
+  (receive (scheme userinfo host port path query fragment) (uri-parse uri)
+    (define (get-part part)
+      (ecase part
+        [(scheme) scheme]
+        [(userinfo) userinfo]
+        [(host) host]
+        [(port) port]
+        [(authority) (uri-compose :userinfo userinfo :host host :port port)]
+        [(scheme+authority)
+         (uri-compose :scheme scheme :userinfo userinfo :host host :port port)]
+        [(host+port)
+         (with-output-to-string
+           (^[]
+             (when host (display host))
+             (when port (display ":") (display port))))]
+        [(userinfo+host+port)
+         (with-output-to-string
+           (^[]
+             (when userinfo (display userinfo) (display "@"))
+             (when host (display host))
+             (when port (display ":") (display port))))]
+        [(path) path]
+        [(path+query)
+         (with-output-to-string
+           (^[]
+             (when path (display path))
+             (when query (display "?") (display query))))]
+        [(query) query]
+        [(path+query+fragment)
+         (with-output-to-string
+           (^[]
+             (display path)
+             (when query (display "?") (display query))
+             (when fragment (display "#") (display fragment))))]
+        [(fragment) fragment]))
+    (if (list? parts)
+      (map get-part parts)
+      (get-part parts))))
+
 ;;==============================================================
 ;; Generic constructor
 ;;
@@ -116,7 +165,7 @@
                      (authority #f) (path  #f) (path* #f) (query #f)
                      (fragment #f) (specific #f))
   (with-output-to-string
-    (lambda ()
+    (^[]
       (when scheme (display scheme) (display ":"))
       (if specific
         (display specific)
@@ -201,7 +250,7 @@
   ;; RFC3986, Section 5.3
   (define (recompose scheme authority path query fragment)
     (with-output-to-string
-      (lambda ()
+      (^[]
         (when scheme    (display scheme) (display ":"))
         (when authority (display "//") (display authority))
         (display path)
@@ -229,18 +278,18 @@
 ;;  These procedures provides basic building components.
 
 (define (uri-decode :key (cgi-decode #f))
-  (let loop ((c (read-char)))
+  (let loop ([c (read-char)])
     (cond [(eof-object? c)]
           [(char=? c #\%)
            (let1 c1 (read-char)
              (cond
               [(eof-object? c1) (write-char c)] ;; just be permissive
               [(digit->integer c1 16)
-               => (lambda (i1)
+               => (^[i1]
                     (let1 c2 (read-char)
                       (cond [(eof-object? c2) (write-char c) (write-char c1)]
                             [(digit->integer c2 16)
-                             => (lambda (i2)
+                             => (^[i2]
                                   (write-byte (+ (* i1 16) i2))
                                   (loop (read-char)))]
                             [else (write-char c) (write-char c1) (loop c2)])))]
@@ -256,9 +305,9 @@
     (wrap-with-output-conversion out (gauche-character-encoding)
                                  :from-code encoding))
   (call-with-string-io string
-    (lambda (in out)
+    (^[in out]
       (with-ports in (wrap out) (current-error-port)
-        (lambda ()
+        (^[]
           (apply uri-decode args)
           (close-output-port (current-output-port)))))))
 
@@ -273,12 +322,12 @@
 ;; 'noescape' char-set is only valid in ASCII range.  All bytes
 ;; larger than #x80 are encoded unconditionally.
 (define (uri-encode :key ((:noescape echars) *rfc3986-unreserved-char-set*))
-  (let loop ((b (read-byte)))
+  (let loop ([b (read-byte)])
     (unless (eof-object? b)
       (if (and (< b #x80)
                (char-set-contains? echars (integer->char b)))
         (write-byte b)
-        (format #t "%~2,'0x" b))
+        (format #t "%~2,'0X" b))
       (loop (read-byte)))))
 
 (define (uri-encode-string string :key (encoding (gauche-character-encoding))
@@ -287,7 +336,94 @@
     (wrap-with-input-conversion in (gauche-character-encoding)
                                 :to-code encoding))
   (call-with-string-io string
-    (lambda (in out)
+    (^[in out]
       (with-ports (wrap in) out (current-error-port)
         (cut apply uri-encode args)))))
 
+;;==============================================================
+;; Data uri scheme (rfc2397)
+;;
+
+(autoload rfc.base64
+          base64-encode base64-encode-string
+          base64-decode base64-decode-string)
+(autoload gauche.vport open-input-uvector)
+(autoload rfc.mime mime-parse-content-type)
+
+(define (uri-compose-data data :key (content-type #f) (encoding #f))
+  (define data-is-string
+    (and (string? data) (not (string-incomplete? data))))
+  (let ([encoding (or encoding (if data-is-string 'uri 'base64))]
+        [content-type (or content-type
+                          (if data-is-string
+                            (format "text/plain;charset=~a"
+                                    (cond-expand
+                                     [gauche.ces.utf8 'utf-8]
+                                     [gauche.ces.eucjp 'euc-jp]
+                                     [gauche.ces.sjis 'shift_jis]
+                                     [gauche.ces.none 'us-ascii]))
+                            "application/octet-stream"))])
+    (define (encode-by-uri)
+      (unless data-is-string
+        (error "data must be a complete string for uri-encoding data scheme:"
+               data))
+      (uri-encode-string data))
+    (define (encode-by-base64)
+      (cond [(string? data) (base64-encode-string data)]
+            [(u8vector? data) (with-output-to-string
+                                (cut with-input-from-port
+                                     (open-input-uvector data)
+                                     base64-encode))]
+            [else
+             (error "data must be a string or u8vector for base64 data scheme:"
+                    data)]))
+    (define (compose-content-type ct)
+      ;; We allow (type subtype (param . value) ...) in content-type.
+      ;; We don't use mime-compose-parameters to encode the content-type,
+      ;; however, since it may use quoted-string for value.  See section 3
+      ;; of rfc2397 for the reason to avoid quited-string.
+      (if (pair? ct)
+        (format "~a/~a~a" (car ct) (cadr ct)
+                (string-join (map (^p (format "~a=~a"
+                                              (uri-encode-string (car p))
+                                              (uri-encode-string (cdr p))))
+                                  (cddr ct))
+                             ";" 'prefix))
+        ct))
+
+    (format "data:~a~a,~a" (compose-content-type content-type)
+            (if (eq? encoding 'uri) "" #`";,encoding")
+            (ecase encoding
+              [(uri) (encode-by-uri)]
+              [(base64) (encode-by-base64)]))))
+
+;; Returns parsed content-type and decoded data.
+;;
+;; Decoded data is a string if content-type is text/*, and
+;; u8vector otherwise.  In case of content-type being text/*, charset
+;; is recognized and ces is converted appropriately.
+;; NB: We may add keyword arg to specify the return type.
+;;
+;; For the convenience, you can pass either full uri (with "data:")
+;; or just a specific part (without "data:").  Result is undefined if you
+;; pass non-data uri.
+(define (uri-decompose-data uri)
+  (rxmatch-case uri
+    [#/^(?:data:)?(.*?)(\;base64)?,(.*)/ (_ ct enc data)
+     (match (mime-parse-content-type ct)
+       [(and (type subtype attrs ...) content-type)
+        ;; TODO: If we have efficient output-to-bytevector interface,
+        ;; we might revise this code so that we won't use intermediate string.
+        ;; (open-output-uvector can't be used yet since output is fixed-length)
+        (let* ([ces (assoc-ref attrs "charset")]
+               [encoded (if enc
+                          (let1 str (base64-decode-string data)
+                            (if ces
+                              (ces-convert str ces)
+                              str))
+                          (uri-decode-string data :encoding ces))])
+          (if (equal? type "text")
+            (values content-type encoded)
+            (values content-type (string->u8vector encoded))))]
+       [_ (error "invalid content-type in data uri:" ct)])]
+    [else (error "invalid data uri:" uri)]))

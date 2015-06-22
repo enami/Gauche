@@ -7,8 +7,6 @@
 ;;
 
 (define-module util.match
-  (use srfi-1)
-  (use srfi-2)
   (export match
           match-lambda
           match-lambda*
@@ -181,8 +179,8 @@
             (string-join (map x->string args) " ")
             val)))
 
-(define match:every every) ; alias srfi-1's every, in case the user of
-                           ; util.match isn't using srfi-1.
+(define match:every every) ; alias gauche's every, in case the user of
+                           ; util.match isn't inheriting gauche.
 
 (define match:syntax-err
   (lambda (obj msg) (error msg obj)))
@@ -227,8 +225,8 @@
                               (fail (and (pair? (cdr c))
                                          (pair? (cadr c))
                                          (equal? (caadr c) '=>)
-                                         (symid? (cadadr c))
                                          (pair? (cdadr c))
+                                         (symid? (cadadr c))
                                          (null? (cddadr c))
                                          (pair? (cddr c))
                                          (cadadr c)))
@@ -332,7 +330,11 @@
 
 (define (validate-pattern pattern)
   (define (simple? x)
-    (or (string? x) (boolean? x) (char? x) (number? x) (null? x) (keyword? x)))
+    (or (string? x) (boolean? x) (char? x) (number? x) (null? x)
+        ;; This last term is to support both disjoint-keyword and
+        ;; keyword-is-symbol runtime.  After we fully migrated to
+        ;; keyword-is-symbol, just remove this term.
+        (and (not (symbol? :x)) (keyword? x))))
   (define (ordinary p)
     (let ((cons-ordinary (lambda (x y) (cons (ordinary x) (ordinary y)))))
       (cond
@@ -457,9 +459,9 @@
       (when (memq p a)
         (match:syntax-err pattern "duplicate variable in pattern"))
       (k p (cons p a)))
-     ((and (pair? p) (eq? 'quote (car p)))
+     ((and (pair? p) (equal? 'quote (car p)))
       (k p a))
-     ((and (pair? p) (eq? '? (car p)))
+     ((and (pair? p) (equal? '? (car p)))
       (cond
        ((not (null? (cddr p)))
         (bound `(and (? ,(cadr p)) ,@(cddr p)) a k))
@@ -634,6 +636,15 @@
                  (ks success))
         (cond
          ((eq? '_ p) (ks sf))
+         ;; The check of (symbol? :x) is to support both disjoint-keyword and
+         ;; keyword-is-symbol runtime.  Remove this clause once we fully
+         ;; migrated to keyword-is-symbol.
+         ((and (not (symbol? :x)) (keyword? p))
+          (warn "Unquoted keyword `~s' in match pattern: ~s.  \
+                 This would likely break in future versions of Gauche.  \
+                 See the ``Keyword and symbol integration'' section \
+                 of the manual for the details.\n" p x)
+          (emit `(equal? ,e ,p) sf kf ks))
          ((symid? p) (set! v (cons (cons p e) v))
           (ks sf))
          ((null? p) (emit `(null? ,e) sf kf ks))
@@ -642,15 +653,14 @@
          ((boolean? p) (emit `(equal? ,e ,p) sf kf ks))
          ((char? p) (emit `(equal? ,e ,p) sf kf ks))
          ((number? p) (emit `(equal? ,e ,p) sf kf ks))
-         ((keyword? p) (emit `(equal? ,e ,p) sf kf ks))
-         ((and (pair? p) (eq? 'quote (car p)))
+         ((and (pair? p) (equal? 'quote (car p)))
           (emit `(equal? ,e ,p) sf kf ks))
          ((and (pair? p) (eq? '? (car p)))
           (let ((tst `(,(cadr p) ,e)))
             (emit tst sf kf ks)))
          ((and (pair? p) (eq? '= (car p)))
           (if (and (pair? (cadr p))
-                   (eq? (caadr p) 'quote))
+                   (equal? (caadr p) 'quote))
             (next (caddr p) `(ref ,(cadr p) ,e) sf kf ks)
             (next (caddr p) `(,(cadr p) ,e) sf kf ks)))
          ((and (pair? p) (eq? 'and (car p)))
@@ -863,7 +873,7 @@
                          ((char? p) `((char? ,e)))
                          ((number? p) `((number? ,e)))
                          ((and (pair? p)
-                               (eq? 'quote (car p)))
+                               (equal? 'quote (car p)))
                           `((symbol? ,e)))
                          (else '()))))
                      ((eq? (car tst) 'null?)
@@ -996,8 +1006,10 @@
 (define (in e l)
   (or (member e l)
       (and (eq? (car e) 'list?)
-           (or (member `(null? ,(cadr e)) l)
-               (member `(pair? ,(cadr e)) l)))
+           ;; NB: Original Wright's code allows `(pair? ,(cadr e)) here as well,
+           ;; but they are not the same condition - pair? allows improper list
+           ;; but list? doesn't.  Ref: https://github.com/shirok/Gauche/issues/47
+           (member `(null? ,(cadr e)) l))
       (and (eq? (car e) 'not)
            (let* ((srch (cadr e))
                   (const-class (equal-test? srch)))
@@ -1036,7 +1048,7 @@
               (else #f))))))
 
 (define (equal-test? tst)
-  (and (eq? (car tst) 'equal?)
+  (and (equal? (car tst) 'equal?)
        (let ((p (caddr tst)))
          (cond
           ((string? p) 'string?)
@@ -1046,7 +1058,7 @@
           ((and (pair? p)
                 (pair? (cdr p))
                 (null? (cddr p))
-                (eq? 'quote (car p))
+                (equal? 'quote (car p))
                 (symid? (cadr p)))
            'symbol?)
           (else #f)))))

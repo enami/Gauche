@@ -1,7 +1,7 @@
 /*
  * vm.c - virtual machine
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -35,7 +35,7 @@
 #include "gauche.h"
 #include "gauche/class.h"
 #include "gauche/exception.h"
-#include "gauche/builtin-syms.h"
+#include "gauche/priv/builtin-syms.h"
 #include "gauche/code.h"
 #include "gauche/vminsn.h"
 #include "gauche/prof.h"
@@ -129,6 +129,8 @@ static int    check_arglist_tail_for_apply(ScmVM *vm, ScmObj restargs);
 
 static ScmEnvFrame *get_env(ScmVM *vm);
 
+static void   call_error_reporter(ScmObj e);
+
 /*#define COUNT_INSN_FREQUENCY*/
 #ifdef COUNT_INSN_FREQUENCY
 #include "vmstat.c"
@@ -162,7 +164,6 @@ static ScmEnvFrame *get_env(ScmVM *vm);
 ScmVM *Scm_NewVM(ScmVM *proto, ScmObj name)
 {
     ScmVM *v = SCM_NEW(ScmVM);
-    int i;
 
     SCM_SET_CLASS(v, SCM_CLASS_VM);
     v->state = SCM_VM_NEW;
@@ -213,7 +214,7 @@ ScmVM *Scm_NewVM(ScmVM *proto, ScmObj name)
     v->pc = PC_TO_RETURN;
     v->base = NULL;
     v->val0 = SCM_UNDEFINED;
-    for (i=0; i<SCM_VM_MAX_VALUES; i++) v->vals[i] = SCM_UNDEFINED;
+    for (int i=0; i<SCM_VM_MAX_VALUES; i++) v->vals[i] = SCM_UNDEFINED;
     v->numVals = 1;
 
     v->handlers = SCM_NIL;
@@ -223,7 +224,7 @@ ScmVM *Scm_NewVM(ScmVM *proto, ScmObj name)
     v->escapeReason = SCM_VM_ESCAPE_NONE;
     v->escapeData[0] = NULL;
     v->escapeData[1] = NULL;
-    v->defaultEscapeHandler = SCM_FALSE;
+    v->customErrorReporter = (proto? proto->customErrorReporter : SCM_FALSE);
 
     v->evalSituation = SCM_VM_EXECUTING;
 
@@ -312,10 +313,9 @@ int Scm_VMGetNumResults(ScmVM *vm)
 ScmObj Scm_VMGetResult(ScmVM *vm)
 {
     ScmObj head = SCM_NIL, tail = SCM_NIL;
-    int i;
     if (vm->numVals == 0) return SCM_NIL;
     SCM_APPEND1(head, tail, vm->val0);
-    for (i=1; i<vm->numVals; i++) {
+    for (int i=1; i<vm->numVals; i++) {
         SCM_APPEND1(head, tail, vm->vals[i-1]);
     }
     return head;
@@ -378,9 +378,9 @@ static void vm_finalize(ScmObj obj, void *data)
    to the live VM in the global hashtable. */
 static void vm_register(ScmVM *vm)
 {
-    ScmDictEntry *e;
     SCM_INTERNAL_MUTEX_LOCK(vm_table_mutex);
-    e = Scm_HashCoreSearch(&vm_table, (intptr_t)vm, SCM_DICT_CREATE);
+    ScmDictEntry *e = Scm_HashCoreSearch(&vm_table, (intptr_t)vm,
+                                         SCM_DICT_CREATE);
     (void)SCM_DICT_SET_VALUE(e, SCM_TRUE);
     SCM_INTERNAL_MUTEX_UNLOCK(vm_table_mutex);
 }
@@ -483,6 +483,7 @@ static void vm_unregister(ScmVM *vm)
         newcont->prev = CONT;                           \
         newcont->env = ENV;                             \
         newcont->size = (int)(SP - ARGP);               \
+        newcont->cpc = PC;                              \
         newcont->pc = next_pc;                          \
         newcont->base = BASE;                           \
         CONT = newcont;                                 \
@@ -591,9 +592,7 @@ static void vm_unregister(ScmVM *vm)
         FETCH_OPERAND(v);                                               \
         if (!SCM_GLOCP(v)) {                                            \
             VM_ASSERT(SCM_IDENTIFIERP(v));                              \
-            gloc = Scm_FindBinding(SCM_IDENTIFIER(v)->module,           \
-                                   SCM_IDENTIFIER(v)->name,             \
-                                   0);                                  \
+            gloc = Scm_IdentifierGlobalBinding(SCM_IDENTIFIER(v));      \
             if (gloc == NULL) {                                         \
                 VM_ERR(("unbound variable: %S",                         \
                         SCM_IDENTIFIER(v)->name));                      \
@@ -704,7 +703,22 @@ static void vm_unregister(ScmVM *vm)
     } while (0)
 
 /* We take advantage of GCC's `computed goto' feature
-   (see gcc.info, "Labels as Values"). */
+   (see gcc.info, "Labels as Values").
+   'NEXT' or 'NEXT_PUSHCHECK' is placed at the end of most
+   vm insn handlers to dispatch to the next instruction.
+   We don't simply jump to the beginning of the dispatch
+   table (hence the dispatching is handled by SWITCH macro),
+   since the former performs worse in branch prediction;
+   at least, if we have dispatches at the end of every handler,
+   we can hope the branch predictor detect frequently used
+   vm insn sequence.  'NEXT_PUSHCHECK' further reduces branch
+   predictor failure - quite a few insns that yield a value
+   in VAL0 is followed by PUSH instruction, so we detect it
+   specially.  We still use fused insns (e.g. LREF0-PUSH) when
+   the combination is very frequent - but for the less frequent
+   instructions, NEXT_PUSHCHECK proved effective without introducing
+   new fused vm insns.
+*/
 #ifdef __GNUC__
 #define SWITCH(val) goto *dispatch_table[val];
 #define CASE(insn)  SCM_CPP_CAT(LABEL_, insn) :
@@ -712,28 +726,29 @@ static void vm_unregister(ScmVM *vm)
 #define DISPATCH    /*empty*/
 #define NEXT                                            \
     do {                                                \
-        if (vm->attentionRequest) goto process_queue;   \
         FETCH_INSN(code);                               \
         goto *dispatch_table[SCM_VM_INSN_CODE(code)];   \
     } while (0)
+#define NEXT_PUSHCHECK                                  \
+    do {                                                \
+        FETCH_INSN(code);                               \
+        if (code == SCM_VM_PUSH) {                      \
+            PUSH_ARG(VAL0);                             \
+            FETCH_INSN(code);                           \
+        }                                               \
+        goto *dispatch_table[SCM_VM_INSN_CODE(code)];   \
+    } while (0)
 #else /* !__GNUC__ */
-#define SWITCH(val) switch (val)
-#define CASE(insn)  case insn :
-#define DISPATCH    dispatch:
-#define NEXT        goto dispatch
+#define SWITCH(val)    switch (val)
+#define CASE(insn)     case insn :
+#define DISPATCH       dispatch:
+#define NEXT           goto dispatch
+#define NEXT_PUSHCHECK goto dispatch
 #endif
 
-/* NEXT1 is a shorthand form to set the number of values to 1.
-   The numVals should be set to 1 when (1) the instruction yields
-   a single value, and (2) it is at the tail position.  We don't
-   have information for each insn that it is at tail position or
-   not (yet), but we know that _PUSH insn won't come at the tail pos.
-*/
-#define NEXT1                                   \
-    do {                                        \
-        vm->numVals = 1;                        \
-        NEXT;                                   \
-    } while (0)
+/* Check VM interrupt request. */
+#define CHECK_INTR \
+    do { if (vm->attentionRequest) goto process_queue; } while (0)
 
 /* WNA - "Wrong Number of Arguments" handler.  The actual call is in vmcall.c.
    We handle the autocurrying magic here.
@@ -757,6 +772,7 @@ static void wna(ScmVM *vm, ScmObj proc, int ngiven, int foldlen)
         /*TODO: how should we count this path for profiling? */
     } else {
         Scm_Error("wrong number of arguments for %S (required %d, got %d)",
+
                   proc, reqargs, ngiven);
         /*NOTREACHED*/
     }
@@ -765,6 +781,62 @@ static void wna(ScmVM *vm, ScmObj proc, int ngiven, int foldlen)
               proc, reqargs, ngiven);
 #endif
 }
+
+/* local_env_shift
+   Called from LOCAL-ENV-SHIFT and LOCAL-ENV-JUMP insns (see vminsn.scm),
+   and adjusts env frames for optimized local function call.
+   This routine does two things
+   - Creates a new local env frame from the values in the current stack.
+     The size of frame can be determined by SP-ARGP.
+   - Discard DEPTH env frames.
+ */
+static void local_env_shift(ScmVM *vm, int env_depth)
+{
+    int nargs = (int)(SP - ARGP);
+    ScmEnvFrame *tenv = ENV;
+    /* We can discard env_depth environment frames.
+       There are several cases:
+        - if the target env frame (TENV) is in stack:
+         -- if the current cont frame is over TENV
+            => shift argframe on top of the current cont frame
+         -- otherwise => shift argframe on top of TENV
+        - if TENV is in heap:
+         -- if the current cont frame is in stack
+            => shift argframe on top of the current cont frame
+         -- otherwise => shift argframe at the stack base
+    */
+    while (env_depth-- > 0) {
+        SCM_ASSERT(tenv);
+        tenv = tenv->up;
+    }
+ 
+    ScmObj *to;
+    if (IN_STACK_P((ScmObj*)tenv)) {
+        if (IN_STACK_P((ScmObj*)CONT) && (((ScmObj*)CONT) > ((ScmObj*)tenv))) {
+            to = CONT_FRAME_END(CONT);
+         } else {
+            to = ((ScmObj*)tenv) + ENV_HDR_SIZE;
+        }
+    } else {
+        if (IN_STACK_P((ScmObj*)CONT)) {
+            to = CONT_FRAME_END(CONT);
+        } else {
+            to = vm->stackBase; /* continuation has already been saved */
+        }
+    }
+    if (nargs > 0 && to != ARGP) {
+        ScmObj *t = to;
+        ScmObj *a = ARGP;
+        for (int c = 0; c < nargs; c++) {
+            *t++ = *a++;
+        }
+    }
+    ARGP = to;
+    SP = to + nargs;
+    if (nargs > 0) { FINISH_ENV(SCM_FALSE, tenv); }
+    else           { ENV = tenv; }
+}
+
 
 /*===================================================================
  * Main loop of VM
@@ -776,7 +848,7 @@ static void run_loop()
 
 #ifdef __GNUC__
     static void *dispatch_table[256] = {
-#define DEFINSN(insn, name, nargs, type)   && SCM_CPP_CAT(LABEL_, insn),
+#define DEFINSN(insn, name, nargs, type, flags)   && SCM_CPP_CAT(LABEL_, insn),
 #include "vminsn.c"
 #undef DEFINSN
     };
@@ -788,8 +860,7 @@ static void run_loop()
 #if 0
     static int init = 0;
     if (!init) {
-        int i;
-        for (i=0; i<SCM_VM_NUM_INSNS; i++) {
+        for (int i=0; i<SCM_VM_NUM_INSNS; i++) {
             fprintf(stderr, "%3d %-15s %p (+%04x, %5d)\n",
                     i, Scm_VMInsnName(i),
                     dispatch_table[i],
@@ -872,17 +943,16 @@ static inline ScmEnvFrame *save_env(ScmVM *vm, ScmEnvFrame *env_begin)
     if (!IN_STACK_P((ScmObj*)e)) return e;
 
     do {
-        long esize = (long)e->size, i;
-        ScmObj *d, *s;
-
+        long esize = (long)e->size;
         if (esize < 0) {
             /* forwaded frame */
             if (prev) prev->up = FORWARDED_ENV(e);
             return head;
         }
 
-        d = SCM_NEW2(ScmObj*, ENV_SIZE(esize) * sizeof(ScmObj));
-        for (i=esize, s = (ScmObj*)e - esize; i>0; i--) {
+        ScmObj *d = SCM_NEW2(ScmObj*, ENV_SIZE(esize) * sizeof(ScmObj));
+        ScmObj *s = (ScmObj*)e - esize;
+        for (long i=esize; i>0; i--) {
             SCM_FLONUM_ENSURE_MEM(*s);
             *d++ = *s++;
         }
@@ -907,11 +977,7 @@ static inline ScmEnvFrame *save_env(ScmVM *vm, ScmEnvFrame *env_begin)
  */
 static void save_cont(ScmVM *vm)
 {
-    ScmContFrame *c = vm->cont, *prev = NULL, *tmp;
-    ScmCStack *cstk;
-    ScmEscapePoint *ep;
-    ScmObj *s, *d;
-    int i;
+    ScmContFrame *c = vm->cont, *prev = NULL;
 
     /* Save the environment chain first. */
     vm->env = save_env(vm, vm->env);
@@ -933,10 +999,10 @@ static void save_cont(ScmVM *vm)
 
         /* copy cont frame */
         if (!C_CONTINUATION_P(c)) {
-            s = (ScmObj*)c - c->size;
-            d = heap;
+            ScmObj *s = (ScmObj*)c - c->size;
+            ScmObj *d = heap;
             if (c->size) {
-                for (i=c->size; i>0; i--) {
+                for (int i=c->size; i>0; i--) {
                     SCM_FLONUM_ENSURE_MEM(*s);
                     *d++ = *s++;
                 }
@@ -944,9 +1010,9 @@ static void save_cont(ScmVM *vm)
             *(ScmContFrame*)d = *c; /* copy the frame */
         } else {
             /* C continuation */
-            s = (ScmObj*)c - c->size;
-            d = heap;
-            for (i=CONT_FRAME_SIZE + c->size; i>0; i--) {
+            ScmObj *s = (ScmObj*)c - c->size;
+            ScmObj *d = heap;
+            for (int i=CONT_FRAME_SIZE + c->size; i>0; i--) {
                 /* NB: C continuation frame contains opaque pointer,
                    so we shouldn't ENSURE_MEM. */
                 *d++ = *s++;
@@ -957,7 +1023,7 @@ static void save_cont(ScmVM *vm)
         if (prev) prev->prev = csave;
         prev = csave;
 
-        tmp = c->prev;
+        ScmContFrame *tmp = c->prev;
         c->prev = csave;
         c->size = -1;
         c = tmp;
@@ -967,17 +1033,17 @@ static void save_cont(ScmVM *vm)
     if (FORWARDED_CONT_P(vm->cont)) {
         vm->cont = FORWARDED_CONT(vm->cont);
     }
-    for (cstk = vm->cstack; cstk; cstk = cstk->prev) {
+    for (ScmCStack *cstk = vm->cstack; cstk; cstk = cstk->prev) {
         if (FORWARDED_CONT_P(cstk->cont)) {
             cstk->cont = FORWARDED_CONT(cstk->cont);
         }
     }
-    for (ep = vm->escapePoint; ep; ep = ep->prev) {
+    for (ScmEscapePoint *ep = vm->escapePoint; ep; ep = ep->prev) {
         if (FORWARDED_CONT_P(ep->cont)) {
             ep->cont = FORWARDED_CONT(ep->cont);
         }
     }
-    for (ep = SCM_VM_FLOATING_EP(vm); ep; ep = ep->floating) {
+    for (ScmEscapePoint *ep = SCM_VM_FLOATING_EP(vm); ep; ep = ep->floating) {
         if (FORWARDED_CONT_P(ep->cont)) {
             ep->cont = FORWARDED_CONT(ep->cont);
         }
@@ -986,7 +1052,6 @@ static void save_cont(ScmVM *vm)
 
 static void save_stack(ScmVM *vm)
 {
-    ScmObj *p;
 #if HAVE_GETTIMEOFDAY
     int stats = SCM_VM_RUNTIME_FLAG_IS_SET(vm, SCM_COLLECT_VM_STATS);
     struct timeval t0, t1;
@@ -1002,7 +1067,7 @@ static void save_stack(ScmVM *vm)
     vm->sp -= (ScmObj*)vm->argp - vm->stackBase;
     vm->argp = vm->stackBase;
     /* Clear the stack.  This removes bogus pointers and accelerates GC */
-    for (p = vm->sp; p < vm->stackEnd; p++) *p = NULL;
+    for (ScmObj *p = vm->sp; p < vm->stackEnd; p++) *p = NULL;
 
 #if HAVE_GETTIMEOFDAY
     if (stats) {
@@ -1016,13 +1081,10 @@ static void save_stack(ScmVM *vm)
 
 static ScmEnvFrame *get_env(ScmVM *vm)
 {
-    ScmEnvFrame *e;
-    ScmContFrame *c;
-
-    e = save_env(vm, vm->env);
+    ScmEnvFrame *e = save_env(vm, vm->env);
     if (e != vm->env) {
         vm->env = e;
-        for (c = vm->cont; IN_STACK_P((ScmObj*)c); c = c->prev) {
+        for (ScmContFrame *c = vm->cont; IN_STACK_P((ScmObj*)c); c = c->prev) {
             if (FORWARDED_ENV_P(c->env)) {
                 c->env = FORWARDED_ENV(c->env);
             }
@@ -1100,10 +1162,8 @@ static void print_flush_fpstack_count(void*z)
 
 void Scm_VMFlushFPStack(ScmVM *vm)
 {
-    ScmEnvFrame *visited[ENV_CACHE_SIZE], *e;
-    ScmContFrame *c;
-    int visited_index = 0, i;
-    ScmObj *p;
+    ScmEnvFrame *visited[ENV_CACHE_SIZE];
+    int visited_index = 0;
 #ifdef COUNT_FLUSH_FPSTACK
     struct timeval t0, t1;
     gettimeofday(&t0, NULL);
@@ -1111,25 +1171,25 @@ void Scm_VMFlushFPStack(ScmVM *vm)
 
     /* first, scan value registers and incomplete frames */
     SCM_FLONUM_ENSURE_MEM(VAL0);
-    for (i=0; i<SCM_VM_MAX_VALUES; i++) {
+    for (int i=0; i<SCM_VM_MAX_VALUES; i++) {
         SCM_FLONUM_ENSURE_MEM(vm->vals[i]);
     }
     if (IN_STACK_P(ARGP)) {
-        for (p = ARGP; p < SP; p++) SCM_FLONUM_ENSURE_MEM(*p);
+        for (ScmObj *p = ARGP; p < SP; p++) SCM_FLONUM_ENSURE_MEM(*p);
     }
 
     /* scan the main environment chain */
-    e = ENV;
+    ScmEnvFrame *e = ENV;
     while (IN_STACK_P((ScmObj*)e)) {
-        for (i = 0; i < visited_index; i++) {
+        for (int i = 0; i < visited_index; i++) {
             if (visited[i] == e) goto next;
         }
         if (visited_index < ENV_CACHE_SIZE) {
             visited[visited_index++] = e;
         }
 
-        for (i = 0; i < e->size; i++) {
-            p = &ENV_DATA(e, i);
+        for (int i = 0; i < e->size; i++) {
+            ScmObj *p = &ENV_DATA(e, i);
             SCM_FLONUM_ENSURE_MEM(*p);
         }
       next:
@@ -1137,26 +1197,26 @@ void Scm_VMFlushFPStack(ScmVM *vm)
     }
 
     /* scan the env chains grabbed by cont chain */
-    c = CONT;
+    ScmContFrame *c = CONT;
     while (IN_STACK_P((ScmObj*)c)) {
         e = c->env;
         while (IN_STACK_P((ScmObj*)e)) {
-            for (i = 0; i < visited_index; i++) {
+            for (int i = 0; i < visited_index; i++) {
                 if (visited[i] == e) goto next2;
             }
             if (visited_index < ENV_CACHE_SIZE) {
                 visited[visited_index++] = e;
             }
-            for (i = 0; i < e->size; i++) {
-                p = &ENV_DATA(e, i);
+            for (int i = 0; i < e->size; i++) {
+                ScmObj *p = &ENV_DATA(e, i);
                 SCM_FLONUM_ENSURE_MEM(*p);
             }
           next2:
             e = e->up;
         }
         if (IN_STACK_P((ScmObj*)c) && c->size > 0) {
-            p = (ScmObj*)c - c->size;
-            for (i=0; i<c->size; i++, p++) SCM_FLONUM_ENSURE_MEM(*p);
+            ScmObj *p = (ScmObj*)c - c->size;
+            for (int i=0; i<c->size; i++, p++) SCM_FLONUM_ENSURE_MEM(*p);
         }
         c = c->prev;
     }
@@ -1213,7 +1273,6 @@ ScmObj Scm_VMApply(ScmObj proc, ScmObj args)
 {
     int numargs = Scm_Length(args);
     int reqstack;
-    ScmObj cp;
     ScmVM *vm = theVM;
 
     if (numargs < 0) Scm_Error("improper list not allowed: %S", args);
@@ -1227,6 +1286,7 @@ ScmObj Scm_VMApply(ScmObj proc, ScmObj args)
     }
     CHECK_STACK(reqstack);
 
+    ScmObj cp;
     SCM_FOR_EACH(cp, args) {
         PUSH_ARG(SCM_CAR(cp));
     }
@@ -1340,17 +1400,14 @@ ScmObj Scm_VMEval(ScmObj expr, ScmObj e)
 void Scm_VMPushCC(ScmCContinuationProc *after,
                   void **data, int datasize)
 {
-    int i;
-    ScmContFrame *cc;
-    ScmObj *s;
     ScmVM *vm = theVM;
 
     CHECK_STACK(CONT_FRAME_SIZE+datasize);
-    s = SP;
-    for (i=0; i<datasize; i++) {
+    ScmObj *s = SP;
+    for (int i=0; i<datasize; i++) {
         *s++ = SCM_OBJ(data[i]);
     }
-    cc = (ScmContFrame*)s;
+    ScmContFrame *cc = (ScmContFrame*)s;
     s += CONT_FRAME_SIZE;
     cc->prev = CONT;
     cc->size = datasize;
@@ -1414,7 +1471,6 @@ static ScmObj user_eval_inner(ScmObj program, ScmWord *codevec)
     vm->escapeReason = SCM_VM_ESCAPE_NONE;
     if (sigsetjmp(cstack.jbuf, FALSE) == 0) {
         run_loop();             /* VM loop */
-        VAL0 = vm->val0;
         if (vm->cont == cstack.cont) {
             POP_CONT();
             PC = prev_pc;
@@ -1442,7 +1498,6 @@ static ScmObj user_eval_inner(ScmObj program, ScmWord *codevec)
             } else {
                 SCM_ASSERT(vm->cstack && vm->cstack->prev);
                 vm->cont = cstack.cont;
-                VAL0 = vm->val0;
                 POP_CONT();
                 vm->cstack = vm->cstack->prev;
                 siglongjmp(vm->cstack->jbuf, 1);
@@ -1464,7 +1519,6 @@ static ScmObj user_eval_inner(ScmObj program, ScmWord *codevec)
                    the extra continuation frame so that the VM stack
                    is consistent. */
                 vm->cont = cstack.cont;
-                VAL0 = vm->val0;
                 POP_CONT();
                 vm->cstack = vm->cstack->prev;
                 siglongjmp(vm->cstack->jbuf, 1);
@@ -1501,26 +1555,26 @@ ScmObj Scm_EvalRec(ScmObj expr, ScmObj e)
    of this case. */
 static ScmObj apply_rec(ScmVM *vm, ScmObj proc, int nargs)
 {
-    ScmObj program;
     ScmWord code[2];
     code[0] = SCM_WORD(SCM_VM_INSN1(SCM_VM_VALUES_APPLY, nargs));
     code[1] = SCM_WORD(SCM_VM_INSN(SCM_VM_RET));
 
     vm->val0 = proc;
-    program = vm->base? SCM_OBJ(vm->base) : SCM_OBJ(&internal_apply_compiled_code);
+    ScmObj program = vm->base?
+            SCM_OBJ(vm->base) : SCM_OBJ(&internal_apply_compiled_code);
     return user_eval_inner(program, code);
 }
 
 ScmObj Scm_ApplyRec(ScmObj proc, ScmObj args)
 {
-    int nargs = Scm_Length(args), i;
+    int nargs = Scm_Length(args);
     ScmVM *vm = theVM;
 
     if (nargs < 0) {
         Scm_Error("improper list not allowed: %S", args);
     }
 
-    for (i=0; i<nargs; i++) {
+    for (int i=0; i<nargs; i++) {
         if (i == SCM_VM_MAX_VALUES-1) {
             vm->vals[i] = args;
             break;
@@ -1631,10 +1685,8 @@ static ScmObj safe_eval_thunk(ScmObj *args, int nargs, void *data)
 
 static ScmObj safe_eval_int(ScmObj *args, int nargs, void *data)
 {
-    ScmObj thunk, handler;
-
-    thunk   = Scm_MakeSubr(safe_eval_thunk, data, 0, 0, SCM_FALSE);
-    handler = Scm_MakeSubr(safe_eval_handler, data, 1, 0, SCM_FALSE);
+    ScmObj thunk   = Scm_MakeSubr(safe_eval_thunk, data, 0, 0, SCM_FALSE);
+    ScmObj handler = Scm_MakeSubr(safe_eval_handler, data, 1, 0, SCM_FALSE);
     return Scm_VMWithErrorHandler(handler, thunk);
 }
 
@@ -1642,11 +1694,9 @@ static int safe_eval_wrap(int kind, ScmObj arg0, ScmObj args,
                           const char *cstr, ScmObj env,
                           ScmEvalPacket *result)
 {
-    struct eval_packet_rec epak;
-    ScmObj proc, r;
     ScmVM *vm = theVM;
-    int i;
 
+    struct eval_packet_rec epak;
     epak.env  = env;
     epak.kind = kind;
     epak.arg0 = arg0;
@@ -1654,15 +1704,15 @@ static int safe_eval_wrap(int kind, ScmObj arg0, ScmObj args,
     epak.cstr = cstr;
     epak.exception = SCM_UNBOUND;
 
-    proc = Scm_MakeSubr(safe_eval_int, &epak, 0, 0, SCM_FALSE);
-    r = Scm_ApplyRec(proc, SCM_NIL);
+    ScmObj proc = Scm_MakeSubr(safe_eval_int, &epak, 0, 0, SCM_FALSE);
+    ScmObj r = Scm_ApplyRec(proc, SCM_NIL);
 
     if (SCM_UNBOUNDP(epak.exception)) {
         /* normal termination */
         if (result) {
             result->numResults = vm->numVals;
             result->results[0] = r;
-            for (i=1; i<vm->numVals; i++) {
+            for (int i=1; i<vm->numVals; i++) {
                 result->results[i] = vm->vals[i-1];
             }
             result->exception = SCM_FALSE;
@@ -1768,11 +1818,10 @@ static ScmObj dynwind_before_cc(ScmObj result, void **data)
     ScmObj before  = SCM_OBJ(data[0]);
     ScmObj body = SCM_OBJ(data[1]);
     ScmObj after = SCM_OBJ(data[2]);
-    ScmObj prev;
     void *d[2];
     ScmVM *vm = theVM;
+    ScmObj prev = vm->handlers;
 
-    prev = vm->handlers;
     d[0] = (void*)after;
     d[1] = (void*)prev;
     vm->handlers = Scm_Cons(Scm_Cons(before, after), prev);
@@ -1819,12 +1868,11 @@ ScmObj Scm_VMDynamicWindC(ScmSubrProc *before,
                           ScmSubrProc *after,
                           void *data)
 {
-    ScmObj beforeproc, bodyproc, afterproc;
-    beforeproc =
+    ScmObj beforeproc =
         before ? Scm_MakeSubr(before, data, 0, 0, SCM_FALSE) : Scm_NullProc();
-    afterproc =
+    ScmObj afterproc =
         after ? Scm_MakeSubr(after, data, 0, 0, SCM_FALSE) : Scm_NullProc();
-    bodyproc =
+    ScmObj bodyproc =
         body ? Scm_MakeSubr(body, data, 0, 0, SCM_FALSE) : Scm_NullProc();
 
     return Scm_VMDynamicWind(beforeproc, bodyproc, afterproc);
@@ -1928,13 +1976,12 @@ void Scm_VMDefaultExceptionHandler(ScmObj e)
 {
     ScmVM *vm = theVM;
     ScmEscapePoint *ep = vm->escapePoint;
-    ScmObj hp;
 
     if (ep) {
         /* There's an escape point defined by with-error-handler. */
         ScmObj target, current;
         ScmObj result = SCM_FALSE, rvals[SCM_VM_MAX_VALUES];
-        int numVals = 0, i;
+        int numVals = 0;
 
         /* To conform SRFI-34, the error handler (clauses in 'guard' form)
            should be executed with the same continuation and dynamic
@@ -1946,7 +1993,8 @@ void Scm_VMDefaultExceptionHandler(ScmObj e)
         if (ep->rewindBefore) {
             target = ep->handlers;
             current = vm->handlers;
-            for (hp=current; SCM_PAIRP(hp) && (hp!=target); hp=SCM_CDR(hp)) {
+            for (ScmObj hp=current; SCM_PAIRP(hp) && (hp!=target);
+                 hp=SCM_CDR(hp)) {
                 ScmObj proc = SCM_CDAR(hp);
                 vm->handlers = SCM_CDR(hp);
                 Scm_ApplyRec(proc, SCM_NIL);
@@ -1967,12 +2015,13 @@ void Scm_VMDefaultExceptionHandler(ScmObj e)
         SCM_UNWIND_PROTECT {
             result = Scm_ApplyRec(ep->ehandler, SCM_LIST1(e));
             if ((numVals = vm->numVals) > 1) {
-                for (i=0; i<numVals-1; i++) rvals[i] = vm->vals[i];
+                for (int i=0; i<numVals-1; i++) rvals[i] = vm->vals[i];
             }
             if (!ep->rewindBefore) {
                 target = ep->handlers;
                 current = vm->handlers;
-                for (hp=current; SCM_PAIRP(hp) && (hp!=target); hp=SCM_CDR(hp)) {
+                for (ScmObj hp=current; SCM_PAIRP(hp) && (hp!=target);
+                     hp=SCM_CDR(hp)) {
                     ScmObj proc = SCM_CDAR(hp);
                     vm->handlers = SCM_CDR(hp);
                     Scm_ApplyRec(proc, SCM_NIL);
@@ -1988,7 +2037,7 @@ void Scm_VMDefaultExceptionHandler(ScmObj e)
         SCM_END_PROTECT;
 
         /* Install the continuation */
-        for (i=0; i<numVals; i++) vm->vals[i] = rvals[i];
+        for (int i=0; i<numVals; i++) vm->vals[i] = rvals[i];
         vm->numVals = numVals;
         vm->val0 = result;
         vm->cont = ep->cont;
@@ -2000,8 +2049,9 @@ void Scm_VMDefaultExceptionHandler(ScmObj e)
         /* We don't have an active error handler, so this is the fallback
            behavior.  Reports the error and rewind dynamic handlers and
            C stacks. */
-        Scm_ReportError(e);
+        call_error_reporter(e);
         /* unwind the dynamic handlers */
+        ScmObj hp;
         SCM_FOR_EACH(hp, vm->handlers) {
             ScmObj proc = SCM_CDAR(hp);
             vm->handlers = SCM_CDR(hp);
@@ -2017,6 +2067,45 @@ void Scm_VMDefaultExceptionHandler(ScmObj e)
     } else {
         exit(EX_SOFTWARE);
     }
+}
+
+/* Call error reporter - either the custome one, or the default
+   Scm_ReportError.  We set SCM_ERROR_BEING_REPORTED flag during it
+   to prevent infinite loop. */
+static void call_error_reporter(ScmObj e)
+{
+    ScmVM *vm = Scm_VM();
+
+    if (SCM_VM_RUNTIME_FLAG_IS_SET(vm, SCM_ERROR_BEING_REPORTED)) {
+        /* An _uncaptured_ error occurred during reporting an error.
+           We can't proceed, for it will cause infinite loop.
+           Note that it is OK for an error to occur inside the error
+           reporter, as far as the error is handled by user-installed
+           handler.   The user-installed handler can even invoke a
+           continuation that is captured outside; the flag is reset
+           in such case.
+           Be careful that it is possible that stderr is no longer
+           available here (since it may be the very cause of the
+           recursive error).  All we can do is to abort. */
+        Scm_Abort("Unhandled error occurred during reporting an error.  Process aborted.\n");
+    }
+
+    SCM_VM_RUNTIME_FLAG_SET(vm, SCM_ERROR_BEING_REPORTED);
+    SCM_UNWIND_PROTECT {
+        if (SCM_PROCEDUREP(vm->customErrorReporter)) {
+            Scm_ApplyRec(vm->customErrorReporter, SCM_LIST1(e));
+        } else {
+            Scm_ReportError(e);
+        }
+    }
+    SCM_WHEN_ERROR {
+        /* NB: this is called when a continuation captured outside is
+           invoked inside the error reporter.   It may be invoked by
+           the user's error handler.  */
+        SCM_VM_RUNTIME_FLAG_CLEAR(vm, SCM_ERROR_BEING_REPORTED);
+    }
+    SCM_END_PROTECT;
+    SCM_VM_RUNTIME_FLAG_CLEAR(vm, SCM_ERROR_BEING_REPORTED);
 }
 
 static ScmObj default_exception_handler_body(ScmObj *argv,
@@ -2044,7 +2133,15 @@ static SCM_DEFINE_SUBR(default_exception_handler_rec, 1, 0,
  *  handler.
  *  Note that this function may return.
  */
+#if  GAUCHE_API_0_95
+ScmObj Scm_VMThrowException(ScmVM *vm, ScmObj exception, u_long raise_flags)
+#else  /*!GAUCHE_API_0_95*/
 ScmObj Scm_VMThrowException(ScmVM *vm, ScmObj exception)
+{
+    return Scm_VMThrowException2(vm, exception, 0);
+}
+ScmObj Scm_VMThrowException2(ScmVM *vm, ScmObj exception, u_long raise_flags)
+#endif /*!GAUCHE_API_0_95*/
 {
     ScmEscapePoint *ep = vm->escapePoint;
 
@@ -2052,7 +2149,8 @@ ScmObj Scm_VMThrowException(ScmVM *vm, ScmObj exception)
 
     if (vm->exceptionHandler != DEFAULT_EXCEPTION_HANDLER) {
         vm->val0 = Scm_ApplyRec(vm->exceptionHandler, SCM_LIST1(exception));
-        if (SCM_SERIOUS_CONDITION_P(exception)) {
+        if (SCM_SERIOUS_CONDITION_P(exception)
+            || raise_flags&SCM_RAISE_NON_CONTINUABLE) {
             /* the user-installed exception handler returned while it
                shouldn't.  In order to prevent infinite loop, we should
                pop the erroneous handler.  For now, we just reset
@@ -2105,7 +2203,6 @@ static ScmObj with_error_handler(ScmVM *vm, ScmObj handler,
                                  ScmObj thunk, int rewindBefore)
 {
     ScmEscapePoint *ep = SCM_NEW(ScmEscapePoint);
-    ScmObj before, after;
 
     /* NB: we can save pointer to the stack area (vm->cont) to ep->cont,
      * since such ep is always accessible via vm->escapePoint chain and
@@ -2126,8 +2223,8 @@ static ScmObj with_error_handler(ScmVM *vm, ScmObj handler,
     vm->escapePoint = ep; /* This will be done in install_ehandler, but
                              make sure ep is visible from save_cont
                              to redirect ep->cont */
-    before = Scm_MakeSubr(install_ehandler, ep, 0, 0, SCM_FALSE);
-    after  = Scm_MakeSubr(discard_ehandler, ep, 0, 0, SCM_FALSE);
+    ScmObj before = Scm_MakeSubr(install_ehandler, ep, 0, 0, SCM_FALSE);
+    ScmObj after  = Scm_MakeSubr(discard_ehandler, ep, 0, 0, SCM_FALSE);
     return Scm_VMDynamicWind(before, thunk, after);
 }
 
@@ -2184,10 +2281,9 @@ static ScmObj throw_cont_calculate_handlers(ScmEscapePoint *ep, /*target*/
         SCM_APPEND1(h, t, Scm_Cons(SCM_CDAR(p), SCM_CDR(p)));
     }
     SCM_FOR_EACH(p, target) {
-        ScmObj chain;
         SCM_ASSERT(SCM_PAIRP(SCM_CAR(p)));
         if (!SCM_FALSEP(Scm_Memq(SCM_CAR(p), current))) continue;
-        chain = Scm_Memq(SCM_CAR(p), ep->handlers);
+        ScmObj chain = Scm_Memq(SCM_CAR(p), ep->handlers);
         SCM_ASSERT(SCM_PAIRP(chain));
         /* push 'before' handlers to be called */
         SCM_APPEND1(h, t, Scm_Cons(SCM_CAAR(p), SCM_CDR(chain)));
@@ -2204,7 +2300,7 @@ static ScmObj throw_cont_body(ScmObj handlers,    /* after/before thunks
                                                      target continuation */
 {
     void *data[3];
-    int nargs, i;
+    int nargs;
     ScmObj ap;
     ScmVM *vm = theVM;
 
@@ -2212,10 +2308,9 @@ static ScmObj throw_cont_body(ScmObj handlers,    /* after/before thunks
      * first, check to see if we need to evaluate dynamic handlers.
      */
     if (SCM_PAIRP(handlers)) {
-        ScmObj handler, chain;
         SCM_ASSERT(SCM_PAIRP(SCM_CAR(handlers)));
-        handler = SCM_CAAR(handlers);
-        chain   = SCM_CDAR(handlers);
+        ScmObj handler = SCM_CAAR(handlers);
+        ScmObj chain   = SCM_CDAR(handlers);
 
         data[0] = (void*)SCM_CDR(handlers);
         data[1] = (void*)ep;
@@ -2252,7 +2347,8 @@ static ScmObj throw_cont_body(ScmObj handlers,    /* after/before thunks
         Scm_Error("too many values passed to the continuation");
     }
 
-    for (i=0, ap=SCM_CDR(args); SCM_PAIRP(ap); i++, ap=SCM_CDR(ap)) {
+    ap = SCM_CDR(args);
+    for (int i=0; SCM_PAIRP(ap); i++, ap=SCM_CDR(ap)) {
         vm->vals[i] = SCM_CAR(ap);
     }
     vm->numVals = nargs;
@@ -2273,8 +2369,10 @@ static ScmObj throw_continuation(ScmObj *argframe, int nargs, void *data)
     ScmEscapePoint *ep = (ScmEscapePoint*)data;
     ScmObj args = argframe[0];
     ScmVM *vm = theVM;
-    ScmObj handlers_to_call;
 
+    /* First, check to see if we need to rewind C stack.
+       NB: If we are invoking a partial continuation (ep->cstack == NULL),
+       we execute it on the current cstack. */
     if (ep->cstack && vm->cstack != ep->cstack) {
         ScmCStack *cs;
         for (cs = vm->cstack; cs; cs = cs->prev) {
@@ -2282,38 +2380,48 @@ static ScmObj throw_continuation(ScmObj *argframe, int nargs, void *data)
         }
 
         /* If the continuation captured below the current C stack, we rewind
-           to the captured stack first.  If not, the continuation is 'ghost'.
-           We execute the scheme portion of the continuation on the current
-           C stack (no rewinding), but we'll catch it if it tries to return
-           to the C world.   See user_eval_inner().  */
+           to the captured stack first. */
         if (cs != NULL) {
             vm->escapeReason = SCM_VM_ESCAPE_CONT;
             vm->escapeData[0] = ep;
             vm->escapeData[1] = args;
             siglongjmp(vm->cstack->jbuf, 1);
         }
+        /* If we're here, the continuation is 'ghost'---it was captured on
+           a C stack that no longer exists, or that was in another thread.
+           We'll execute the Scheme part of such a ghost continuation
+           on the current C stack.  User_eval_inner will catch if we
+           ever try to return to the stale C frame.
+
+           Note that current vm->cstack chain may point to a continuation
+           frame in vm stack, so we need to save the continuation chain
+           first, since vm->cstack may be popped when other continuation
+           is invoked during the execution of the target one.  (We may be
+           able to save some memory access by checking vm->cstack chain to see
+           if we really have such a frame, but just calling save_cont is
+           easier and always safe.)
+        */
+        save_cont(vm);
     }
 
-    handlers_to_call = throw_cont_calculate_handlers(ep, vm);
+    ScmObj handlers_to_call = throw_cont_calculate_handlers(ep, vm);
     return throw_cont_body(handlers_to_call, ep, args);
 }
 
 ScmObj Scm_VMCallCC(ScmObj proc)
 {
-    ScmObj contproc;
-    ScmEscapePoint *ep;
     ScmVM *vm = theVM;
 
     save_cont(vm);
-    ep = SCM_NEW(ScmEscapePoint);
+    ScmEscapePoint *ep = SCM_NEW(ScmEscapePoint);
     ep->prev = NULL;
     ep->ehandler = SCM_FALSE;
     ep->cont = vm->cont;
     ep->handlers = vm->handlers;
     ep->cstack = vm->cstack;
 
-    contproc = Scm_MakeSubr(throw_continuation, ep, 0, 1,
-                            SCM_MAKE_STR("continuation"));
+    ScmObj contproc = Scm_MakeSubr(throw_continuation, ep, 0, 1,
+                                   SCM_MAKE_STR("continuation"));
     return Scm_VMApply1(proc, contproc);
 }
 
@@ -2323,9 +2431,6 @@ ScmObj Scm_VMCallCC(ScmObj proc)
    partial continuation. */
 ScmObj Scm_VMCallPC(ScmObj proc)
 {
-    ScmObj contproc;
-    ScmEscapePoint *ep;
-    ScmContFrame *c, *cp;
     ScmVM *vm = theVM;
 
     /* save the continuation.  we only need to save the portion above the
@@ -2335,6 +2440,7 @@ ScmObj Scm_VMCallPC(ScmObj proc)
     save_cont(vm);
 
     /* find the latest boundary frame */
+    ScmContFrame *c, *cp;
     for (c = vm->cont, cp = NULL;
          c && !BOUNDARY_FRAME_P(c);
          cp = c, c = c->prev)
@@ -2342,15 +2448,15 @@ ScmObj Scm_VMCallPC(ScmObj proc)
 
     if (cp != NULL) cp->prev = NULL; /* cut the dynamic chain */
 
-    ep = SCM_NEW(ScmEscapePoint);
+    ScmEscapePoint *ep = SCM_NEW(ScmEscapePoint);
     ep->prev = NULL;
     ep->ehandler = SCM_FALSE;
     ep->cont = (cp? vm->cont : NULL);
     ep->handlers = vm->handlers;
     ep->cstack = NULL; /* so that the partial continuation can be run
                           on any cstack state. */
-    contproc = Scm_MakeSubr(throw_continuation, ep, 0, 1,
-                            SCM_MAKE_STR("partial continuation"));
+    ScmObj contproc = Scm_MakeSubr(throw_continuation, ep, 0, 1,
+                                   SCM_MAKE_STR("partial continuation"));
     /* Remove the saved continuation chain.
        NB: c can be NULL if we've been executing a partial continuation.
        It's ok, for a continuation pointed by cstack will be restored
@@ -2393,14 +2499,12 @@ void Scm_VMRewindProtect(ScmVM *vm)
 
 ScmObj Scm_VMValues(ScmVM *vm, ScmObj args)
 {
-    ScmObj cp;
-    int nvals;
-
     if (!SCM_PAIRP(args)) {
         vm->numVals = 0;
         return SCM_UNDEFINED;
     }
-    nvals = 1;
+    int nvals = 1;
+    ScmObj cp;
     SCM_FOR_EACH(cp, SCM_CDR(args)) {
         vm->vals[nvals-1] = SCM_CAR(cp);
         if (nvals++ >= SCM_VM_MAX_VALUES) {
@@ -2496,15 +2600,13 @@ ScmObj Scm_Values5(ScmObj val0, ScmObj val1,
 static ScmObj process_queued_requests_cc(ScmObj result, void **data)
 {
     /* restore the saved continuation of normal execution flow of VM */
-    int i;
-    ScmObj cp;
     ScmVM *vm = theVM;
 
     vm->numVals = (int)(intptr_t)data[0];
     vm->val0 = data[1];
     if (vm->numVals > 1) {
-        cp = SCM_OBJ(data[2]);
-        for (i=0; i<vm->numVals-1; i++) {
+        ScmObj cp = SCM_OBJ(data[2]);
+        for (int i=0; i<vm->numVals-1; i++) {
             vm->vals[i] = SCM_CAR(cp);
             cp = SCM_CDR(cp);
         }
@@ -2520,10 +2622,9 @@ static void process_queued_requests(ScmVM *vm)
     data[0] = (void*)(intptr_t)vm->numVals;
     data[1] = vm->val0;
     if (vm->numVals > 1) {
-        int i;
         ScmObj h = SCM_NIL, t = SCM_NIL;
 
-        for (i=0; i<vm->numVals-1; i++) {
+        for (int i=0; i<vm->numVals-1; i++) {
             SCM_APPEND1(h, t, vm->vals[i]);
         }
         data[2] = h;
@@ -2596,12 +2697,10 @@ ScmObj Scm_VMGetStackLite(ScmVM *vm)
 {
     ScmContFrame *c = vm->cont;
     ScmObj stack = SCM_NIL, tail = SCM_NIL;
-    ScmObj info;
-
-    info = Scm_VMGetSourceInfo(vm->base, vm->pc);
+    ScmObj info = Scm_VMGetSourceInfo(vm->base, vm->pc);
     if (!SCM_FALSEP(info)) SCM_APPEND1(stack, tail, info);
     while (c) {
-        info = Scm_VMGetSourceInfo(c->base, c->pc);
+        info = Scm_VMGetSourceInfo(c->base, c->cpc);
         if (!SCM_FALSEP(info)) SCM_APPEND1(stack, tail, info);
         c = c->prev;
     }
@@ -2618,21 +2717,19 @@ struct EnvTab {
     int numEntries;
 };
 
+#if 0 /* for now */
 static ScmObj env2vec(ScmEnvFrame *env, struct EnvTab *etab)
 {
-    int i;
-    ScmObj vec;
-
     if (!env) return SCM_FALSE;
-    for (i=0; i<etab->numEntries; i++) {
+    for (int i=0; i<etab->numEntries; i++) {
         if (etab->entries[i].env == env) {
             return etab->entries[i].vec;
         }
     }
-    vec = Scm_MakeVector((int)env->size+2, SCM_FALSE);
+    ScmObj vec = Scm_MakeVector((int)env->size+2, SCM_FALSE);
     SCM_VECTOR_ELEMENT(vec, 0) = env2vec(env->up, etab);
     SCM_VECTOR_ELEMENT(vec, 1) = SCM_NIL; /*Scm_VMGetBindInfo(env->info);*/
-    for (i=0; i<env->size; i++) {
+    for (int i=0; i<env->size; i++) {
         SCM_VECTOR_ELEMENT(vec, i+2) = ENV_DATA(env, (env->size-i-1));
     }
     if (etab->numEntries < DEFAULT_ENV_TABLE_SIZE) {
@@ -2642,6 +2739,7 @@ static ScmObj env2vec(ScmEnvFrame *env, struct EnvTab *etab)
     }
     return vec;
 }
+#endif
 
 ScmObj Scm_VMGetStack(ScmVM *vm)
 {
@@ -2673,13 +2771,12 @@ ScmObj Scm_VMGetStack(ScmVM *vm)
  */
 static ScmObj get_debug_info(ScmCompiledCode *base, SCM_PCTYPE pc)
 {
-    int off;
-    ScmObj ip;
     if (base == NULL
         || (pc < base->code || pc >= base->code + base->codeSize)) {
         return SCM_FALSE;
     }
-    off = (int)(pc - base->code);
+    int off = (int)(pc - base->code);
+    ScmObj ip;
     SCM_FOR_EACH(ip, base->info) {
         ScmObj p = SCM_CAR(ip);
         if (!SCM_PAIRP(p) || !SCM_INTP(SCM_CAR(p))) continue;
@@ -2715,11 +2812,10 @@ ScmObj Scm_VMGetBindInfo(ScmCompiledCode *base, SCM_PCTYPE pc)
 
 static void dump_env(ScmEnvFrame *env, ScmPort *out)
 {
-    int i;
     Scm_Printf(out, "   %p %55.1S\n", env, env->info);
     Scm_Printf(out, "       up=%p size=%d\n", env->up, env->size);
     Scm_Printf(out, "       [");
-    for (i=0; i<env->size; i++) {
+    for (int i=0; i<env->size; i++) {
         Scm_Printf(out, " %S", ENV_DATA(env, i));
     }
     Scm_Printf(out, " ]\n");
@@ -2790,13 +2886,13 @@ struct GC_ms_entry *vm_stack_mark(GC_word *addr,
     struct GC_ms_entry *e = mark_sp;
     ScmObj *vmsb = ((ScmObj*)addr)+1;
     ScmVM *vm = (ScmVM*)*addr;
-    int i, limit = vm->sp - vm->stackBase + 5;
-    void * spb = (void *)vm->stackBase;
-    void * sbe = (void *)(vm->stackBase + SCM_VM_STACK_SIZE);
-    void * hb = GC_least_plausible_heap_addr;
-    void * he = GC_greatest_plausible_heap_addr;
+    int limit = vm->sp - vm->stackBase + 5;
+    void *spb = (void *)vm->stackBase;
+    void *sbe = (void *)(vm->stackBase + SCM_VM_STACK_SIZE);
+    void *hb = GC_least_plausible_heap_addr;
+    void *he = GC_greatest_plausible_heap_addr;
 
-    for (i=0; i<limit; i++, vmsb++) {
+    for (int i=0; i<limit; i++, vmsb++) {
         ScmObj z = *vmsb;
         if ((hb < (void *)z && (void *)z < spb)
             || ((void *)z > sbe && (void *)z < he)) {

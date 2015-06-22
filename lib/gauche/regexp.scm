@@ -1,7 +1,7 @@
 ;;;
 ;;; regexp.scm - auxiliary macros and procedures for regexp.  autoloaded.
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -153,8 +153,18 @@
     ;; special optimization - if the content is a simple character,
     ;; or a single group, omit extra grouping
     (if (and (not (null? ns)) (null? (cdr ns))
-             (or (char? (car ns))
-                 (and (pair? (car ns)) (integer? (caar ns)))))
+             (let1 item (car ns)
+               (or (char? item)
+                   (eq? item 'any)
+                   (char-set? item)
+                   (and (pair? item)
+                        (or (integer? (car item)) ;capturing group
+                            (memq (car item)
+                                  '(alt comp seq-uncase seq-case cpat once
+                                        assert nassert))
+                            (and (eq? (car item) 'seq)
+                                 (pair? (cdr item))
+                                 (null? (cddr item))))))))
       (unparse (car ns))
       (between "(?:" ns ")"))
     (disp (cond [(not N) (case M
@@ -180,7 +190,7 @@
         [(assert nassert)  (apply unparse-assert-like test)]
         [else (err "invalid AST in the test part of cpat" test)]))
     (seq yes)
-    (when no (disp "|") (seq no))
+    (unless (null? no) (disp "|") (seq no))
     (disp ")"))
 
   (define (unparse-assert-like op . asst)

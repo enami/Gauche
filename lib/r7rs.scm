@@ -1,7 +1,7 @@
 ;;;
 ;;; r7rs - R7RS compatibility
 ;;;
-;;;   Copyright (c) 2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2013-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -35,38 +35,8 @@
 ;; This is not intended to be just 'use'-d.  Instead, you say (extend r7rs)
 ;; and you'll enter the initial toplevel environment of R7RS, where
 ;; only r7rs-style 'import' and 'define-library' are available.
-;; With gosh, you can start -r7 option to enter the R7RS environment directly.
-
-
-;; r7rs.library-name - mapping R7RS library name to Gauche module name
-;;
-;; We simply maps R7RS (foo bar baz) to Gauche's foo.bar.baz . The caveat
-;; is that R7RS library name component may include dots.  We map them in R7RS
-;; library names into consecutive dots in Gauche module name, which will be
-;; mapped to a single dot again in pathnames.
-;; (The latter translation is done by module-name->path and path->module-name
-;; in src/libmod.scm)
-;;
-;;  R7RS library name   Gauche module name      File pathname
-;;
-;;  (foo bar baz)       foo.bar.baz             foo/bar/baz
-;;  (foo b.r baz)       foo.b..r.baz            foo/b.r/baz
-;;
-;; TODO: R7RS library name can contain weird characters, and we need a rule
-;; to map them.
-(define-module r7rs.library-name
-  (export library-name->module-name)
-
-  (define (stringify x)
-    (cond [(keyword? x) (write-to-string x)]
-          [(symbol? x) (symbol->string x)]
-          [(and (integer? x) (exact? x) (>= x 0)) (number->string x)]
-          [else (error "Bad name component in library name:" x)]))
-  
-  (define (library-name->module-name libname)
-    ($ string->symbol $ (cut string-join <> ".")
-       $ map ($ (cut regexp-replace-all #/\./ <> "..") $ stringify $) libname))
-  )
+;; If you start gosh with r7rs mode (-r7 option), not only the above bindings
+;; but also most of r7rs-small bindings are avaialable (see gauche.interactive).
 
 ;; r7rs.import - R7RS-style 'import'.
 ;;
@@ -75,7 +45,6 @@
 (define-module r7rs.import
   (use util.match)
   (use srfi-1)
-  (import r7rs.library-name)
   (export (rename import r7rs-import))
 
   ;; A trick - must be replaced once we have explicit-renaming macro.
@@ -108,14 +77,19 @@
          `(,@(rec import-set) :prefix ,identifier)]
         [('rename import-set mapping ...)
          `(,@(rec import-set) :rename ,mapping)]
-        [else (list (library-name->module-name import-set))]))
+        [else
+         ;; Kludge: Warn if a programmer say (import gauche).
+         (when (equal? import-set '(gauche))
+           (warn "(import (gauche)) does not import anything.  \
+                  If you intend to import Gauche's built-in bindings, \
+                  say (import (gauche base)).\n"))
+         (list (library-name->module-name import-set))]))
     (let1 import-spec (rec import-set)
       `((,require-if-module-doesnt-exist. ,(car import-spec))
         (,import. ,import-spec)))))
 
 ;; r7rs.library - R7RS define-library form
 (define-module r7rs.library
-  (import r7rs.library-name)
   (export define-library)
 
   ;; A trick - must be replaced once we have explicit-renaming macro.
@@ -141,8 +115,11 @@
 
   (define (transform-decl decl)
     (cond [(eq? (car decl) 'include-library-declarations)
-           ;; WRITEME
-           (error "include-library-declarations isn't supported yet:" decl)]
+           ;; TODO: This is too permissive---this allows the files
+           ;; to have not only library decls but also ordinary scheme
+           ;; expressions.  But this can delegate file searching business
+           ;; to 'include' syntax so it's an easy path.
+           `(include ,@(cdr decl))]
           [(memq (car decl)
                  '(export import include include-ci begin cond-expand))
            decl]
@@ -151,7 +128,7 @@
   )
 
 ;;
-;; The 'r7rs' module removes all bindings by empty (extend), except
+;; The 'r7rs' module removes all bindings by an empty (extend), except
 ;; 'import' and 'define-library'.
 ;;
 (define-module r7rs
@@ -159,6 +136,13 @@
   (define-syntax import         (with-module r7rs.import r7rs-import))
   (define-syntax define-library (with-module r7rs.library define-library))
   (extend))
+
+;;
+;; The 'r7rs.user' module is the default module when gosh is invoked in
+;; r7rs mode.
+;;
+(define-module r7rs.user
+  (extend r7rs))
 
 ;; R7RS-small standard libraries.  First I thought to make them have
 ;; separate file for each, but most of its content is just a rebinding&
@@ -171,7 +155,7 @@
 (define-module r7rs.aux
   (export define+ define-syntax+)
   (define-macro (define+ sym module)
-    `(define ,sym (with-module ,module ,sym)))
+    `(define-inline ,sym (with-module ,module ,sym)))
   (define-macro (define-syntax+ sym module)
     `(define-syntax ,sym (with-module ,module ,sym))))
 
@@ -179,6 +163,7 @@
   (use gauche.uvector)
   (use gauche.record)
   (use gauche.parameter)
+  (use text.unicode)
   (use srfi-11)
   (use srfi-13)
 
@@ -216,7 +201,8 @@
           list->string list-copy list-set!  list?  make-list make-string map
           member memv modulo newline null?  number?  odd?  open-input-string
           open-output-string output-port-open?  pair?  peek-char port?
-          procedure?  quote raise rational?  read-bytevector read-char read-line
+          procedure?  quote (rename r7rs:raise raise)
+          rational?  read-bytevector read-char read-line
           read-u8 remainder round set-car!  square string->list string->symbol
           string->vector string-copy string-copy!  string-for-each string-map
           string-set!  string<?  string>=?  string?  symbol->string symbol?
@@ -230,297 +216,157 @@
           vector-set!  when write-bytevector write-string zero?
           )
 
+  (autoload gauche.vport
+            open-input-uvector open-output-uvector get-output-uvector)
+
   ;; 4.1 Primitive expression types
-  (define-syntax+ quote      gauche)
-  (define-syntax+ lambda     gauche)
-  (define-syntax+ if         gauche)
-  (define-syntax+ include    gauche)
-  (define-syntax+ include-ci gauche)
+  ;; quote, if, include, include-ci
+  (define-syntax+ lambda     scheme)
 
   ;; 4.2 Derived expression types
-  (define-syntax+ cond       gauche)
-  (define else (undefined)) ;; dummy binding - rather make it syntactic binding
-  (define =>   (undefined)) ;; dummy binding - rather make it syntactic binding
-  (define-syntax+ case       gauche)
-  (define-syntax+ and        gauche)
-  (define-syntax+ or         gauche)
-  (define-syntax+ when       gauche)
-  (define-syntax+ unless     gauche)
-  (define-syntax+ cond-expand gauche) ;;TODO: support 'library' form
-  (define-syntax+ let        gauche)
-  (define-syntax+ let*       gauche)
-  (define-syntax+ letrec     gauche)
-  (define letrec* (undefined))  ;;WRITEME
-  (define-syntax+ let-values srfi-11)
-  (define-syntax+ let*-values srfi-11)
-  (define-syntax+ begin      gauche)
-  (define-syntax+ do         gauche)
-  (define+        make-parameter gauche.parameter)
-  (define-syntax+ parameterize   gauche.parameter)
-  (define-syntax+ guard      gauche)
-  (define-syntax+ quasiquote gauche)
-  (define-syntax+ unquote    gauche)
-  (define-syntax+ unquote-splicing gauche)
-  (define-syntax+ case-lambda gauche)
+  ;; cond case and or when unless cond-expand let let* letrec letrec*
+  ;; let-values let*-values begin do make-parameter parameterize
+  ;; guard quasiquote unquote unquote-splicing case-lambda
 
   ;; 4.3 Macros
-  ;; TODO: Make Gauche's builtin hygienic macros compatible to R7RS.
-  (define-syntax+ let-syntax gauche)
-  (define-syntax+ letrec-syntax gauche)
-  (define-syntax+ syntax-rules gauche)
-  (define-syntax+ syntax-error gauche)
+  ;; let-synatx letrec-syntax syntax-rules syntax-error
 
   ;; 5.3 Variable definitions
   (define-syntax r7rs:define define)
   (define-syntax r7rs:define-values define-values)
 
   ;; 5.4 Syntax definitions
-  ;; TODO: make gauche's define-syntax R7RS compatible
   (define-syntax r7rs:define-syntax define-syntax)
-  (define ... (undefined))                ; a dummy binding
 
   ;; 5.5 Record type definitions
-  (define-syntax+ define-record-type gauche.record)
+  ;; define-record-type
 
   ;; 6.1 Equivalence predicates
-  ;; TODO: make equal? not diverge
-  (define+ eqv?   gauche)
-  (define+ eq?    gauche)
-  (define+ equal? gauche)
+  ;; eqv? eq? equal?
 
   ;; 6.2 Numbers
-  (define+ number?   gauche)
-  (define+ complex?  gauche)
-  (define+ real?     gauche)
-  (define+ rational? gauche)
-  (define+ integer?  gauche)
-  (define+ exact?    gauche)
-  (define+ exact-integer? gauche)
-  (define+ =         gauche)
-  (define+ <         gauche)
-  (define+ >         gauche)
-  (define+ <=        gauche)
-  (define+ >=        gauche)
-  (define+ zero?     gauche)
-  (define+ positive? gauche)
-  (define+ negative? gauche)
-  (define+ odd?      gauche)
-  (define+ even?     gauche)
-  (define+ max       gauche)
-  (define+ min       gauche)
-  (define+ +         gauche)
-  (define+ *         gauche)
-  (define+ -         gauche)
-  (define+ /         gauche)
-  (define+ abs       gauche)
-
-  (define+ floor/             gauche)
-  (define+ floor-quotient     gauche)
-  (define+ floor-remainder    gauche)
-  (define+ truncate/          gauche)
-  (define+ truncate-quotient  gauche)
-  (define+ truncate-remainder gauche)
-
-  (define+ quotient  gauche)
-  (define+ modulo    gauche)
-  (define+ remainder gauche)
-  (define+ gcd       gauche)
-  (define+ lcm       gauche)
-
-  (define+ numerator gauche)
-  (define+ denominator gauche)
-  (define+ floor     gauche)
-  (define+ ceiling   gauche)
-  (define+ truncate  gauche)
-  (define+ round     gauche)
-  (define+ rationalize gauche)
-  (define+ square    gauche)
-  (define+ exact-integer-sqrt gauche)
-  (define+ expt      gauche)
-  (define+ inexact   gauche)
-  (define+ exact     gauche)
-  (define+ number->string gauche)
-  (define+ string->number gauche)
+  ;; TODO: exact complex
+  ;; number? complex? real? rational? integer? exact? exact-integer?
+  ;; = < > <= >= zero? positive? negative? odd? even? max min + * - / abs
+  ;; floor/ floor-quotient floor-remainder
+  ;; truncate/ truncate-quotient truncate-remainder
+  ;; quotient modulo remainder gcd lcm numerator denominator
+  ;; floor ceiling truncate round rationalize square exact-integer-sqrt
+  ;; expt inexact exact number->string string->number
 
   ;; 6.3 Booleans
-  (define+ not       gauche)
-  (define+ boolean?  gauche)
-  (define+ boolean=? gauche)
+  ;; not boolean? boolean=?
 
   ;; 6.4 Pairs and lists
-  (define+ pair? gauche)
-  (define+ cons gauche)
-  (define+ car gauche)
-  (define+ cdr gauche)
-  (define+ set-car! gauche)
-  (define+ set-cdr! gauche)
-  (define+ caar gauche)
-  (define+ cadr gauche)
-  (define+ cdar gauche)
-  (define+ cddr gauche)
-  (define+ null? gauche)
-  (define+ list? gauche)
-  (define+ make-list gauche)
-  (define+ list gauche)
-  (define+ length gauche)
-  (define+ append gauche)
-  (define+ reverse gauche)
-  (define+ list-tail gauche)
-  (define+ list-ref gauche)
-  (define+ list-set! gauche)
-  (define+ memq gauche)
-  (define+ memv gauche)
-  (define+ member gauche)
-  (define+ assq gauche)
-  (define+ assv gauche)
-  (define+ assoc gauche)
-  (define+ list-copy gauche)
+  ;; pair? cons car cdr set-car! set-cdr! caar cadr cdar cddr null? list?
+  ;; make-list list length append reverse list-tail list-ref list-set!
+  ;; memq memv member assq assv assoc list-copy
 
   ;; 6.5 Symbols
-  (define+ symbol?        gauche)
-  (define+ symbol=?       gauche)
-  (define+ symbol->string gauche)
-  (define+ string->symbol gauche)
+  ;; symbol? symbol=? symbol->string string->symbol
 
   ;; 6.6 Characters
-  (define+ char?   gauche)
-  (define+ char=?  gauche)
-  (define+ char<?  gauche)
-  (define+ char>?  gauche)
-  (define+ char<=? gauche)
-  (define+ char<=? gauche)
-
-  ;; TODO: handle when native encoding is not utf8
-  (define+ char->integer gauche)
-  (define+ integer->char gauche)
+  ;; char? char=? char<? char>? char<=? char>=?
+  ;; char->integer integer->char
 
   ;; 6.7 Strings
-  (define+ string? gauche)
-  (define+ make-string gauche)
-  (define+ string gauche)
-  (define+ string-length gauche)
-  (define+ string-ref gauche)
-  (define+ string-set! gauche)
-  (define+ string=? gauche)
-  (define+ string<? gauche)
-  (define+ string>? gauche)
-  (define+ string<=? gauche)
-  (define+ string>=? gauche)
-  (define+ substring gauche)
-  (define+ string-append gauche)
-  (define+ string->list gauche)
-  (define+ list->string gauche)
-  (define+ string-copy gauche)
-  (define+ string-copy! srfi-13)
-  (define+ string-fill! gauche)
+  ;; string? make-string string string-length string-ref string-set!
+  ;; string=? string<? string>? string<=? string>=? substring string-append
+  ;; string->list list->string string-copy string-copy! string-fill!
 
   ;; 6.8 Vectors
-  (define+ vector? gauche)
-  (define+ make-vector gauche)
-  (define+ vector gauche)
-  (define+ vector-length gauche)
-  (define+ vector-ref gauche)
-  (define+ vector-set! gauche)
-  (define+ vector->list gauche)
-  (define+ list->vector gauche)
-                                        ;vector->string
-                                        ;string->vector
-  (define+ vector-copy gauche)
+  ;; vector? make-vector vector vector-length vector-ref vector-set!
+  ;; vector->list list->vector vector->string string->vector
+  ;; vector-copy vector-copy! vector-append vector-fill!
   (define+ vector-copy!  srfi-43)
   (define+ vector-append srfi-43)
-  (define+ vector-fill! gauche)
 
   ;; 6.9 Bytevectors
-  (define bytevector         u8vector)
-  (define bytevector?        u8vector?)
-  (define make-bytevector    make-u8vector)
-  (define bytevector-length  u8vector-length)
-  (define bytevector-u8-ref  u8vector-ref)
-  (define bytevector-u8-set! u8vector-set!)
-  (define bytevector-copy    u8vector-copy)
-  (define bytevector-copy!   u8vector-copy!)
-  (define (bytevector-append . bvs)
-    (let* ([size (apply + (map u8vector-length bvs))]
-           [dest (make-u8vector size)])
-      (do ([bvs bvs (cdr bvs)]
-           [k   0   (+ k (u8vector-length (car bvs)))])
-          [(null? bvs) dest]
-        (u8vector-copy! dest k (car bvs)))))
-
-  ;; TODO: when native encoding is not utf8
-  (define utf8->string       u8vector->string)
-  (define string->utf8       string->u8vector)
+  (define-inline bytevector         u8vector)
+  (define-inline bytevector?        u8vector?)
+  (define-inline make-bytevector    make-u8vector)
+  (define-inline bytevector-length  u8vector-length)
+  (define-inline bytevector-u8-ref  u8vector-ref)
+  (define-inline bytevector-u8-set! u8vector-set!)
+  (define-inline bytevector-copy    u8vector-copy)
+  (define-inline bytevector-copy!   u8vector-copy!)
+  (define-inline bytevector-append  u8vector-append)
+  (define+ utf8->string  text.unicode)
+  (define+ string->utf8  text.unicode)
 
   ;; 6.10 Control features
-  (define+ procedure? gauche)
-  (define+ apply gauche)
-  (define+ map gauche)
-  (define+ string-map srfi-13)
-  (define vector-map (undefined)) ;WRITEME: differs from srfi-43
-                                 
+  ;; procedure? apply map
+  ;; call-with-current-continuation call/cc values call-with-values dynamic-wind
+  (define (string-map proc str . more-strs) ; TODO: can be more efficient
+    (if-let1 a (find (^s (not (string? s))) (cons str more-strs))
+      (error "non-string argument passed to string-map:" a)
+      (apply (with-module gauche.sequence map-to) <string> proc str more-strs)))
+  (define+ vector-map gauche)
   (define+ for-each gauche)
-  (define+ string-for-each srfi-13)
-  (define vector-for-each (undefined)) ;WRITEME: differs from srfi-43
-  (define+ call-with-current-continuation gauche)
-  (define+ call/cc gauche)
-  (define+ values gauche)
-  (define+ call-with-values gauche)
-  (define+ dynamic-wind gauche)
+  (define (string-for-each proc str . more-strs) ; TODO: can be more efficient
+    (if-let1 a (find (^s (not (string? s))) (cons str more-strs))
+      (error "non-string argument passed to string-for-each:" a)
+      (apply (with-module gauche.sequence for-each) proc str more-strs)))
+  (define+ vector-for-each gauche)
 
   ;; 6.11 Exceptions
-  (define+ raise gauche)
-  (define raise-continuable (undefined)) ;WRITEME
-  (define+ error gauche)
+  ;; error - built-in
+  
+  ;; NB: In Gauche, 'raise' is continuable as far as the thrown exception
+  ;; isn't fatal.
+  (define (raise-continuable c) (raise c))
+  (define (r7rs:raise c) ((with-module gauche.internal %raise) c #t))
+  
   (define (error-object? e) (condition-has-type? e <error>))
   (define (error-object-message e)
     (if (condition-has-type? e <message-condition>)
-      (condition-ref e 'message)
-      (format "object is not a condition: ~s" e))) ;TODO: should reraise an error?
-  (define error-object-irritants (undefined))      ;WRITEME
-  (define read-error? (undefined))                 ;WRITEME
-  (define file-error? (undefined))                 ;WRITEME
+      (condition-ref e 'message-prefix)
+      "")) ; for now, we take permissive stance.
+  (define (error-object-irritants e)
+    (if (condition-has-type? e <message-condition>)
+      (condition-ref e 'message-args)
+      '()))
+  (define (read-error? e) (condition-has-type? e <read-error>))
+  (define (file-error? e) ;TODO: have a distinct type <file-error>
+    ;; for the time being, we use heuristics
+    (and (condition-has-type? e <system-error>)
+         (boolean (memq (sys-errno->symbol (condition-ref e 'errno))
+                        `(EACCES EAGAIN EBADF EBADFD EEXIST EFBIG EIO
+                          EISDIR EISNAM ELNRNG ELOOP EMFILE EMLINK
+                          ENAMETOOLONG ENFILE ENOBUFS ENODEV ENOENT
+                          ENOSPC ENOTBLK ENOTDIR ENOTEMPTY ENXIO
+                          EPERM EPIPE ESPIPE ESTALE ETXTBSY EXDEV)))))
 
   ;; 6.12 Enviornments and evaluation
-  (define+ scheme-report-environment gauche)
-  (define+ null-environment gauche)
+  ;; scheme-report-environment null-environment
 
   ;; 6.13 Input and output
-  (define+ input-port? gauche)
-  (define+ output-port? gauche)
-  (define (textual-port? p) (port? p))     ; gauche's port can handle both
+  ;; input-port? output-port? port? current-input-port current-output-port
+  ;; current-error-port close-port close-input-port close-ouptut-port
+  ;; open-input-string open-output-string get-output-string read-string
+  ;; read-char peek-char read-line eof-object? eof-object char-ready?
+  ;; newline write-char
+  (define (textual-port? p) (port? p))    ; gauche's port can handle both
   (define (binary-port? p) (port? p))     ; gauche's port can handle both
-  (define+ port? gauche)
   (define (input-port-open? p) (and (input-port? p) (not (port-closed? p))))
   (define (output-port-open? p) (and (output-port? p) (not (port-closed? p))))
-  (define+ current-input-port gauche)
-  (define+ current-output-port gauche)
-  (define+ current-error-port gauche)
-  (define (close-port p)
-    (cond [(input-port? p)  (close-input-port p)]
-          [(output-port? p) (close-output-port p)]
-          [else (error "port required, but got:" p)]))
-  (define+ close-input-port gauche)
-  (define+ close-output-port gauche)
-  (define+ open-input-string gauche)
-  (define+ open-output-string gauche)
-  (define+ get-output-string gauche)
-  (define open-input-bytevector (undefined))  ;WRITEME
-  (define open-output-bytevector (undefined)) ;WRITEME
-  (define get-output-bytevector (undefined))  ;WRITEME
-  (define+ read-char gauche)
-  (define+ peek-char gauche)
-  (define+ read-line gauche)
-  (define+ eof-object? gauche)
-  (define+ eof-object gauche)
-  (define+ char-ready? gauche)
-  (define+ read-string text.parse)
-  (define read-u8 read-byte)
-  (define peek-u8 peek-byte)
+  (define (open-input-bytevector bv)
+    (check-arg u8vector? bv)
+    (open-input-uvector bv))
+  (define (open-output-bytevector) (open-output-uvector))
+  (define (get-output-bytevector port)
+    (or (get-output-uvector port)
+        (error "get-output-bytevector needs a output uvector port, but got:"
+               port)))
+  (define-inline read-u8 read-byte)
+  (define-inline peek-u8 peek-byte)
   (define u8-ready? byte-ready?)
-  (define read-bytevector (undefined))  ;WRTIEME
-  (define read-bytevector! (undefined)) ;WRITEME
-  (define+ newline gauche)
-  (define+ write-char gauche)
+  (define (read-bytevector k :optional (port (current-input-port)))
+    (read-uvector <u8vector> k port))
+  (define (read-bytevector! bv :optional (port (current-input-port))
+                                         (start 0)
+                                         (end (u8vector-length bv)))
+    (read-block! bv port start end))
   (define (write-string string :optional (port (current-output-port))
                         (start #f)
                         (end #f))
@@ -528,8 +374,8 @@
       (display (substring string (or start 0) (or end (string-length string)))
                port)
       (display string port)))
-  (define write-u8 write-byte)
-  (define write-bytevector write-block)
+  (define-inline write-u8 write-byte)
+  (define write-bytevector write-uvector)
   (define flush-output-port flush)
 
   ;; 6.14 System interface
@@ -540,7 +386,6 @@
 (define-module scheme.case-lambda
   (import r7rs.aux)
   (export case-lambda)
-  (define-syntax+ case-lambda gauche)
   (provide "scheme/case-lambda"))
 
 (define-module scheme.char
@@ -556,26 +401,12 @@
           string-ci=? string-ci>=?
           string-ci>? string-downcase
           string-foldcase string-upcase)
-  (define+ char-alphabetic? gauche)
-  (define+ char-numeric? gauche)
-  (define+ char-whitespace? gauche)
-  (define+ char-upper-case? gauche)
-  (define+ char-lower-case? gauche)
-  (define+ char-ci=? gauche)
-  (define+ char-ci<? gauche)
-  (define+ char-ci>? gauche)
-  (define+ char-ci<=? gauche)
-  (define+ char-ci<=? gauche)
-  ;; TODO: take into account of unicode Nd chars
-  (define (digit-value c) (digit->integer c))
-  (define+ char-upcase gauche)
-  (define+ char-downcase gauche)
-  (define+ char-foldcase gauche)
-  (define+ string-ci=? gauche)
-  (define+ string-ci<? gauche)
-  (define+ string-ci>? gauche)
-  (define+ string-ci<=? gauche)
-  (define+ string-ci>=? gauche)
+  (define (digit-value c) (digit->integer c 10 #t))
+  (define+ string-ci=?  text.unicode)   ; not gauche's.
+  (define+ string-ci<?  text.unicode)   ; not gauche's.
+  (define+ string-ci>?  text.unicode)   ; not gauche's.
+  (define+ string-ci<=? text.unicode)   ; not gauche's.
+  (define+ string-ci>=? text.unicode)   ; not gauche's.
   (define+ string-upcase text.unicode)   ; not srfi-13's.
   (define+ string-downcase text.unicode) ; not srfi-13's.
   (define+ string-foldcase text.unicode) ; not srfi-13's.
@@ -584,12 +415,6 @@
 (define-module scheme.complex
   (import r7rs.aux)
   (export angle imag-part magnitude make-polar make-rectangular real-part)
-  (define+ real-part gauche)
-  (define+ imag-part gauche)
-  (define+ magnitude gauche)
-  (define+ angle     gauche)
-  (define+ make-rectangular gauche)
-  (define+ make-polar gauche)
   (provide "scheme/complex"))
 
 (define-module scheme.cxr
@@ -597,37 +422,15 @@
   (export caaar caadr cadar caddr cdaar cdadr cddar cdddr
           caaaar caaadr caadar caaddr cadaar cadadr caddar cadddr
           cdaaar cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr)
-  (define+ caaar gauche)
-  (define+ caadr gauche)
-  (define+ cadar gauche)
-  (define+ caddr gauche)
-  (define+ cdaar gauche)
-  (define+ cdadr gauche)
-  (define+ cddar gauche)
-  (define+ cdddr gauche)
-  (define+ caaaar gauche)
-  (define+ caaadr gauche)
-  (define+ caadar gauche)
-  (define+ caaddr gauche)
-  (define+ cadaar gauche)
-  (define+ cadadr gauche)
-  (define+ caddar gauche)
-  (define+ cadddr gauche)
-  (define+ cdaaar gauche)
-  (define+ cdaadr gauche)
-  (define+ cdadar gauche)
-  (define+ cdaddr gauche)
-  (define+ cddaar gauche)
-  (define+ cddadr gauche)
-  (define+ cdddar gauche)
-  (define+ cddddr gauche)
   (provide "scheme/cxr"))
 
 (define-module scheme.eval
   (import r7rs.aux)
   (export environment eval)
-  (define environment (undefined))      ;WRITEME
-  (define+ eval gauche)
+  (define (environment . import-lists)
+    (rlet1 m (make-module #f)
+      (eval '(extend r7rs) m)
+      (eval `(import ,@import-lists) m)))
   (provide "scheme/eval"))
 
 (define-module scheme.file
@@ -638,43 +441,21 @@
           open-binary-input-file open-binary-output-file
           open-input-file open-output-file
           with-input-from-file with-output-to-file)
-  (define+ call-with-input-file gauche)
-  (define+ call-with-output-file gauche)
-  (define+ with-input-from-file gauche)
-  (define+ with-output-to-file gauche)
-  (define+ open-input-file gauche)
   (define open-binary-input-file open-input-file)
-  (define+ open-output-file gauche)
   (define open-binary-output-file open-output-file)
-  (define+ file-exists? gauche)
   (define+ delete-file file.util)
   (provide "scheme/file"))
 
 (define-module scheme.inexact
   (import r7rs.aux)
   (export acos asin atan cos exp finite? infinite? log nan? sin sqrt tan)
-  (define+ acos      gauche)
-  (define+ asin      gauche)
-  (define+ atan      gauche)
-  (define+ cos       gauche)
-  (define+ exp       gauche)
-  (define+ finite?   gauche)
-  (define+ infinite? gauche)
-  (define+ log       gauche)
-  (define+ nan?      gauche)
-  (define+ sin       gauche)
-  (define+ sqrt      gauche)
-  (define+ tan       gauche)
   (provide "scheme/inexact"))
 
 (define-module scheme.lazy
   (import r7rs.aux)
   (export delay force delay-force promise? make-promise)
-  (define-syntax+ delay gauche)
   (define-syntax delay-force (with-module gauche lazy))
-  (define+ force    gauche)
-  (define+ promise? gauche)
-  (define make-promise (undefined))     ;WRITEME
+  (define (make-promise obj) (if (promise? obj) obj (delay obj)))
   (provide "scheme/lazy"))
 
 (define-module scheme.load
@@ -688,8 +469,6 @@
   (use srfi-98)
   (export command-line emergency-exit exit
           get-environment-variable get-environment-variables)
-  (define+ command-line gauche)
-  (define+ exit         gauche)
   (define (emergency-exit :optional (obj 0)) (sys-exit obj))
   (define+ get-environment-variable  srfi-98)
   (define+ get-environment-variables srfi-98)
@@ -698,31 +477,88 @@
 (define-module scheme.read
   (import r7rs.aux)
   (export read)
-  (define+ read gauche)
   (provide "scheme/read"))
 
 (define-module scheme.repl
   (import r7rs.aux)
   (export interaction-environment)
-  (define+ interaction-environment gauche)
   (provide "scheme/repl"))
 
 (define-module scheme.time
   (export current-jiffy jiffies-per-second current-second)
-  (define (current-second) (sys-time))
-  (define current-jiffy (undefined))    ;;WRITEME
-  (define jiffies-per-second (undefined)) ;;WRITEME
+  (define-constant tai-utc 35) ; TAI is ahead of this amount as of 2014
+  (define-constant tai-off 8)  ; TAI epoch is ahead of this amount
+  ;; We reduce resolution in 32bit platform so that we have more time
+  ;; before current-jiffy falls out of fixnum range.  On 32bit machines,
+  ;; 100us resolution gives 53687 seconds before we get bignum.  On 64bit
+  ;; machines, we have enough bits with nanosec resolution.
+  (define-constant jiffy-resolution
+    (if (fixnum? (expt 2 32)) #e1e9 #e1e4))
+  ;; We use clock_gettime(CLOCK_MONOTONIC) for current-jiffy if possible,
+  ;; falling back to gettimeofday.
+  (define (%gettime)
+    (receive (sec nsec) (sys-clock-gettime-monotonic)
+      (if sec
+        (values sec nsec)
+        (receive (sec usec) (sys-gettimeofday)
+          (values (+ sec tai-utc) (* usec 1000))))))
+
+  (define-values (%epoch-sec %epoch-nsec) (%gettime))
+  (define (current-second)
+    (receive (sec usec) (sys-gettimeofday)
+      (+ sec (/. usec 1e6) (- tai-utc tai-off))))
+  (define current-jiffy
+    (if (fixnum? (expt 2 32))
+      (^[] (receive (sec nsec) (%gettime)
+             (+ (* (- sec %epoch-sec) jiffy-resolution)
+                (- nsec %epoch-nsec))))
+      (^[] (receive (sec nsec) (%gettime)
+             (+ (* (- sec %epoch-sec) jiffy-resolution)
+                (quotient (- nsec %epoch-nsec) (/ #e1e9 jiffy-resolution)))))))
+  (define (jiffies-per-second) jiffy-resolution)
   (provide "scheme/time"))
 
 (define-module scheme.write
-  (export (rename r7rs-display display)
-          (rename r7rs-write write)
-          write-shared write-simple)
-  (define r7rs-write    write/ss) ;not exactly...
-  (define write-shared  write/ss)
-  (define write-simple  write)
-  (define r7rs-display  display)
+  (export display write write-shared write-simple)
   (provide "scheme/write"))
+
+(define-module scheme.r5rs
+  (import r7rs.aux)
+  (export * + - / < <= = > >= abs acos and angle append apply asin assoc assq
+          assv atan begin boolean? caaaar caaadr caaar caadar caaddr caadr
+          caar cadaar cadadr cadar caddar cadddr caddr cadr
+          call-with-current-continuation call-with-input-file
+          call-with-output-file call-with-values car case cdaaar cdaadr cdaar
+          cdadar cdaddr cdadr cdar cddaar cddadr cddar cdddar cddddr cdddr cddr
+          cdr ceiling char->integer char-alphabetic? char-ci<=? char-ci<?
+          char-ci=? char-ci>=? char-ci>? char-downcase char-lower-case?
+          char-numeric? char-ready? char-upcase char-upper-case? char-whitespace?
+          char<=? char<? char=? char>=? char>? char? close-input-port
+          close-output-port complex? cond cons cos current-input-port
+          current-output-port define define-syntax delay denominator display
+          do dynamic-wind eof-object? eq? equal? eqv? eval even? exact->inexact
+          exact? exp expt floor for-each force gcd if imag-part inexact->exact
+          inexact? input-port? integer->char integer? interaction-environment
+          lambda lcm length let let* let-syntax letrec letrec-syntax list
+          list->string list->vector list-ref list-tail list? load log magnitude
+          make-polar make-rectangular make-string make-vector map max member
+          memq memv min modulo negative? newline not null-environment null?
+          number->string number? numerator odd? open-input-file open-output-file
+          or output-port? pair? peek-char positive? procedure? quasiquote quote
+          quotient rational? rationalize read read-char real-part real? remainder
+          reverse round scheme-report-environment set! set-car! set-cdr! sin
+          sqrt string string->list string->number string->symbol string-append
+          string-ci<=? string-ci<? string-ci=? string-ci>=? string-ci>?
+          string-copy string-fill! string-length string-ref string-set!
+          string<=? string<? string=? string>=? string>? string? substring
+          symbol->string symbol? tan truncate values vector vector->list
+          vector-fill! vector-length vector-ref vector-set! vector?
+          with-input-from-file with-output-to-file write write-char zero?
+          )
+  (define-syntax define (with-module scheme define))
+  (define-syntax lambda (with-module scheme lambda))
+  (provide "scheme/r5rs")
+  )
 
 ;; A trick: 'define-library' in Gauche module is set to be autoloaded.
 ;; When this module is loaded directly (not via autoload), however,
@@ -731,3 +567,4 @@
 (with-module gauche
   (define-syntax define-library (with-module r7rs define-library)))
 
+(provide "r7rs")

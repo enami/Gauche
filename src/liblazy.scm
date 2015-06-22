@@ -1,7 +1,7 @@
 ;;;
 ;;;liblazy.scm - lazy constructs
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -135,6 +135,15 @@
                    (eof-object)
                    (rlet1 v (+ start (* k step)) (inc! k) (dec! count))))))))
     (generator->lseq gen)))
+
+(define-in-module gauche (port->char-lseq :optional (port (current-input-port)))
+  (generator->lseq (cut read-char port)))
+(define-in-module gauche (port->byte-lseq :optional (port (current-input-port)))
+  (generator->lseq (cut read-byte port)))
+(define-in-module gauche (port->string-lseq :optional (port (current-input-port)))
+  (generator->lseq (cut read-line port)))
+(define-in-module gauche (port->sexp-lseq :optional (port (current-input-port)))
+  (generator->lseq (cut read port)))
 
 (select-module gauche)
 (define-macro (lcons a b)

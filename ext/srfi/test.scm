@@ -85,22 +85,6 @@
 (test* "length+" '(5 #f)
        (list (length+ '(1 2 3 4 5))
              (length+ (circular-list 1 2 3 4 5))))
-(test* "concatenate" '(1 2 3 4 5)
-       (concatenate '((1 2 3) () (4 5))))
-(test* "concatenate" '(1 2 3 4 . 5)
-       (concatenate '((1 2 3) () (4) 5)))
-(test* "concatenate!" '(1 2 3 4 5)
-       (concatenate (list (list 1 2 3) '() (list 4 5))))
-(test* "concatenate!" '(1 2 3 4 . 5)
-       (concatenate (list (list 1 2 3) '() (list 4) 5)))
-(test* "append-reverse" '(1 2 3 4 5)
-       (append-reverse '(3 2 1) '(4 5)))
-(test* "append-reverse" '(1 2 3 4 . 5)
-       (append-reverse '(4 3 2 1) 5))
-(test* "append-reverse!" '(1 2 3 4 5)
-       (append-reverse! (list 3 2 1) (list 4 5)))
-(test* "append-reverse!" '(1 2 3 4 . 5)
-       (append-reverse! (list 4 3 2 1) 5))
 (test* "zip" '((one 1 odd) (two 2 even) (three 3 odd))
        (zip '(one two three) '(1 2 3)
             '(odd even odd even odd even)))
@@ -122,19 +106,11 @@
 (test* "unzip5"
        '((1 a #\a "a") (2 b #\b "b") (3 c #\c "c") (4 d #\d "d") (5 e #\e "e"))
        (call-with-values (^[] (unzip5 unzip-data)) list))
-(test* "count" 3 (count even? '(3 1 4 1 5 9 2 6 5)))
-(test* "count" 3
-       (count < '(1 2 4 8) '(2 4 6 8 10 12 14 16)))
-(test* "count" 2
-       (count < '(3 1 4 1) (circular-list 1 10)))
 (test* "pair-fold" '(5 4 3 2 1)
        (pair-fold (^[p t] (set-cdr! p t) p) '()
                   (list 1 2 3 4 5)))
 (test* "pair-fold-right" '((a b c) (b c) (c))
        (pair-fold-right cons '() '(a b c)))
-(test* "reduce" 55 (reduce + 0 (iota 10 1)))
-(test* "reduce-right" '(1 2 3 4 5 6 7 8 9 . 10)
-       (reduce-right cons 0 (iota 10 1)))
 (test* "unfold" '(1 4 9 16 25 36 49 64 81 100)
        (unfold (^x (> x 10))
                (^x (* x x))
@@ -152,14 +128,6 @@
          (for-each (^[i n] (vector-set! v i (+ i n)))
                    '(0 1 2 3 4)
                    (circular-list 0 1))))
-(test* "append-map" '(1 -1 3 -3 5 -5)
-       (append-map (^x (list x (- x))) '(1 3 5)))
-(test* "append-map" '(1 -2 3 -4 5 -6)
-       (append-map (^[x y] (list x (- y)))
-                   '(1 3 5) '(2 4 6 8)))
-(test* "append-map!" '(1 -2 3 -4 5 -6)
-       (append-map! (^[x y] (list x (- y)))
-                    '(1 3 5) '(2 4 6 8)))
 (test* "map!" '(4 1 5 1)
        (map! + '(3 1 4 1) (circular-list 1 0)))
 (test* "map-in-order"  '(4 1 5 1)
@@ -167,8 +135,6 @@
 (test* "pair-for-each" '((c) (b c) (a b c))
        (rlet1 r '()
          (pair-for-each (^l (set! r (cons l r))) '(a b c))))
-(test* "partition" '((one four five) (2 3 6))
-       (values->list (partition symbol? '(one 2 3 four five 6))))
 (test* "partition!" '((one four five) (2 3 6))
        (values->list (partition! symbol? (list 'one 2 3 'four 'five 6))))
 (test* "take-while" '(2 18)
@@ -629,25 +595,25 @@
                         #[a-z]))
 
 (test* "string-filter" "rrrr"
-       (string-filter "Help make programs run, run, RUN!" #\r ))
+       (string-filter #\r "Help make programs run, run, RUN!"))
 (test* "string-filter" "HelpmakeprogramsrunrunRUN"
-       (string-filter "Help make programs run, run, RUN!"
-                      #[a-zA-Z]))
+       (string-filter #[a-zA-Z]
+                      "Help make programs run, run, RUN!"))
 (test* "string-filter" "programsrunrun"
-       (string-filter "Help make programs run, run, RUN!"
-                      (^c (char-lower-case? c)) 10))
+       (string-filter (^c (char-lower-case? c))
+                      "Help make programs run, run, RUN!" 10))
 (test* "string-filter" ""
-       (string-filter "" (^c (char-lower-case? c))))
+       (string-filter (^c (char-lower-case? c)) ""))
 (test* "string-delete" "Help make pogams un, un, RUN!"
-       (string-delete "Help make programs run, run, RUN!" #\r))
+       (string-delete #\r "Help make programs run, run, RUN!"))
 (test* "string-delete" "   , , !"
-       (string-delete "Help make programs run, run, RUN!"
-                      #[a-zA-Z]))
+       (string-delete #[a-zA-Z]
+                      "Help make programs run, run, RUN!"))
 (test* "string-delete" " , , RUN!"
-       (string-delete "Help make programs run, run, RUN!"
-                      (^c (char-lower-case? c)) 10))
+       (string-delete (^c (char-lower-case? c))
+                      "Help make programs run, run, RUN!" 10))
 (test* "string-delete" ""
-       (string-delete "" (^c (char-lower-case? c))))
+       (string-delete (^c (char-lower-case? c)) ""))
 
 ;;
 ;; testing srfi-19

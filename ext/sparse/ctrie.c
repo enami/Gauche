@@ -1,7 +1,7 @@
 /*
  * ctrie.c - Compact Trie
  *
- *   Copyright (c) 2009-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2009-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -69,11 +69,7 @@ void CompactTrieInit(CompactTrie *t)
 
 #define NODE_ENTRY(node, off)        ((node)->entries[(off)])
 
-#if SIZEOF_LONG == 4
 #define KEY_MASK(key) /* empty */
-#else
-#define KEY_MASK(key) (key &= ((1UL<<32)-1))
-#endif
 
 /* When extending the node, we increase the number of entries by this
    number instead of increasing every word, to avoid too frequent
@@ -91,14 +87,13 @@ static Node *node_insert(Node *orig, u_long ind, void *entry, int leafp)
 {
     int size = NODE_NCHILDREN(orig);
     int insertpoint = Scm__CountBitsBelow(orig->emap, ind);
-    int i;
 
     if (size&(NODE_SIZE_INCR-1)) {
         /* we have one more room */
         NODE_ARC_SET(orig, ind);
         if (leafp) NODE_LEAF_SET(orig, ind);
         if (insertpoint < size) {
-            for (i=size-1; i>=insertpoint; i--) {
+            for (int i=size-1; i>=insertpoint; i--) {
                 orig->entries[i+1] = orig->entries[i];
             }
         }
@@ -111,7 +106,8 @@ static Node *node_insert(Node *orig, u_long ind, void *entry, int leafp)
         newn->lmap = orig->lmap;
         NODE_ARC_SET(newn, ind);
         if (leafp) NODE_LEAF_SET(newn, ind);
-        for (i=0; i<insertpoint; i++) newn->entries[i] = orig->entries[i];
+        int i = 0;
+        for (; i<insertpoint; i++) newn->entries[i] = orig->entries[i];
         newn->entries[insertpoint] = entry;
         for (; i<size; i++) newn->entries[i+1] = orig->entries[i];
         return newn;
@@ -123,12 +119,13 @@ static int node_delete(Node *orig, u_long ind)
 {
     int size = NODE_NCHILDREN(orig);
     int deletepoint = Scm__CountBitsBelow(orig->emap, ind);
-    int i;
 
     /* TODO: shrink node */
     NODE_ARC_RESET(orig, ind);
     NODE_LEAF_RESET(orig, ind);
-    for (i=deletepoint; i<size-1; i++) orig->entries[i] = orig->entries[i+1];
+    for (int i=deletepoint; i<size-1; i++) {
+      orig->entries[i] = orig->entries[i+1];
+    }
     return size-1;
 }
 
@@ -139,8 +136,7 @@ static int node_delete(Node *orig, u_long ind)
 static Leaf *new_leaf(u_long key, Leaf *(*creator)(void*), void *data)
 {
     Leaf *l = creator(data);
-    l->key0 = key & 0xffff;
-    l->key1 = (key>>16) & 0xffff;
+    leaf_key_set(l, key);
     return l;
 }
 
@@ -153,7 +149,7 @@ static Leaf *get_rec(Node *n, u_long key, int level)
     if (!NODE_HAS_ARC(n, ind)) return NULL;
     if (NODE_ARC_IS_LEAF(n, ind)) {
         Leaf *l = (Leaf*)NODE_ENTRY(n, NODE_INDEX2OFF(n, ind));
-        if (LEAF_KEY(l) == key) return l;
+        if (leaf_key(l) == key) return l;
         else return NULL;
     } else {
         return get_rec((Node*)NODE_ENTRY(n, NODE_INDEX2OFF(n, ind)),
@@ -175,11 +171,11 @@ static Node *add_rec(CompactTrie *ct, Node *n, u_long key, int level,
                      Leaf **result, Leaf *(*creator)(void*), void *data)
 
 {
-    Leaf *l;
     u_long ind = KEY2INDEX(key, level);
 
     if (!NODE_HAS_ARC(n, ind)) {
-        *result = l = new_leaf(key, creator, data);
+        Leaf *l = new_leaf(key, creator, data);
+        *result = l;
         ct->numEntries++;
         return node_insert(n, ind, (void*)l, TRUE);
     }
@@ -193,10 +189,10 @@ static Node *add_rec(CompactTrie *ct, Node *n, u_long key, int level,
     else {
         u_long off = NODE_INDEX2OFF(n, ind);
         Leaf *l0 = (Leaf*)NODE_ENTRY(n, off);
-        u_long k0 = LEAF_KEY(l0), i0;
+        u_long k0 = leaf_key(l0);
 
         if (key == k0) { *result = l0; return n; }
-        i0 = KEY2INDEX(LEAF_KEY(l0), level+1);
+        u_long i0 = KEY2INDEX(leaf_key(l0), level+1);
         Node *m = make_node(NODE_SIZE_INCR);
         NODE_ARC_SET(m, i0);
         NODE_LEAF_SET(m, i0);
@@ -253,7 +249,7 @@ void *del_rec(CompactTrie *ct, Node *n, u_long key, int level,
             }
         } else {
             Leaf *l0 = (Leaf*)NODE_ENTRY(n, off);
-            u_long k0 = LEAF_KEY(l0);
+            u_long k0 = leaf_key(l0);
             if (key == k0) {
                 /* We found the leaf to delete.  If deletion of the leaf
                    causes this node to have only one leaf, we tell the
@@ -289,17 +285,16 @@ static void clear_rec(CompactTrie *ct, Node *n,
                       void (*clearer)(Leaf*, void*),
                       void *data)
 {
-    int i, off;
     int size = Scm__CountBitsInWord(n->emap);
     char is_leaf[MAX_NODE_SIZE];
 
-    for (i=0, off=0; i<MAX_NODE_SIZE; i++) {
+    for (int i=0, off=0; i<MAX_NODE_SIZE; i++) {
         if (NODE_HAS_ARC(n, i)) {
             if (NODE_ARC_IS_LEAF(n, i)) is_leaf[off++] = TRUE;
             else is_leaf[off++] = FALSE;
         }
     }
-    for (i=0; i<size; i++) {
+    for (int i=0; i<size; i++) {
         if (is_leaf[i]) clearer((Leaf*)NODE_ENTRY(n, i), data);
         else clear_rec(ct, (Node*)NODE_ENTRY(n, i), clearer, data);
         NODE_ENTRY(n, i) = NULL;
@@ -322,9 +317,9 @@ void CompactTrieClear(CompactTrie *ct,
  */
 static Leaf *next_rec(Node *n, u_long key, int level, int over)
 {
-    u_int i, ind = over? 0 : KEY2INDEX(key, level);
+    u_int ind = over? 0 : KEY2INDEX(key, level);
 
-    for (i = ind; i < MAX_NODE_SIZE; i++) {
+    for (u_int i = ind; i < MAX_NODE_SIZE; i++) {
         if (!NODE_HAS_ARC(n, i)) continue;
         if (NODE_ARC_IS_LEAF(n, i)) {
             if (!over && i == ind) continue;
@@ -370,9 +365,8 @@ Leaf *CompactTrieFirstLeaf(CompactTrie *ct)
 
 static Leaf *last_rec(Node *n)
 {
-    int maxkey;
     if (n->emap == 0) return NULL; /* for safety in MT situation */
-    maxkey = Scm__HighestBitNumber(n->emap);
+    int maxkey = Scm__HighestBitNumber(n->emap);
     if (NODE_ARC_IS_LEAF(n, maxkey)) {
         return (Leaf*)NODE_ENTRY(n, NODE_INDEX2OFF(n, maxkey));
     } else {
@@ -394,12 +388,11 @@ Leaf *CompactTrieLastLeaf(CompactTrie *ct)
  */
 static Node *copy_rec(const Node *s, Leaf *(*copy)(Leaf*, void*), void *data)
 {
-    int i, off;
     int size = Scm__CountBitsInWord(s->emap);
     Node *d = make_node(size);
     d->emap = s->emap;
     d->lmap = s->lmap;
-    for (i=0, off=0; i<MAX_NODE_SIZE && off < size; i++) {
+    for (int i=0, off=0; i<MAX_NODE_SIZE && off < size; i++) {
         if (!NODE_HAS_ARC(s, i)) continue;
         if (NODE_ARC_IS_LEAF(s, i)) {
             NODE_ENTRY(d,off) = copy((Leaf*)NODE_ENTRY(s,off), data);
@@ -440,7 +433,7 @@ Leaf *CompactTrieIterNext(CompactTrieIter *it)
     } else {
         l = CompactTrieNextLeaf(it->trie, it->key);
     }
-    if (l) it->key = LEAF_KEY(l);
+    if (l) it->key = leaf_key(l);
     else   it->end = TRUE;
     return l;
 }
@@ -453,13 +446,12 @@ static char digit32(u_int n)
     return (n < 10)? (char)(n+'0') : (char)(n-10+'a');
 }
 
-#define BUF_SIZE 8
+#define BUF_SIZE 14
 
-static char *key_dump(u_long key, char *buf) /* buf must be of length 8 */
+static char *key_dump(u_long key, char *buf) /* buf must be BUF_SIZE length */
 {
-    int i;
     buf[BUF_SIZE-1] = '\0';
-    for (i=0; i<BUF_SIZE-1; i++) {
+    for (int i=0; i<BUF_SIZE-1; i++) {
         buf[BUF_SIZE-i-2] = digit32(key&TRIE_MASK);
         key >>= TRIE_SHIFT;
     }
@@ -470,8 +462,8 @@ static void leaf_dump(ScmPort *out, Leaf *self, int indent,
                       void (*dumper)(ScmPort*, Leaf*, int, void*), void *data)
 {
     char keybuf[BUF_SIZE];
-    Scm_Printf(out, "LEAF(%s,%x) ", key_dump(LEAF_KEY(self), keybuf),
-               LEAF_KEY(self));
+    Scm_Printf(out, "LEAF(%s,%x) ", key_dump(leaf_key(self), keybuf),
+               leaf_key(self));
     if (dumper) dumper(out, self, indent, data);
     Scm_Printf(out, "\n");
 }
@@ -479,10 +471,8 @@ static void leaf_dump(ScmPort *out, Leaf *self, int indent,
 static void node_dump(ScmPort *out, Node *n, int level,
                       void (*dumper)(ScmPort*, Leaf*, int, void*), void *data)
 {
-    int i;
-
     Scm_Printf(out, "NODE(%p)\n", n);
-    for (i=0; i<MAX_NODE_SIZE; i++) {
+    for (int i=0; i<MAX_NODE_SIZE; i++) {
         if (!NODE_HAS_ARC(n, i)) continue;
         Scm_Printf(out, " %*s%c:", level*2, "", digit32(i));
         if (NODE_ARC_IS_LEAF(n, i)) {
@@ -510,8 +500,9 @@ void CompactTrieDump(ScmPort *out, const CompactTrie *ct,
 static int check_rec(Node *n, int level,
                      void (*checker)(Leaf*, ScmObj), ScmObj obj)
 {
-    int direct_leaves = 0, total_leaves = 0, i, off;
-    for (i=0, off=0; i<MAX_NODE_SIZE; i++) {
+    int direct_leaves = 0, total_leaves = 0;
+    int off = 0;
+    for (int i=0; i<MAX_NODE_SIZE; i++) {
         if (NODE_HAS_ARC(n, i)) {
             if (NODE_ARC_IS_LEAF(n, i)) {
                 direct_leaves++;
@@ -543,7 +534,7 @@ void CompactTrieCheck(const CompactTrie *ct, ScmObj obj,
     } else {
         int num_leaves = check_rec(ct->root, 0, checker, obj);
         if (ct->numEntries != num_leaves) {
-            Scm_Error("%S: # of leafs (%d) and numEntries (%d) don't agreee",
+            Scm_Error("%S: # of leafs (%d) and numEntries (%d) don't agree",
                       obj, num_leaves, ct->numEntries);
         }
     }

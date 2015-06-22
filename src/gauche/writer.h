@@ -1,7 +1,7 @@
 /*
  * writer.h - Writer API
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -36,32 +36,28 @@
 #ifndef GAUCHE_WRITER_H
 #define GAUCHE_WRITER_H
 
-struct ScmWriteContextRec {
-    short mode;                 /* print mode */
-    short flags;                /* internal */
-    int limit;                  /* internal */
-    int ncirc;                  /* internal */
-    ScmHashTable *table;        /* internal */
-    ScmObj obj;                 /* internal */
-};
-
 /* Print mode flags */
-enum {
+/* R7RS write defaults to "circular write" mode.  We follow that, so
+   by default we go with two-pass circular-only write mode.  Setting
+   SCM_WRITE_SIMPLE makes write use one-pass mode.  Settings
+   SCM_WRITE_SHARED makes write write-shared (srfi-38 write/ss) mode. */
+enum ScmWriteModeFlags {
     SCM_WRITE_WRITE = 0,        /* write mode   */
     SCM_WRITE_DISPLAY = 1,      /* display mode */
-    SCM_WRITE_SHARED = 2,       /* write/ss mode   */
-    SCM_WRITE_WALK = 3,         /* this is a special mode in write/ss */
-    SCM_WRITE_MODE_MASK = 0x3,
+    SCM_WRITE_SHARED = 2,       /* write/ss mode */
+    SCM_WRITE_SIMPLE = 3        /* write-simple mode */
+};
 
+/* Case folding mode flags */
+enum ScmWriteCaseFlags {
     SCM_WRITE_CASE_FOLD = 4,    /* case-fold mode.  need to escape capital
                                    letters. */
     SCM_WRITE_CASE_NOFOLD = 8,  /* case-sensitive mode.  no need to escape
                                    capital letters */
-    SCM_WRITE_CASE_MASK = 0x0c
 };
 
-#define SCM_WRITE_MODE(ctx)   ((ctx)->mode & SCM_WRITE_MODE_MASK)
-#define SCM_WRITE_CASE(ctx)   ((ctx)->mode & SCM_WRITE_CASE_MASK)
+SCM_EXTERN int Scm_WriteContextMode(const ScmWriteContext *ctx);
+SCM_EXTERN int Scm_WriteContextCase(const ScmWriteContext *ctx);
 
 SCM_EXTERN void Scm_Write(ScmObj obj, ScmObj port, int mode);
 SCM_EXTERN int Scm_WriteCircular(ScmObj obj, ScmObj port, int mode, int width);
@@ -74,6 +70,7 @@ SCM_EXTERN void Scm_Vprintf(ScmPort *port, const char *fmt, va_list args,
 SCM_EXTERN ScmObj Scm_Sprintf(const char *fmt, ...);
 SCM_EXTERN ScmObj Scm_SprintfShared(const char *fmt, ...);
 SCM_EXTERN ScmObj Scm_Vsprintf(const char *fmt, va_list args, int sharedp);
+
 
 #endif  /*GAUCHE_WRITER_H*/
 

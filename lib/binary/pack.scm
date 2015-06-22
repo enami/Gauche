@@ -15,11 +15,9 @@
 ;;   "vlp" references would be gone.
 
 (define-module binary.pack
-  (use srfi-1)
   (use srfi-11)   ;; let-values
   (use srfi-13)   ;; string library
   (use srfi-14)   ;; char-set library
-  (use util.list) ;; list library (srfi-1+)
   (use text.parse)
   (use gauche.uvector)
   (use gauche.parameter)
@@ -327,7 +325,7 @@
      (if (number? count) count 0)
      (not (number? count))
      vlp
-     (lambda (v) (display (padder (pop! v))) v)
+     (^v (display (padder (pop! v))) v)
      (cond
        ((equal? count #\*)
         (cut list (next-token '() (list pad '*eof*))))
@@ -359,7 +357,7 @@
       ((eq? count #\*)
        (make-pack-dispatch
         0 #t vlp
-        (lambda (v) (for-each writer v) '())
+        (^v (for-each writer v) '())
         (lambda ()
           (let ((res '()))
             (until (reader) eof-object? => x (push! res x))
@@ -453,7 +451,7 @@
      param
      (lambda (v)
        (count-pack (list (length v)))
-       (for-each (lambda (x) (orig-pack (list x))) v)
+       (for-each (^x (orig-pack (list x))) v)
        '())
      (lambda ()
        (let ((count (get-count (count-unpack)))
@@ -485,7 +483,7 @@
             param
             (lambda (v)
               (let-values (((head tail) (splitter v)))
-              (for-each (lambda (x) (orig-pack (list x))) head)
+              (for-each (^x (orig-pack (list x))) head)
               tail))
             (lambda ()
               (let ((res '()))
@@ -501,7 +499,7 @@
           param
           (lambda (v)
             (let-values (((head tail) (splitter v)))
-              (for-each (lambda (x) (orig-pack (list x))) head)
+              (for-each (^x (orig-pack (list x))) head)
               tail))
           (lambda ()
             (let ((res '()))
@@ -527,7 +525,7 @@
          (l (+ l1 l2))
          (s1 (a 'skipper))
          (s2 (b 'skipper)))
-    (let ((p  (lambda (v) (p2 (p1 v))))
+    (let ((p  (^v (p2 (p1 v))))
           (u  (cut append (u1) (u2)))
           (s  (if fixed? (make-skipper l) (lambda () (begin (s1) (s2))))))
       (make-pack-dispatch (+ l1 l2) (or v1 v2) (or (a 'var-len-param)
@@ -582,7 +580,7 @@
                    (orig-pack (res 'packer))
                    (orig-unpack (res 'unpacker)))
               (res 'set-packer!
-                   (lambda (v) (orig-pack (car v)) (cdr v)))
+                   (^v (orig-pack (car v)) (cdr v)))
               (res 'set-unpacker!
                    (lambda () (list (orig-unpack))))
               (let ((group-count (read-count)))
@@ -595,7 +593,7 @@
                (if (number? count) count 0)
                (not (number? count))
                vlp
-               (lambda (v) (display (pad (pop! v))) v)
+               (^v (display (pad (pop! v))) v)
                (cond
                  ((eq? count #\*)
                   (cut list (port->string (current-input-port))))
@@ -634,10 +632,10 @@
              (cond
                ((number? count)
                 (let ((pad (get-string-padder (- count 1) #\null)))
-                  (lambda (v) (display (pad (pop! v))) (display #\null))))
+                  (^v (display (pad (pop! v))) (display #\null))))
                (else
                 (let ((pad (get-string-padder count #\null)))
-                  (lambda (v) (display (pad (pop! v))) (display #\null)))))
+                  (^v (display (pad (pop! v))) (display #\null)))))
              (cond
                ((eq? count #\*)
                 (cut list (next-token '() '(#\null *eof*))))
@@ -665,7 +663,7 @@
                       (set! acc (copy-bit i acc (eq? #\1 (read-char)))) )))
                 v)
               (make-port-byte-iterator
-               (lambda (i) (bit-for-each (cut write <>) i)) count)
+               (^i (bit-for-each (cut write <>) i)) count)
               (make-skipper count))))
 
            ;; B   A bit string (descending bit order inside each byte).
@@ -683,7 +681,7 @@
                        (set! acc (copy-bit i acc (eq? #\1 (read-char)))) )))
                  v)
                (make-port-byte-iterator
-                (lambda (i) (bit-reverse-for-each (cut write <>) i)) count)
+                (^i (bit-reverse-for-each (cut write <>) i)) count)
                (make-skipper count))))
 
            ;; h   A hex string (low nybble first).
@@ -698,10 +696,10 @@
                    (lambda ()
                      (let* ((n1 (hex-char->number (read-byte)))
                             (n2 (hex-char->number (read-byte))))
-                       (write-byte (copy-bit-field n1 4 8 n2)))))
+                       (write-byte (copy-bit-field n1 n2 4 8)))))
                  v)
                (make-port-byte-iterator
-                (lambda (i) (format #t "~x~x" (logand i #b1111) (ash i -4))) count)
+                (^i (format #t "~x~x" (logand i #b1111) (ash i -4))) count)
                (make-skipper count))))
 
            ;; H   A hex string (high nybble first).
@@ -716,10 +714,10 @@
                    (lambda ()
                      (let* ((n1 (hex-char->number (read-byte)))
                             (n2 (hex-char->number (read-byte))))
-                       (write-byte (copy-bit-field n2 4 8 n1)))))
+                       (write-byte (copy-bit-field n2 n1 4 8)))))
                  v)
                (make-port-byte-iterator
-                (lambda (i) (format #t "~x~x" (ash i -4) (logand i #b1111))) count)
+                (^i (format #t "~x~x" (ash i -4) (logand i #b1111))) count)
                (make-skipper count))))
 
            ;; c   A signed char value.
@@ -993,7 +991,7 @@
                                           (make-count-update-pack-dispatch p (b 'var-len-param))
                                           p))
                                       (cons a res))))
-                          'packer (lambda (orig) (lambda (v) (b-vlp 0) (orig v)))
+                          'packer (lambda (orig) (^v (b-vlp 0) (orig v)))
                           'unpacker (lambda (orig) (lambda () (b-vlp 0) (orig)))
                           ))))
                 (loop rest (cons a res))))))))))
@@ -1010,7 +1008,7 @@
 ;; threads with a mutex.
 (define make-packer
   (let ((cache (make-parameter (make-hash-table 'equal?))))
-    (lambda (template cached?)
+    (lambda (template :optional (cached? #t))
       (if cached?
         (let ((res (hash-table-get (cache) template #f)))
           (unless res

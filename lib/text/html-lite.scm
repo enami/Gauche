@@ -1,7 +1,7 @@
 ;;;
 ;;; html-lite.scm - lightweight HTML construction
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -84,10 +84,13 @@
      #t
      "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\"
        \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">\n")
+    ((:html-5)
+     #t
+     "<!DOCTYPE html>")
     ))
 
 (define (html-doctype :key (type :html-4.01-strict))
-  (cond ((find (lambda (e) (memq type (car e))) *doctype-alist*)
+  (cond ((find (^e (memq type (car e))) *doctype-alist*)
          => caddr )
         (else (error "Unknown doctype type spec" type))))
 
@@ -95,20 +98,21 @@
 
 (define (make-html-element name . args)
   (let ((empty? (get-keyword :empty? args #f)))
+    (define (K k) (keyword->string k)) ;; we don't need leading colon
     (define (get-attr args attrs)
       (cond ((null? args) (values (reverse attrs) args))
             ((keyword? (car args))
              (cond ((null? (cdr args))
-                    (values (reverse (list* (car args) " " attrs)) args))
+                    (values (reverse (list* (K (car args)) " " attrs)) args))
                    ((eq? (cadr args) #f)
                     (get-attr (cddr args) attrs))
                    ((eq? (cadr args) #t)
-                    (get-attr (cddr args) (list* (car args) " " attrs)))
+                    (get-attr (cddr args) (list* (K (car args)) " " attrs)))
                    (else
                     (get-attr (cddr args)
                               (list* (format #f "=\"~a\""
                                              (html-escape-string (x->string (cadr args))))
-                                     (car args)
+                                     (K (car args))
                                      " "
                                      attrs)))))
             (else (values (reverse attrs) args))))
@@ -161,10 +165,14 @@
 
 (define-html-elements body address div)
 
+;; SEMANTIC ELEMENT
+(define-html-elements header footer section article nav aside
+                      figure figcaption details summary mark time)
+
 ;; THE ANCHOR ELEMENT
 (define-html-elements a)
 
-;; cLIENT-SIDE IMAGE MAPS
+;; CLIENT-SIDE IMAGE MAPS
 (define-html-elements map area :empty)
 
 ;; THE LINK EKEMENT

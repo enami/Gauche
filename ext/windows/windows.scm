@@ -1,7 +1,7 @@
 ;;;
 ;;; os.windows - Windows-specific procedures
 ;;;
-;;;   Copyright (c) 2010-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2010-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -88,7 +88,11 @@
    sys-set-console-window-info
    sys-write-console
    sys-write-console-output-character
+   sys-fill-console-output-character
+   sys-fill-console-output-attribute
+   sys-flush-console-input-buffer
    sys-get-console-title
+   sys-set-console-title
    STD_INPUT_HANDLE STD_OUTPUT_HANDLE STD_ERROR_HANDLE
    sys-get-std-handle sys-set-std-handle
    ))

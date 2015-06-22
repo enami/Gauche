@@ -1,7 +1,7 @@
 ;;;
 ;;; collection.scm - collection generics
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -47,7 +47,7 @@
   )
 (select-module gauche.collection)
 
-;; utility - we can't depend on util.queue, so this is a simple
+;; utility - we can't depend on data.queue, so this is a simple
 ;; alternative.
 (define (make-queue)   (let1 anchor (list #f) (cons anchor anchor)))
 (define (enqueue! q x) (set! (cddr q) (list x)) (set! (cdr q) (cddr q)))

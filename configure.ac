@@ -1,6 +1,6 @@
 dnl Process this file with autoconf to produce a configure script.
 AC_PREREQ(2.54)
-AC_INIT(Gauche, 0.9.4_pre3, shiro@acm.org)
+AC_INIT(Gauche, 0.9.5_pre1, shiro@acm.org)
 AC_CANONICAL_SYSTEM
 AC_CONFIG_HEADER(src/gauche/config.h)
 
@@ -304,6 +304,8 @@ AC_DEFINE_UNQUOTED(GAUCHE_SIGNATURE, "$GAUCHE_SIGNATURE")
 
 LIBGAUCHE=libgauche-$GAUCHE_ABI_VERSION
 AC_SUBST(LIBGAUCHE)
+LIBGAUCHE_STATIC=libgauche-static-$GAUCHE_ABI_VERSION
+AC_SUBST(LIBGAUCHE_STATIC)
 LINKGAUCHE=gauche-$GAUCHE_ABI_VERSION
 AC_SUBST(LINKGAUCHE)
 
@@ -337,6 +339,12 @@ AC_CHECK_PROGS(GZIP_PROGRAM, gzip)
 dnl for cross build
 AC_CHECK_PROGS(BUILD_CC, ${build}-gcc ${build_alias}-gcc gcc cc)
 
+dnl for build from repo, we need preinstalled gosh
+dnl NB: The third arg is the value when we don't detect preinstalled gosh.
+dnl In such case, building from repo fails anyway; shall we use alternative
+dnl name or something to tell the builder that she needs preinstalled gosh?
+AC_PATH_PROG(BUILD_GOSH, gosh, gosh)
+
 dnl Safe default CFLAGS (usually -g -O2 if you're using gcc, empty otherwise).
 dnl If the user overrides CFLAGS during configure, which is recorded.
 dnl This information is used when configuring extensions.
@@ -349,8 +357,8 @@ dnl   We check sys/types.h merely to include it in the following tests,
 dnl   for some tests needs it.
 AC_HEADER_STDC
 AC_HEADER_TIME
-AC_CHECK_HEADERS(sys/time.h sys/types.h glob.h dlfcn.h getopt.h sched.h unistd.h)
-AC_CHECK_HEADERS(stdint.h inttypes.h rpc/types.h malloc.h)
+AC_CHECK_HEADERS(time.h sys/time.h sys/types.h glob.h dlfcn.h getopt.h sched.h)
+AC_CHECK_HEADERS(unistd.h stdint.h inttypes.h rpc/types.h malloc.h)
 AC_CHECK_HEADERS(syslog.h crypt.h)
 AC_CHECK_HEADERS(pty.h util.h bsd/libutil.h libutil.h sys/loadavg.h sys/resource.h)
 
@@ -438,11 +446,19 @@ AC_CHECK_LIB(m, sin)
 dnl x86-solaris 9 requires this to use isinf
 AC_CHECK_LIB(sunmath, isinf)
 
+dnl clock_gettime may be in librt
+AC_CHECK_LIB(rt, clock_gettime)
+
 dnl For Windows/MinGW, manually adds several libraries
+dnl Also adds -DUNICODE to CFLAGS enable Windows wchar API,
+dnl  if GAUCHE_CHAR_ENCODING is UTF_8.
 dnl ALTERNATIVE_GOSH is no-console version of gosh; only built on Windows.
 case "$host" in
   *mingw*) LIBS="$LIBS -lnetapi32 -lshlwapi -lws2_32"
-           ALTERNATIVE_GOSH="gosh-noconsole.exe" ;;
+           ALTERNATIVE_GOSH="gosh-noconsole.exe"
+           case "$GAUCHE_CHAR_ENCODING" in
+             utf8) CFLAGS="$CFLAGS -DUNICODE" ;;
+           esac ;;
   *)       ALTERNATIVE_GOSH="" ;;
 esac
 AC_SUBST(ALTERNATIVE_GOSH)
@@ -451,11 +467,12 @@ AC_FUNC_ALLOCA
 AC_CHECK_FUNCS(isnan isinf trunc rint tgamma lgamma)
 AC_CHECK_FUNCS(symlink readlink lchown mkstemp realpath nanosleep usleep)
 AC_CHECK_FUNCS(random srandom lrand48 srand48)
-AC_CHECK_FUNCS(putenv setenv unsetenv clearenv getpgid)
+AC_CHECK_FUNCS(putenv setenv unsetenv clearenv getpgid setgroups)
 AC_CHECK_FUNCS(gethostname sethostname getdomainname setdomainname)
-AC_CHECK_FUNCS(gettimeofday getloadavg)
+AC_CHECK_FUNCS(gettimeofday getloadavg clock_gettime clock_getres)
 AC_CHECK_FUNCS(syslog setlogmask)
 AC_CHECK_FUNCS(sigwait)
+AC_CHECK_FUNCS(fpsetprec)
 
 dnl Check for select().  HP-UX and MinGW doesn't like the way configure tests
 dnl select() existence and we know they have one, so we skip the test on them.
@@ -587,12 +604,10 @@ case $host in
     SHLIB_SO_CFLAGS="-no-cpp-precomp -fPIC -fno-common"
     SHLIB_SO_LDFLAGS="-bundle $FLAT_NAMESPACE -undefined suppress -o"
     SHLIB_SO_SUFFIX="so"
+    SHLIB_DYLIB_LDFLAGS='-framework CoreFoundation -dynamiclib -o'
     if test "$ac_gauche_framework" = yes; then
-      SHLIB_DYLIB_LDFLAGS='-framework CoreFoundation -dynamiclib -o'
       AC_DEFINE(GAUCHE_MACOSX_FRAMEWORK, 1, [Define 1 if building framework on MacOSX])
       xhost="${host}-framework"
-    else
-      SHLIB_DYLIB_LDFLAGS="-dynamiclib -o"
     fi
     SHLIB_DYLIB_SUFFIX="dylib"
     SHLIB_LIBS_FOR_EXT=""
@@ -651,11 +666,13 @@ case $host in
     CYGWIN_FIXDLL='$(srcdir)/src/cygwin-fixdll.sh'
     ;;
   *mingw*)
+    # Kludge: We add -static-libgcc flag when creating dll, in order to avoid
+    # inroducing dependency to libgcc_s_dw2-1.dll.
     SHLIB_SO_CFLAGS=""
-    SHLIB_SO_LDFLAGS='-Wl,--export-all-symbols -Wl,--enable-auto-import -Wl,--enable-runtime-pseudo-reloc -shared -o'
+    SHLIB_SO_LDFLAGS='-Wl,--export-all-symbols -Wl,--enable-auto-import -Wl,--enable-runtime-pseudo-reloc -static-libgcc -shared -o'
     SHLIB_SO_SUFFIX="dll"
     SHLIB_DYLIB_SUFFIX="dll"
-    SHLIB_MAIN_LDFLAGS="-Wl,--enable-auto-import"
+    SHLIB_MAIN_LDFLAGS="-Wl,--enable-auto-import -static-libgcc"
     SHLIB_OK=ok
     GOSH_USE_SHLIB=yes
     ext_use_uvector=yes
@@ -768,11 +785,26 @@ AC_GAUCHE_OPTFLAGS
 dnl ===========================================================
 dnl Tests for extensions
 
+EXT_LIBS=
+# Those *.ac's may add libraries to EXT_LIBS.
 m4_include([ext/charconv/charconv.ac])
 m4_include([ext/dbm/dbm.ac])
 m4_include([ext/net/net.ac])
 m4_include([ext/zlib/zlib.ac])
 m4_include([ext/tls/tls.ac])
+
+dnl Setup STATIC_LIBS
+STATIC_LIBS=
+for lib in $EXT_LIBS $LIBS; do
+  if [ echo "$STATIC_LIBS" | grep -e $lib > /dev/null 2>&1 ]
+  then
+    : # lib is alreay in STATIC_LIBS.  do nothing
+  else
+    STATIC_LIBS="$STATIC_LIBS $lib"
+  fi
+done
+STATIC_LIBS="`echo $LIBGAUCHE_STATIC | sed s/^lib/-l/` $STATIC_LIBS"
+AC_SUBST(STATIC_LIBS)
 
 dnl ===========================================================
 dnl Cross compiling
@@ -804,6 +836,7 @@ AC_OUTPUT(Makefile
           ext/bcrypt/Makefile
           ext/binary/Makefile
           ext/charconv/Makefile ext/charconv/charconv.h
+          ext/data/Makefile
           ext/dbm/Makefile
           ext/digest/Makefile
           ext/fcntl/Makefile
@@ -823,8 +856,11 @@ AC_OUTPUT(Makefile
           ext/util/Makefile
           ext/uvector/Makefile
           ext/vport/Makefile
+          ext/rfc/Makefile
           ext/zlib/Makefile
           ext/windows/Makefile
+          examples/Makefile
+          examples/standalone/Makefile
          )
 
 dnl ===========================================================

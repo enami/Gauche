@@ -3,7 +3,7 @@
 (use gauche.test)
 (test-start "collections and sequences")
 
-(use util.queue)
+(use data.queue)
 (use srfi-1)
 (use srfi-13)
 (use gauche.collection)
@@ -190,9 +190,9 @@
              (sseq 'najr 'ej 'zoo 'bunr)))
 
 (define (test-find-minmax msg ex-min ex-max coll . args)
-  (test* #`"find-min (,|msg|)" ex-min (apply find-min coll args))
-  (test* #`"find-max (,|msg|)" ex-max (apply find-max coll args))
-  (test* #`"find-min&max (,|msg|)" (list ex-min ex-max)
+  (test* #"find-min (~msg)" ex-min (apply find-min coll args))
+  (test* #"find-max (~msg)" ex-max (apply find-max coll args))
+  (test* #"find-min&max (~msg)" (list ex-min ex-max)
          (values->list (apply find-min&max coll args))))
 
 
@@ -558,15 +558,64 @@
        (group-sequence '(1 1 1 2 3 4 4 2 2 3 1 1 3)
                        :test (^[x y] (= (modulo x 2) (modulo y 2)))))
 
+(test* "sequence-contains" '(#f 0 9 #f)
+       (let1 pat "abrabrabre"
+         (list (sequence-contains "abracadabra" pat)
+               (sequence-contains "abrabrabrebrea" pat)
+               (sequence-contains "abrabrabrabrabrabrebra" pat)
+               (sequence-contains "abrabrabrabrabrabrabra" pat))))
+(test* "sequence-contains" 0
+       (sequence-contains "abracadabra" '()))
+
+(let ([data
+       ;; (input needle before after)
+       '(((1 2 3 4 5 4 5 6 7 8 9) (4 5 4 5 6) (1 2 3) (4 5 4 5 6 7 8 9))
+         ((4 5 4 5 6)             (4 5 4 5 6) ()      (4 5 4 5 6))
+         ((4 5 4 5 5 4 5 4 5 6)   (4 5 4 5 6) (4 5 4 5 5) (4 5 4 5 6))
+         (()                      (4 5 4 5 6) ()      ())
+         ((4 5 6 4 5 4 5 1)       (4 5 4 5 6) (4 5 6 4 5 4 5 1) ())
+         ((4 5 6 4 5 4 5 1)       ()          () (4 5 6 4 5 4 5 1))
+         )])
+  (define (tester !? in needle before after)
+    (test* (format "break-list-by-sequence~a ~s" (if !? '! "") in)
+           (list before after)
+           (receive (a b) ((if !?
+                             break-list-by-sequence!
+                             break-list-by-sequence)
+                           in needle)
+             (and (or (not !?)
+                      (null? a)
+                      (eq? a in))  ; check if head part is shared
+                  (list a b)))))
+    
+  (dolist [datum data]
+    (apply tester #f datum)
+    (apply tester #t datum)))
+  
+(test* "common-prefix" '(a b c)
+       (common-prefix-to <list> '(a b c d e) '(a b c e d)))
+(test* "common-prefix" '(a b c)
+       (common-prefix '(a b c d e) '#(a b c e d)))
+(test* "common-prefix" '#(a b c)
+       (common-prefix '#(a b c e d) '(a b c d e)))
+(test* "common-prefix" "xyz"
+       (common-prefix "xyz" "xyzw"))
+(test* "common-prefix" ""
+       (common-prefix "xyz" "abc"))
+(test* "common-prefix" '()
+       (common-prefix '(a b c) ""))
+(test* "common-prefix" "ABC"
+       (common-prefix "ABCE" "abcd" :test char-ci=?))
+
 (define (permute-tester msg expected source order . fallback)
   (define (unit type elt-coercer order-type)
-    (test* #`"permute,msg ,type by ,order-type"
+    (test* #"permute~msg ~type by ~order-type"
            (map-to type elt-coercer expected)
            (apply permute
                   (map-to type elt-coercer source)
                   (coerce-to order-type order)
                   (map elt-coercer fallback)))
-    (test* #`"permute!,msg ,type by ,order-type"
+    (test* #"permute!~msg ~type by ~order-type"
            (if (= (size-of source) (size-of expected))
              (map-to type elt-coercer expected)
              *test-error*)
@@ -591,11 +640,11 @@
   (define (cmp a b)
     (lset= eqv? (coerce-to <list> a) (coerce-to <list> b)))
   (define (unit type)
-    (test* #`"shuffle ,type"
+    (test* #"shuffle ~type"
            (coerce-to type source)
            (shuffle (coerce-to type source))
            cmp)
-    (test* #`"shuffle! ,type"
+    (test* #"shuffle! ~type"
            (coerce-to type source)
            (let1 imp (coerce-to type source)
              (shuffle! imp)

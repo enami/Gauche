@@ -1,5 +1,5 @@
 /*
- * win-compat.h - Compatibility header for Win32 (MSVC and MinGW)
+ * win-compat.h - Compatibility header for Win32 (MinGW)
  *
  *  Collection of #defines and typedefs to fool Gauche source enough
  *  to compile it on Windows.
@@ -7,26 +7,26 @@
  *  instead of scattering #ifdefs around the sources.
  */
 
-/* Since we MinGW and MSVC share large part of compatibility hacks,
-   we put both support here.  If either one requires a special support,
-   we delimit it by defined(__MINGW32__) or defined(MSVC).
-*/
-
 #ifndef GAUCHE_WIN_COMPAT_H
 #define GAUCHE_WIN_COMPAT_H
 
 /* A common symbol, used throughout the Gauche source */
 #define GAUCHE_WINDOWS 1
 
-/* Preparation.
-   Note: for MSVC, we already have these in config.h.
-*/
-#if defined(__MINGW32__)
+/* Preparation. */
+#ifndef WINVER
 #define WINVER 0x0500           /* we support Windows 2000 or later */
+#endif /*WINVER*/
+
+#include <winsock2.h>           /* MinGW needs this before windows.h */
 #include <windows.h>
 #include <shlwapi.h>
 #include <utime.h>
+#include <mswsock.h>
+#include <direct.h>
+#include <tchar.h>
 #undef small  /* windows.h defines 'small' as 'char'; what's the hell? */
+
 #ifndef _BSDTYPES_DEFINED
 typedef unsigned char u_char;
 typedef unsigned short u_short;
@@ -34,18 +34,11 @@ typedef unsigned int u_int;
 typedef unsigned long u_long;
 #define _BSDTYPES_DEFINED
 #endif /* _BSDTYPES_DEFINED */
+
 #ifndef _T
-#define _T(x) (x)   /* MSVC unicode macro */
+#define _T(x) TEXT(x)   /* unicode macro */
 #endif /* _T */
-#endif /* __MINGW32__ */
 
-/* MSVC linker is broken; it cannot handle address of variables in
-   external dlls in constant expression. */
-#if defined(_MSC_VER)
-#define GAUCHE_BROKEN_LINKER_WORKAROUND 1
-#endif
-
-#include <mswsock.h>
 
 /*======================================================================
  * Time calculation
@@ -147,72 +140,11 @@ struct sigaction {
 /* there's a dummy sigaction defined in src/signal.c */
 int sigaction(int signum, const struct sigaction *act, struct sigaction *oact);
 
-/*====================================================================
- * string stuff
+/*=======================================================================
+ * wchar <-> mbchar stuff.
  */
-#if defined(_MSC_VER)
-#define snprintf _snprintf
-#define strcasecmp _stricmp
-#endif /* _MSC_VER */
 
-/*====================================================================
- * POSIX I/O and process functions
- */
-#if defined(_MSC_VER)
-#include <io.h>
-#include <process.h>
-#include <direct.h>
-#include <sys/utime.h>
-
-#define read   _read
-#define write  _write
-#define open   _open
-#define close  _close
-#define lseek  _lseek
-#define access _access
-#define chmod  _chmod
-#define unlink _unlink
-#define umask  _umask
-#define isatty _isatty
-#define chdir  _chdir
-#define getcwd _getcwd
-#define getpid _getpid
-#define mkdir  _mkdir
-#define rmdir  _rmdir
-#define execvp _execvp
-#define utime  _utime
-#define utimbuf _utimbuf
-#define putenv _putenv
-#define dup    _dup
-#define dup2   _dup2
-
-#define O_APPEND    _O_APPEND
-#define O_BINARY    _O_BINARY
-#define O_TEXT      _O_TEXT
-#define O_CREAT     _O_CREAT
-#define O_RDONLY    _O_RDONLY
-#define O_RDWR      _O_RDWR
-#define O_WRONLY    _O_WRONLY
-#define O_TRUNC     _O_TRUNC
-
-#define O_ACCMODE   (O_RDONLY|O_WRONLY|O_RDWR)
-
-#define R_OK        0x02
-#define W_OK        0x04
-#define X_OK        0x06
-#define F_OK        0x00
-
-#define S_ISREG(modebits)  ((modebits)&_S_IFREG)
-#define S_ISDIR(modebits)  ((modebits)&_S_IFDIR)
-
-/* windows doesn't really have device files and named fifo */
-#define S_ISCHR(modebits)  FALSE
-#define S_ISBLK(modebits)  FALSE
-#define S_ISFIFO(modebits) FALSE
-
-#endif /* _MSC_VER */
-
-/* wchar <-> mbchar stuff.  implementation in win-compat.c */
+/* Implementation of Scm_MBS2WCS/WCS2MBS is in win-compat.c */
 #if defined(LIBGAUCHE_BODY)
 extern __declspec(dllexport) WCHAR *Scm_MBS2WCS(const char *s);
 extern __declspec(dllexport) const char *Scm_WCS2MBS(const WCHAR *s);
@@ -229,13 +161,25 @@ extern __declspec(dllimport) const char *Scm_WCS2MBS(const WCHAR *s);
 #define SCM_WCS2MBS(s)  (s)
 #endif /* !UNICODE */
 
+/* Replace some system calls with wide-char counterparts
+   NB: Windows' mkdir() and _wmkdir() takes one argument.
+   NB: stat() needs special treatment; MinGW defines its own macro.
+ */
+#if defined(UNICODE)
+#define open(path, ...)    _wopen(Scm_MBS2WCS(path), __VA_ARGS__)
+#define access(path, mode) _waccess(Scm_MBS2WCS(path), mode)
+#define chdir(dir)         _wchdir(Scm_MBS2WCS(dir))
+#define chmod(path, mode)  _wchmod(Scm_MBS2WCS(path), mode)
+#define mkdir(dir)         _wmkdir(Scm_MBS2WCS(dir))
+#define remove(path)       _wremove(Scm_MBS2WCS(path))
+#define rename(o, n)       _wrename(Scm_MBS2WCS(o), Scm_MBS2WCS(n))
+#define rmdir(dir)         _wrmdir(Scm_MBS2WCS(dir))
+#define unlink(path)       _wunlink(Scm_MBS2WCS(path))
+#endif /*UNICODE*/
+
 /*===================================================================
  * Miscellaneous POSIX stuff
  */
-#if defined(_MSC_VER)
-typedef int  pid_t;
-#endif
-
 uid_t getuid(void);
 uid_t geteuid(void);
 gid_t getgid(void);
@@ -250,14 +194,6 @@ char *ttyname(int desc);
 int truncate(const char *path, off_t len);
 int ftruncate(int fd, off_t len);
 unsigned int alarm(unsigned int seconds);
-
-struct timespec {
-    time_t tv_sec;
-    long   tv_nsec;
-};
-#define HAVE_STRUCT_TIMESPEC 1
-
-int nanosleep(const struct timespec *req, struct timespec *rem);
 
 #define WNOHANG   (1L<<0)
 #define WUNTRACED (1L<<1)

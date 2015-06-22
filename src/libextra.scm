@@ -18,20 +18,20 @@
                  (SCM_FOREIGN_POINTER_REF (void*) obj))))
 
  (define-cproc make-fptr-simple (value :optional (attr '()))
-   (result (Scm_MakeForeignPointerWithAttr fptr_simple value attr)))
+   (return (Scm_MakeForeignPointerWithAttr fptr_simple value attr)))
  (define-cproc make-fptr-unique (value :optional (attr '()))
-   (result (Scm_MakeForeignPointerWithAttr fptr_unique value attr)))
+   (return (Scm_MakeForeignPointerWithAttr fptr_unique value attr)))
  (define-cproc make-fptr-maybe (value :optional (attr '()))
-   (result (Scm_MakeForeignPointerWithAttr fptr_maybe
+   (return (Scm_MakeForeignPointerWithAttr fptr_maybe
                                            (?: (SCM_FALSEP value) 0 value)
                                            attr)))
  (define-cproc fptr-value (fptr)
    (let* ([k::ScmClass* (Scm_ClassOf fptr)])
-     (if (or (== k fptr_simple)
+     (unless (or (== k fptr_simple)
              (== k fptr_unique)
              (== k fptr_maybe))
-       (result (SCM_OBJ_SAFE (SCM_FOREIGN_POINTER_REF ScmObj fptr)))
-       (Scm_Error "fptr required, but got: %S" fptr))))
+       (Scm_Error "fptr required, but got: %S" fptr))
+     (return (SCM_OBJ_SAFE (SCM_FOREIGN_POINTER_REF ScmObj fptr)))))
 
  (initcode
   (set! fptr_simple (Scm_MakeForeignPointerClass

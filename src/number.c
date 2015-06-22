@@ -1,7 +1,7 @@
 /*
  * number.c - numeric functions
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -36,8 +36,8 @@
 #include "gauche/scmconst.h"
 #include "gauche/bits.h"
 #include "gauche/bits_inline.h"
-#include "gauche/builtin-syms.h"
-#include "gauche/arith.h"
+#include "gauche/priv/builtin-syms.h"
+#include "gauche/priv/arith.h"
 
 #include <limits.h>
 #include <float.h>
@@ -408,6 +408,13 @@ ScmObj Scm_DecodeFlonum(double d, int *exp, int *sign)
     return f;
 }
 
+/* returns -1 or 1.  Scm_Sign cannot distinguish 0.0 and -0.0.  This one can.
+   signbit(3) is in C99. */
+int Scm_FlonumSign(double d)
+{
+    return signbit(d)? -1 : 1;
+}
+
 /* Half float support */
 
 double Scm_HalfToDouble(ScmHalfFloat v)
@@ -437,8 +444,6 @@ ScmHalfFloat Scm_DoubleToHalf(double v)
 {
     u_long mant1, mant0;
     int exp0, sign0;
-    int e, mbits;
-    unsigned long m, r;
 
     decode_double(v, &mant1, &mant0, &exp0, &sign0);
 
@@ -455,13 +460,13 @@ ScmHalfFloat Scm_DoubleToHalf(double v)
             return 0x7fff;
         }
     }
-    e = exp0 - 1023 + 15;
+    int e = exp0 - 1023 + 15;
     if (e >= 31) {              /* overflow */
         return sign0? 0xfc00 : 0x7c00;
     }
     /* Calculate required mantissa bits.  We need upper 10 bits, unless
        e < 0, in which case we get denormalized number. */
-    mbits = 10 + ((e <= 0)? e-1 : 0);
+    int mbits = 10 + ((e <= 0)? e-1 : 0);
     if (mbits < -1) {           /* underflow (-1 for rounding, see below) */
         return sign0? 0x8000 : 0x0000;
     }
@@ -470,11 +475,11 @@ ScmHalfFloat Scm_DoubleToHalf(double v)
        roudning.  R is used to determine whether lower bits are
        all 0 or not. */
 #if SIZEOF_LONG >= 8
-    m = mant0 >> (52-mbits-1);
-    r = mant0 & ((1UL << (52-mbits-1)) - 1);
+    unsigned long m = mant0 >> (52-mbits-1);
+    unsigned long r = mant0 & ((1UL << (52-mbits-1)) - 1);
 #else  /*SIZEOF_LONG < 8*/
-    m = mant0 >> (20-mbits-1);
-    r = (mant0 & ((1UL << (20-mbits-1)) - 1))|mant1;
+    unsigned long m = mant0 >> (20-mbits-1);
+    unsigned long r = (mant0 & ((1UL << (20-mbits-1)) - 1))|mant1;
 #endif /*SIZEOF_LONG < 8*/
     m += 1<<(mbits+1);          /* recover hidden bit */
 
@@ -512,10 +517,10 @@ ScmHalfFloat Scm_DoubleToHalf(double v)
    the last bit really matters.
 
    On 64bit architecture, only mant0 is used for mantissa.
-   On 32bit architecture, lower 20bits of mant1 is used for higher
-   bits of mantissa.
+   On 32bit architecture, mant1 is for lower 32bits of mantissa, and 
+   lower 20bits of mant0 is used for higher bits.
  */
-double Scm__EncodeDouble(u_long mant1, u_long mant0, int exp, int sign)
+double Scm__EncodeDouble(u_long mant1, u_long mant0, int exp, int signbit)
 {
     ScmIEEEDouble dd;
 #ifdef DOUBLE_ARMENDIAN
@@ -524,13 +529,13 @@ double Scm__EncodeDouble(u_long mant1, u_long mant0, int exp, int sign)
         dd2.components.mant1 = mant1;
         dd2.components.mant0 = mant0;
         dd2.components.exp = exp;
-        dd2.components.sign = sign;
+        dd2.components.sign = signbit;
         return dd2.d;
     }
 #endif /*DOUBLE_ARMENDIAN*/
 
     dd.components.exp = exp;
-    dd.components.sign = sign;
+    dd.components.sign = signbit;
 #if SIZEOF_LONG >= 8
     dd.components.mant = mant0;
 #else  /*SIZEOF_LONG==4*/
@@ -540,6 +545,40 @@ double Scm__EncodeDouble(u_long mant1, u_long mant0, int exp, int sign)
     return dd.d;
 }
 
+/* More uesr-friendly flonum construction.  This is inverse of DecodeFlonum,
+   and returns the double representation of sign * mant * 2^exp.
+   If exp is too small for normalized range, this returns denormalized number,
+   and the bits that don't fit in the mantissa are just discarded.  (We don't
+   round them, for it will cause double-rounding.  We assume that the caller
+   knows what it is doing when passing very small exp.)
+*/
+double Scm_EncodeFlonum(ScmObj mant, int exp, int sign)
+{
+    ScmUInt64 mant64 = Scm_GetIntegerU64Clamp(mant, SCM_CLAMP_ERROR, NULL);
+    int signbit = sign < 0? 1 : 0;
+    int expfield = exp + 0x3ff + 52;
+    if (expfield <= 0) {
+        /* denormalized range. */
+        int shift = -expfield+1;
+#if SCM_EMULATE_INT64
+        mant64.lo = (mant.lo >> shift) | (mant.hi << (WORD_BITS - shift));
+        mant64.hi >>= shift;
+#else
+        mant64 >>= shift;
+#endif
+        expfield = 0;
+    }
+#if SIZEOF_LONG >= 8
+    return Scm__EncodeDouble(0, mant64, expfield, signbit);
+#elif SCM_EMULATE_INT64
+    return Scm__EncodeDouble(mant64.lo, mant64.hi, expfield, signbit);
+#else
+    u_long hi = (mant64 >> 32);
+    u_long lo = (u_long)(mant64 & ULONG_MAX);
+    return Scm__EncodeDouble(lo, hi, expfield, signbit);
+#endif
+}
+
 /*=====================================================================
  *  Ratnums
  */
@@ -547,7 +586,6 @@ double Scm__EncodeDouble(u_long mant1, u_long mant0, int exp, int sign)
 /* possibly returns denomalized number */
 ScmObj Scm_MakeRatnum(ScmObj numer, ScmObj denom)
 {
-    ScmRatnum *r;
     if (!SCM_INTEGERP(numer)) {
         Scm_Error("numerator must be an exact integer, but got %S", numer);
     }
@@ -557,7 +595,7 @@ ScmObj Scm_MakeRatnum(ScmObj numer, ScmObj denom)
     if (SCM_EXACT_ZERO_P(denom)) {
         Scm_Error("attempt to calculate a division by zero");
     }
-    r = SCM_NEW(ScmRatnum);
+    ScmRatnum *r = SCM_NEW(ScmRatnum);
     SCM_SET_CLASS(r, SCM_CLASS_RATIONAL);
     r->numerator = numer;
     r->denominator = denom;
@@ -601,16 +639,14 @@ ScmObj Scm_Denominator(ScmObj n)
 
 ScmObj Scm_ReduceRational(ScmObj rational)
 {
-    ScmObj numer, denom;
-    ScmObj common;              /* common divisor */
     int negated = FALSE;
 
     if (SCM_INTEGERP(rational)) return rational;
     if (!SCM_RATNUMP(rational)) {
         Scm_Error("exact rational number required, but got %S", rational);
     }
-    numer = SCM_RATNUM_NUMER(rational);
-    denom = SCM_RATNUM_DENOM(rational);
+    ScmObj numer = SCM_RATNUM_NUMER(rational);
+    ScmObj denom = SCM_RATNUM_DENOM(rational);
 
     if (Scm_Sign(denom) < 0) {
         numer = Scm_Negate(numer);
@@ -627,7 +663,7 @@ ScmObj Scm_ReduceRational(ScmObj rational)
         return SCM_NAN;
     }
 
-    common = Scm_Gcd(numer, denom);
+    ScmObj common = Scm_Gcd(numer, denom);
     if (SCM_EXACT_ONE_P(common)) {
         if (negated) {
             return Scm_MakeRatnum(numer, denom);
@@ -652,7 +688,7 @@ ScmObj Scm_RatnumAddSub(ScmObj x, ScmObj y, int subtract)
     ScmObj dx = SCM_RATNUMP(x)? SCM_RATNUM_DENOM(x) : SCM_MAKE_INT(1);
     ScmObj ny = SCM_RATNUMP(y)? SCM_RATNUM_NUMER(y) : y;
     ScmObj dy = SCM_RATNUMP(y)? SCM_RATNUM_DENOM(y) : SCM_MAKE_INT(1);
-    ScmObj gcd, fx, fy, nr, dr;
+    ScmObj gcd, dr, nr;
 
     /* shortcut */
     if (Scm_NumEq(dx, dy)) {
@@ -676,8 +712,8 @@ ScmObj Scm_RatnumAddSub(ScmObj x, ScmObj y, int subtract)
     }
 
     /* general case */
-    fx = Scm_Quotient(dx, gcd, NULL);
-    fy = Scm_Quotient(dy, gcd, NULL);
+    ScmObj fx = Scm_Quotient(dx, gcd, NULL);
+    ScmObj fy = Scm_Quotient(dy, gcd, NULL);
     nx = Scm_Mul(nx, fy);
     ny = Scm_Mul(ny, fx);
     dr = Scm_Mul(dx, fy);
@@ -688,11 +724,10 @@ ScmObj Scm_RatnumAddSub(ScmObj x, ScmObj y, int subtract)
 
 ScmObj Scm_RatnumMulDiv(ScmObj x, ScmObj y, int divide)
 {
-    ScmObj nx, ny, dx, dy;
-    nx = SCM_RATNUMP(x)? SCM_RATNUM_NUMER(x) : x;
-    dx = SCM_RATNUMP(x)? SCM_RATNUM_DENOM(x) : SCM_MAKE_INT(1);
-    ny = SCM_RATNUMP(y)? SCM_RATNUM_NUMER(y) : y;
-    dy = SCM_RATNUMP(y)? SCM_RATNUM_DENOM(y) : SCM_MAKE_INT(1);
+    ScmObj nx = SCM_RATNUMP(x)? SCM_RATNUM_NUMER(x) : x;
+    ScmObj dx = SCM_RATNUMP(x)? SCM_RATNUM_DENOM(x) : SCM_MAKE_INT(1);
+    ScmObj ny = SCM_RATNUMP(y)? SCM_RATNUM_NUMER(y) : y;
+    ScmObj dy = SCM_RATNUMP(y)? SCM_RATNUM_DENOM(y) : SCM_MAKE_INT(1);
 
     if (divide) {
         ScmObj t = ny; ny = dy; dy = t;
@@ -737,60 +772,54 @@ ScmObj Scm_MakeComplexPolar(double mag, double angle)
 /* NB: This isn't called by Scheme's real-part; see stdlib.stub */
 double Scm_RealPart(ScmObj z)
 {
-    double m;
     if (SCM_REALP(z)) {
-        m = Scm_GetDouble(z);
-    } else if (!SCM_COMPNUMP(z)) {
-        Scm_Error("number required, but got %S", z);
-        m = 0.0;                /* dummy */
-    } else {
-        m = SCM_COMPNUM_REAL(z);
+        return Scm_GetDouble(z);
     }
-    return m;
+    if (!SCM_COMPNUMP(z)) {
+        Scm_Error("number required, but got %S", z);
+        return 0.0;                /* dummy */
+    }
+    return SCM_COMPNUM_REAL(z);
 }
 
 /* NB: This isn't called by Scheme's imag-part; see stdlib.stub */
 double Scm_ImagPart(ScmObj z)
 {
-    double m = 0.0;
     if (SCM_COMPNUMP(z)) {
-        m = SCM_COMPNUM_IMAG(z);
-    } else if (!SCM_REALP(z)) {
+        return SCM_COMPNUM_IMAG(z);
+    }
+    if (!SCM_REALP(z)) {
         Scm_Error("number required, but got %S", z);
     }
-    return m;
+    return 0.0;
 }
 
 double Scm_Magnitude(ScmObj z)
 {
-    double m;
     if (SCM_REALP(z)) {
-        m = fabs(Scm_GetDouble(z));
-    } else if (!SCM_COMPNUMP(z)) {
-        Scm_Error("number required, but got %S", z);
-        m = 0.0;                /* dummy */
-    } else {
-        double r = SCM_COMPNUM_REAL(z);
-        double i = SCM_COMPNUM_IMAG(z);
-        m = sqrt(r*r+i*i);
+        return fabs(Scm_GetDouble(z));
     }
-    return m;
+    if (!SCM_COMPNUMP(z)) {
+        Scm_Error("number required, but got %S", z);
+        return 0.0;                /* dummy */
+    }
+    double r = SCM_COMPNUM_REAL(z);
+    double i = SCM_COMPNUM_IMAG(z);
+    return sqrt(r*r+i*i);
 }
 
 double Scm_Angle(ScmObj z)
 {
-    double a;
     if (SCM_REALP(z)) {
-        a = (Scm_Sign(z) < 0)? M_PI : 0.0;
-    } else if (!SCM_COMPNUMP(z)) {
-        Scm_Error("number required, but got %S", z);
-        a = 0.0;                /* dummy */
-    } else {
-        double r = SCM_COMPNUM_REAL(z);
-        double i = SCM_COMPNUM_IMAG(z);
-        a = atan2(i, r);
+        return (Scm_Sign(z) < 0)? M_PI : 0.0;
     }
-    return a;
+    if (!SCM_COMPNUMP(z)) {
+        Scm_Error("number required, but got %S", z);
+        return 0.0;                /* dummy */
+    }
+    double r = SCM_COMPNUM_REAL(z);
+    double i = SCM_COMPNUM_IMAG(z);
+    return atan2(i, r);
 }
 
 /*=======================================================================
@@ -1011,6 +1040,26 @@ ScmUInt32 Scm_GetIntegerU32Clamp(ScmObj obj, int clamp, int *oor)
 #endif /* SIZEOF_LONG >= 8 */
 }
 
+/* get an unsigned integer value modulo u_long range.
+   convenient when you only concern lower bits. */
+u_long Scm_GetIntegerUMod(ScmObj obj)
+{
+    if (SCM_INTP(obj)) return (u_long)SCM_INT_VALUE(obj);
+    if (SCM_BIGNUMP(obj)) {
+        if (SCM_BIGNUM_SIZE(obj) == 0) {
+            /* this shouldn't happen in normalized bignums, but just in case */
+            return 0;
+        }
+        if (SCM_BIGNUM_SIGN(obj) < 0) {
+            u_long v = SCM_BIGNUM(obj)->values[0];
+            return ~v + 1;
+        } else {
+            return SCM_BIGNUM(obj)->values[0];
+        }
+    }
+    Scm_Error("Exact integer required, but got %S", obj);
+    return 0;                   /* dummy */
+}
 
 #if SIZEOF_LONG == 4
 /* we need special routines */
@@ -1268,25 +1317,55 @@ double Scm_GetDouble(ScmObj obj)
             ScmObj numer = SCM_RATNUM_NUMER(obj);
             ScmObj denom = SCM_RATNUM_DENOM(obj);
 
-            if (SCM_INTP(numer)) return 0.0;
-            if (SCM_INTP(denom)) {
-                /* dnumer is infinity.  only its sign matters.*/
-                if (Scm_Sign(denom) < 0) return -dnumer;
-                else                     return dnumer;
-            } else {
-                ScmBignum *bnumer = SCM_BIGNUM(numer);
-                ScmBignum *bdenom = SCM_BIGNUM(denom);
-                int snumer = SCM_BIGNUM_SIZE(bnumer);
-                int sdenom = SCM_BIGNUM_SIZE(bdenom);
-                int shift;
-                /* we rip off the first 3 words, which guarantees we preserve
-                   more than 53 bits. */
-                if (snumer > sdenom) shift = (sdenom - 3) * sizeof(long) * 8;
-                else                 shift = (snumer - 3) * sizeof(long) * 8;
-
-                dnumer = Scm_GetDouble(Scm_Ash(SCM_RATNUM_NUMER(obj), -shift));
-                ddenom = Scm_GetDouble(Scm_Ash(SCM_RATNUM_DENOM(obj), -shift));
+            if (SCM_INTP(numer)) {
+                /* Denominator is too big.  However, there's a case that
+                   OBJ still falls in a subnormal range if its absolute
+                   value is greater than 1/2^1075 (a half of the least
+                   positive subnormal flonum). */
+                if (Scm_NumCmp(Scm_Abs(obj), SCM_MIN_DENORMALIZED_FLONUM_EXACT) > 0) {
+                    /* We scale the OBJ so that we can calculate the
+                       flonum approximation in the normalized range,
+                       then rescale the result.  The scale factor is chosen
+                       so that we can calculate necessary digits 
+                       without loss of precision.
+                       When we scale back, we can't simply use ldexp, for
+                       in subnormal range we'll get double-rounding. */
+                    double scaled = Scm_GetDouble(Scm_Div(Scm_Ash(numer, 1075),
+                                                          denom));
+                    int exp, sign;
+                    ScmObj mant = Scm_DecodeFlonum(scaled, &exp, &sign);
+                    return Scm_EncodeFlonum(mant, exp-1075, sign);
+                } else {
+                    if (Scm_Sign(obj) > 0) return 0.0;
+                    else return 1.0/SCM_DBL_NEGATIVE_INFINITY;
+                }
+            } else if (SCM_INTP(denom)) {
+                /* Numerator is too big. */
+                if (Scm_NumCmp(Scm_Abs(obj), SCM_MAX_FINITE_FLONUM_EXACT) > 0) {
+                    if (Scm_Sign(denom) < 0) return -dnumer;
+                    else                     return dnumer;
+                } else {
+                    double scaled = Scm_GetDouble(Scm_Div(numer,
+                                                          Scm_Ash(denom, 1024)));
+                    int exp, sign;
+                    ScmObj mant = Scm_DecodeFlonum(scaled, &exp, &sign);
+                    return Scm_EncodeFlonum(mant, exp+1024, sign);
+                }
             }
+
+            /* If we come here, both numer and denom are bignums. */
+            ScmBignum *bnumer = SCM_BIGNUM(numer);
+            ScmBignum *bdenom = SCM_BIGNUM(denom);
+            int snumer = SCM_BIGNUM_SIZE(bnumer);
+            int sdenom = SCM_BIGNUM_SIZE(bdenom);
+            int shift;
+            /* we rip off the first 3 words, which guarantees we preserve
+               more than 53 bits. */
+            if (snumer > sdenom) shift = (sdenom - 3) * sizeof(long) * 8;
+            else                 shift = (snumer - 3) * sizeof(long) * 8;
+
+            dnumer = Scm_GetDouble(Scm_Ash(SCM_RATNUM_NUMER(obj), -shift));
+            ddenom = Scm_GetDouble(Scm_Ash(SCM_RATNUM_DENOM(obj), -shift));
         }
         SCM_FP_ENSURE_DOUBLE_PRECISION_BEGIN();
         /* It is critical to perform this division in IEEE double (53bit
@@ -1317,9 +1396,10 @@ int Scm_IntegerP(ScmObj obj)
     if (SCM_RATNUMP(obj)) return FALSE; /* normalized ratnum never be integer */
     if (SCM_FLONUMP(obj)) {
         double d = SCM_FLONUM_VALUE(obj);
-        double f, i;
         if (SCM_IS_INF(d) || SCM_IS_NAN(d)) return FALSE;
-        if ((f = modf(d, &i)) == 0.0) return TRUE;
+        double i;
+        double f = modf(d, &i);
+        if (f == 0.0) return TRUE;
         return FALSE;
     }
     if (SCM_COMPNUMP(obj)) return FALSE;
@@ -1411,30 +1491,30 @@ static ScmObj scm_abs(ScmObj obj, int vmp)
 DEFINE_DUAL_API1(Scm_Abs, Scm_VMAbs, scm_abs)
 
 /* Return -1, 0 or 1 when arg is minus, zero or plus, respectively.
-   used to implement zero?, positive? and negative? */
+   used to implement zero?, positive? and negative?
+   NB: This returns 0 for both positive and negative zeros. */
 int Scm_Sign(ScmObj obj)
 {
-    long r = 0;
-
     if (SCM_INTP(obj)) {
-        r = SCM_INT_VALUE(obj);
-        if (r > 0) r = 1;
-        else if (r < 0) r = -1;
-    } else if (SCM_BIGNUMP(obj)) {
-        r = SCM_BIGNUM_SIGN(obj);
-    } else if (SCM_FLONUMP(obj)) {
-        double v = SCM_FLONUM_VALUE(obj);
-        if (v != 0.0) {
-            r = (v > 0.0)? 1 : -1;
-        }
-    } else if (SCM_RATNUMP(obj)) {
-        return Scm_Sign(SCM_RATNUM_NUMER(obj));
-    } else {
-        /* NB: zero? can accept a complex number, but it is processed in
-           the stub function.   see stdlib.stub */
-        Scm_Error("real number required, but got %S", obj);
+        long r = SCM_INT_VALUE(obj);
+        if (r == 0) return 0;
+        return (r > 0)? 1 : -1;
     }
-    return r;
+    if (SCM_BIGNUMP(obj)) {
+        return SCM_BIGNUM_SIGN(obj);
+    }
+    if (SCM_FLONUMP(obj)) {
+        double v = SCM_FLONUM_VALUE(obj);
+        if (v == 0.0) return 0;
+        return (v > 0.0)? 1 : -1;
+    }
+    if (SCM_RATNUMP(obj)) {
+        return Scm_Sign(SCM_RATNUM_NUMER(obj));
+    }
+    /* NB: zero? can accept a complex number, but it is processed in
+       the stub function.   see stdlib.stub */
+    Scm_Error("real number required, but got %S", obj);
+    return 0; /* dummy */
 }
 
 static ScmObj negate(ScmObj obj, int vmp)
@@ -1475,12 +1555,11 @@ static ScmObj reciprocal(ScmObj obj, int vmp)
         return Scm_MakeRational(SCM_RATNUM_DENOM(obj),
                                 SCM_RATNUM_NUMER(obj));
     } else if (SCM_COMPNUMP(obj)) {
-        double r = SCM_COMPNUM_REAL(obj), r1;
-        double i = SCM_COMPNUM_IMAG(obj), i1;
-        double d;
-        d = r*r + i*i;
-        r1 = r/d;
-        i1 = -i/d;
+        double r = SCM_COMPNUM_REAL(obj);
+        double i = SCM_COMPNUM_IMAG(obj);
+        double d = r*r + i*i;
+        double r1 = r/d;
+        double i1 = -i/d;
         return Scm_MakeComplex(r1, i1);
     } else {
         return Scm_ApplyRec(SCM_OBJ(&generic_div), SCM_LIST1(obj));
@@ -1588,9 +1667,8 @@ static ScmObj scm_add(ScmObj arg0, ScmObj arg1, int vmp)
             return Scm_RatnumAdd(arg0, arg1);
         }
         if (SCM_FLONUMP(arg1)) {
-            double z;
             if (SCM_EXACT_ZERO_P(arg0)) return arg1;
-            z = (double)SCM_INT_VALUE(arg0) + SCM_FLONUM_VALUE(arg1);
+            double z = (double)SCM_INT_VALUE(arg0) + SCM_FLONUM_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_COMPNUMP(arg1)) {
@@ -1644,9 +1722,8 @@ static ScmObj scm_add(ScmObj arg0, ScmObj arg1, int vmp)
     }
     else if (SCM_FLONUMP(arg0)) {
         if (SCM_INTP(arg1)) {
-            double z;
             if (SCM_EXACT_ZERO_P(arg1)) return arg0;
-            z = SCM_FLONUM_VALUE(arg0) + (double)SCM_INT_VALUE(arg1);
+            double z = SCM_FLONUM_VALUE(arg0) + (double)SCM_INT_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_BIGNUMP(arg1) || SCM_RATNUMP(arg1)) {
@@ -1654,10 +1731,9 @@ static ScmObj scm_add(ScmObj arg0, ScmObj arg1, int vmp)
             RETURN_FLONUM(z);
         }
         if (SCM_FLONUMP(arg1)) {
-            double z;
             if (SCM_FLONUM_VALUE(arg0) == 0.0) return arg1;
             if (SCM_FLONUM_VALUE(arg1) == 0.0) return arg0;
-            z = SCM_FLONUM_VALUE(arg0) + SCM_FLONUM_VALUE(arg1);
+            double z = SCM_FLONUM_VALUE(arg0) + SCM_FLONUM_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_COMPNUMP(arg1)) {
@@ -1758,9 +1834,8 @@ static ScmObj scm_sub(ScmObj arg0, ScmObj arg1, int vmp)
             return Scm_RatnumSub(arg0, arg1);
         }
         if (SCM_FLONUMP(arg1)) {
-            double z;
             if (SCM_FLONUM_VALUE(arg1) == 0.0) return arg0;
-            z = Scm_GetDouble(arg0) - SCM_FLONUM_VALUE(arg1);
+            double z = Scm_GetDouble(arg0) - SCM_FLONUM_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_COMPNUMP(arg1)) {
@@ -1772,9 +1847,8 @@ static ScmObj scm_sub(ScmObj arg0, ScmObj arg1, int vmp)
     }
     if (SCM_FLONUMP(arg0)) {
         if (SCM_INTP(arg1)) {
-            double z;
             if (SCM_EXACT_ZERO_P(arg1)) return arg0;
-            z = SCM_FLONUM_VALUE(arg0) - (double)SCM_INT_VALUE(arg1);
+            double z = SCM_FLONUM_VALUE(arg0) - (double)SCM_INT_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_BIGNUMP(arg1) || SCM_RATNUMP(arg1)) {
@@ -1782,9 +1856,8 @@ static ScmObj scm_sub(ScmObj arg0, ScmObj arg1, int vmp)
             RETURN_FLONUM(z);
         }
         if (SCM_FLONUMP(arg1)) {
-            double z;
             if (SCM_FLONUM_VALUE(arg1) == 0.0) return arg0;
-            z = SCM_FLONUM_VALUE(arg0) - SCM_FLONUM_VALUE(arg1);
+            double z = SCM_FLONUM_VALUE(arg0) - SCM_FLONUM_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_COMPNUMP(arg1)) {
@@ -1857,10 +1930,9 @@ static ScmObj scm_mul(ScmObj arg0, ScmObj arg1, int vmp)
             return Scm_RatnumMul(arg0, arg1);
         }
         if (SCM_FLONUMP(arg1)) {
-            double z;
             if (SCM_EXACT_ZERO_P(arg0)) return arg0;
             if (SCM_EQ(arg0, SCM_MAKE_INT(1))) return arg1;
-            z = (double)SCM_INT_VALUE(arg0) * SCM_FLONUM_VALUE(arg1);
+            double z = (double)SCM_INT_VALUE(arg0) * SCM_FLONUM_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_COMPNUMP(arg1)) {
@@ -1906,9 +1978,8 @@ static ScmObj scm_mul(ScmObj arg0, ScmObj arg1, int vmp)
             return Scm_RatnumMul(arg0, arg1);
         }
         if (SCM_FLONUMP(arg1)) {
-            double z;
             if (SCM_FLONUM_VALUE(arg1) == 0.0) return arg1;
-            z = Scm_GetDouble(arg0) * SCM_FLONUM_VALUE(arg1);
+            double z = Scm_GetDouble(arg0) * SCM_FLONUM_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_COMPNUMP(arg1)) {
@@ -1921,11 +1992,10 @@ static ScmObj scm_mul(ScmObj arg0, ScmObj arg1, int vmp)
     }
     if (SCM_FLONUMP(arg0)) {
         if (SCM_INTP(arg1)) {
-            double z;
             /* inexact number * exact zero makes exact zero */
             if (SCM_EXACT_ZERO_P(arg1)) return arg1;
             if (SCM_EXACT_ONE_P(arg1)) return arg0;
-            z = SCM_FLONUM_VALUE(arg0) * (double)SCM_INT_VALUE(arg1);
+            double z = SCM_FLONUM_VALUE(arg0) * (double)SCM_INT_VALUE(arg1);
             RETURN_FLONUM(z);
         }
         if (SCM_BIGNUMP(arg1) || SCM_RATNUMP(arg1)) {
@@ -2012,7 +2082,6 @@ DEFINE_DUAL_API2(Scm_Mul, Scm_VMMul, scm_mul)
 static ScmObj
 scm_div(ScmObj arg0, ScmObj arg1, int inexact, int compat, int vmp)
 {
-    double z;
     ScmObj r = SCM_UNBOUND;
 
 #define SIMPLE_RETURN(x) do { r = (x); goto simple_return; } while (0)
@@ -2030,11 +2099,12 @@ scm_div(ScmObj arg0, ScmObj arg1, int inexact, int compat, int vmp)
                     long q = SCM_INT_VALUE(arg0)/SCM_INT_VALUE(arg1);
                     return Scm_MakeInteger(q);
                 } else {
-                    z = (double)SCM_INT_VALUE(arg0)/(double)SCM_INT_VALUE(arg1);
+                    double z = (double)SCM_INT_VALUE(arg0)
+                            / (double)SCM_INT_VALUE(arg1);
                     RETURN_FLONUM(z);
                 }
             } else if (inexact) {
-                z = Scm_GetDouble(arg0)/Scm_GetDouble(arg1);
+                double z = Scm_GetDouble(arg0)/Scm_GetDouble(arg1);
                 RETURN_FLONUM(z);
             } else {
                 return Scm_MakeRational(arg0, arg1);
@@ -2214,23 +2284,27 @@ scm_div(ScmObj arg0, ScmObj arg1, int inexact, int compat, int vmp)
       Scm_Error("attempt to calculate a division by zero");
     }
   anormal:
+    /* real inexact division by zero */
     {
-        int s = Scm_Sign(arg0);
-        if (s == 0) return SCM_NAN;
-        if (s < 0)  return SCM_NEGATIVE_INFINITY;
-        else        return SCM_POSITIVE_INFINITY;
+        int s0 = Scm_Sign(arg0);
+        int s1 = SCM_FLONUMP(arg1)? Scm_FlonumSign(SCM_FLONUM_VALUE(arg1)) : 1;
+        if (s0 == 0)   return SCM_NAN;
+        if (s0*s1 < 0) return SCM_NEGATIVE_INFINITY;
+        else           return SCM_POSITIVE_INFINITY;
     }
   anormal_comp:
+    /* complex inexact division by zero */
     {
         double r0 = SCM_COMPNUM_REAL(arg0);
         double i0 = SCM_COMPNUM_IMAG(arg0);
+        int s1 = SCM_FLONUMP(arg1)? Scm_FlonumSign(SCM_FLONUM_VALUE(arg1)) : 1;
         double r =
-            (r0 > 0.0) ? SCM_DBL_POSITIVE_INFINITY
-            : (r0 < 0.0) ? SCM_DBL_NEGATIVE_INFINITY
+            (r0*s1 > 0.0) ? SCM_DBL_POSITIVE_INFINITY
+            : (r0*s1 < 0.0) ? SCM_DBL_NEGATIVE_INFINITY
             : SCM_DBL_NAN;
         double i =
-            (i0 > 0.0) ? SCM_DBL_POSITIVE_INFINITY
-            : (i0 < 0.0) ? SCM_DBL_NEGATIVE_INFINITY
+            (i0*s1 > 0.0) ? SCM_DBL_POSITIVE_INFINITY
+            : (i0*s1 < 0.0) ? SCM_DBL_NEGATIVE_INFINITY
             : SCM_DBL_NAN;
         return Scm_MakeComplex(r, i);
     }
@@ -2291,11 +2365,10 @@ ScmObj Scm_Quotient(ScmObj x, ScmObj y, ScmObj *rem)
 
     if (SCM_INTP(x)) {
         if (SCM_INTP(y)) {
-            long q, r;
             if (SCM_INT_VALUE(y) == 0) goto DIVBYZERO;
-            q = SCM_INT_VALUE(x)/SCM_INT_VALUE(y);
+            long q = SCM_INT_VALUE(x)/SCM_INT_VALUE(y);
             if (rem) {
-                r = SCM_INT_VALUE(x)%SCM_INT_VALUE(y);
+                long r = SCM_INT_VALUE(x)%SCM_INT_VALUE(y);
                 *rem = SCM_MAKE_INT(r);
             }
             return SCM_MAKE_INT(q);
@@ -2343,9 +2416,8 @@ ScmObj Scm_Quotient(ScmObj x, ScmObj y, ScmObj *rem)
         }
       DO_FLONUM:
         {
-            double q;
             if (ry == 0.0) goto DIVBYZERO;
-            q = (rx*ry > 0)? floor(rx/ry) : ceil(rx/ry);
+            double q = (rx*ry > 0)? floor(rx/ry) : ceil(rx/ry);
             if (rem) {
                 double rr = roundeven(rx - q*ry);
                 *rem = Scm_MakeFlonum(rr);
@@ -2375,9 +2447,8 @@ ScmObj Scm_Modulo(ScmObj x, ScmObj y, int remp)
     double rx, ry;
     if (SCM_INTP(x)) {
         if (SCM_INTP(y)) {
-            long r;
             if (SCM_INT_VALUE(y) == 0) goto DIVBYZERO;
-            r = SCM_INT_VALUE(x)%SCM_INT_VALUE(y);
+            long r = SCM_INT_VALUE(x)%SCM_INT_VALUE(y);
             if (!remp && r) {
                 if ((SCM_INT_VALUE(x) > 0 && SCM_INT_VALUE(y) < 0)
                     || (SCM_INT_VALUE(x) < 0 && SCM_INT_VALUE(y) > 0)) {
@@ -2515,10 +2586,6 @@ static u_long gcd_bigfix(ScmBignum *x, u_long y)
 /* We don't provide Scm_VMGcd, assuming passing flonums to gcd is rare. */
 ScmObj Scm_Gcd(ScmObj x, ScmObj y)
 {
-    int ox = FALSE, oy = FALSE;
-    long ix, iy;
-    u_long ux, uy, ur;
-
     if (!Scm_IntegerP(x)) {
         Scm_Error("integer required, but got %S", x);
     }
@@ -2532,17 +2599,14 @@ ScmObj Scm_Gcd(ScmObj x, ScmObj y)
     if (SCM_EXACT_ZERO_P(x)) return y;
     if (SCM_EXACT_ZERO_P(y)) return x;
 
-    ix = Scm_GetIntegerClamp(x, SCM_CLAMP_NONE, &ox);
-    iy = Scm_GetIntegerClamp(y, SCM_CLAMP_NONE, &oy);
+    int ox = FALSE, oy = FALSE;
+    long ix = Scm_GetIntegerClamp(x, SCM_CLAMP_NONE, &ox);
+    long iy = Scm_GetIntegerClamp(y, SCM_CLAMP_NONE, &oy);
 
     if (!ox && !oy) {
-        ux = (ix < 0)? -ix : ix;
-        uy = (iy < 0)? -iy : iy;
-        if (ux >= uy) {
-            ur = gcd_fixfix(ux, uy);
-        } else {
-            ur = gcd_fixfix(uy, ux);
-        }
+        u_long ux = (ix < 0)? -ix : ix;
+        u_long uy = (iy < 0)? -iy : iy;
+        u_long ur = (ux >= uy)? gcd_fixfix(ux, uy) : gcd_fixfix(uy, ux);
         return Scm_MakeIntegerU(ur);
     }
 
@@ -2551,16 +2615,16 @@ ScmObj Scm_Gcd(ScmObj x, ScmObj y)
            (abs(x) == abs(y) iff LONG_MAX+1 and y == LONG_MIN, but we've
            excluded it above). */
         SCM_ASSERT(SCM_BIGNUMP(x));
-        uy = (iy < 0)? -iy : iy;
-        ur = gcd_bigfix(SCM_BIGNUM(x), uy);
+        u_long uy = (iy < 0)? -iy : iy;
+        u_long ur = gcd_bigfix(SCM_BIGNUM(x), uy);
         return Scm_MakeIntegerU(ur);
     }
 
     if (!ox && ix != LONG_MIN) {
         /* reverse condition of above */
         SCM_ASSERT(SCM_BIGNUMP(y));
-        ux = (ix < 0)? -ix : ix;
-        ur = gcd_bigfix(SCM_BIGNUM(y), ux);
+        u_long ux = (ix < 0)? -ix : ix;
+        u_long ur = gcd_bigfix(SCM_BIGNUM(y), ux);
         return Scm_MakeIntegerU(ur);
     }
 
@@ -2579,8 +2643,8 @@ ScmObj Scm_Gcd(ScmObj x, ScmObj y)
     return x;
 }
 
-/*
- * Expt
+/*===============================================================
+ * Exponential and trigometric funcitons
  */
 
 /* Integer power of 10.  It is extensively used during string->number
@@ -2593,7 +2657,6 @@ static int    iexpt10_initialized = FALSE;
 
 static void iexpt10_init(void)
 {
-    int i;
     iexpt10_n[0] = SCM_MAKE_INT(1);
     iexpt10_n[1] = SCM_MAKE_INT(10);
     iexpt10_n[2] = SCM_MAKE_INT(100);
@@ -2601,7 +2664,7 @@ static void iexpt10_init(void)
     iexpt10_n[4] = SCM_MAKE_INT(10000);
     iexpt10_n[5] = SCM_MAKE_INT(100000);
     iexpt10_n[6] = SCM_MAKE_INT(1000000);
-    for (i=7; i<IEXPT10_TABLESIZ; i++) {
+    for (int i=7; i<IEXPT10_TABLESIZ; i++) {
         iexpt10_n[i] = Scm_Mul(iexpt10_n[i-1], SCM_MAKE_INT(10));
     }
     iexpt10_initialized = TRUE;
@@ -2610,11 +2673,10 @@ static void iexpt10_init(void)
 #define IEXPT10_INIT() \
     do { if (!iexpt10_initialized) iexpt10_init(); } while (0)
 
-/* short cut for exact numbers */
-static ScmObj exact_expt(ScmObj x, ScmObj y)
+/* expt(x, y) where x is exact and y is integer */
+ScmObj Scm_ExactIntegerExpt(ScmObj x, ScmObj y)
 {
     int sign = Scm_Sign(y);
-    long iy;
     ScmObj r = SCM_MAKE_INT(1);
 
     if (sign == 0) return r;
@@ -2625,7 +2687,7 @@ static ScmObj exact_expt(ScmObj x, ScmObj y)
         /* who wants such a heavy calculation? */
         Scm_Error("exponent too big: %S", y);
     }
-    iy = SCM_INT_VALUE(y);
+    long iy = SCM_INT_VALUE(y);
     /* Shortcut for special cases */
     if (SCM_EQ(x, SCM_MAKE_INT(10)) && iy > 0 && iy < IEXPT10_TABLESIZ) {
         /* We have a precalculated table for 10^y */
@@ -2650,13 +2712,13 @@ static ScmObj exact_expt(ScmObj x, ScmObj y)
 
 static ScmObj scm_expt(ScmObj x, ScmObj y, int vmp)
 {
-    double dx, dy;
-    if (SCM_EXACTP(x) && SCM_INTEGERP(y)) return exact_expt(x, y);
-    /* TODO: ratnum vs ratnum */
+    /* NB: The exact case is handled by expt in libnum.scm; we check this case
+       just for the backward compatibility. */
+    if (SCM_EXACTP(x) && SCM_INTEGERP(y)) return Scm_ExactIntegerExpt(x, y);
     if (!SCM_REALP(x)) Scm_Error("real number required, but got %S", x);
     if (!SCM_REALP(y)) Scm_Error("real number required, but got %S", y);
-    dx = Scm_GetDouble(x);
-    dy = Scm_GetDouble(y);
+    double dx = Scm_GetDouble(x);
+    double dy = Scm_GetDouble(y);
     if (dy == 0.0) {
         RETURN_FLONUM(1.0);
     } else if (dx < 0 && !Scm_IntegerP(y)) {
@@ -2664,8 +2726,7 @@ static ScmObj scm_expt(ScmObj x, ScmObj y, int vmp)
            if x is a negative real number, arg(x) == pi
         */
         double mag = exp(dy * log(-dx));
-        double theta = dy * M_PI;
-        return Scm_MakeComplex(mag * cos(theta), mag * sin(theta));
+        return Scm_MakeComplex(mag * Scm_CosPi(dy), mag * Scm_SinPi(dy));
     } else {
         RETURN_FLONUM(pow(dx, dy));
     }
@@ -2692,15 +2753,60 @@ long Scm_TwosPower(ScmObj n)
     return -1;
 }
 
+/* sinpi(x) = sin(x * pi)
+   cospi(x) = cos(x * pi)
+   tanpi(x) = tan(x * pi)
+
+   We first reduce input range to -1 <= x <= 1 by trig_pi_reduce_range.
+ */
+static double trig_pi_reduce_range(double x)
+{
+    double xx = fmod(x, 2.0);   /* -2.0 < x < 2.0 */
+    if (xx > 1.0)  return xx - 2.0;
+    if (xx < -1.0) return xx + 2.0;
+    if (xx == 0.0 && signbit(xx)) return -xx; /* we don't return -0.0 */
+    else return xx;
+}
+
+double Scm_SinPi(double x)
+{
+    double xx = trig_pi_reduce_range(x);
+    if (xx >= 0) {
+        if (xx > 0.5)  xx = 1 - xx;
+        if (xx > 0.25) return cos(M_PI*(0.5-xx));
+        else return sin(M_PI*xx);
+    } else {
+        if (xx < -0.5) xx = -1 - xx;
+        if (xx < -0.25) return -cos(M_PI*(-0.5-xx));
+        else return sin(M_PI*xx);
+    }
+}
+
+double Scm_CosPi(double x)
+{
+    double xx = fabs(trig_pi_reduce_range(x));
+    if (xx >= 0.75) return -cos(M_PI*(1-xx));
+    if (xx >  0.25) return sin(M_PI*(0.5-xx));
+    else            return cos(M_PI*xx);
+}
+
+double Scm_TanPi(double x)
+{
+    return Scm_SinPi(x)/Scm_CosPi(x);
+}
+
 /*===============================================================
  * Comparison
  */
 
+static inline int nan_p(ScmObj arg)
+{
+    return (SCM_FLONUMP(arg) && SCM_IS_NAN(SCM_FLONUM_VALUE(arg)));
+}
+
 static inline int either_nan_p(ScmObj arg0, ScmObj arg1)
 {
-    if (SCM_FLONUMP(arg0) && SCM_IS_NAN(SCM_FLONUM_VALUE(arg0))) return TRUE;
-    if (SCM_FLONUMP(arg1) && SCM_IS_NAN(SCM_FLONUM_VALUE(arg1))) return TRUE;
-    return FALSE;
+    return (nan_p(arg0) || nan_p(arg1));
 }
 
 int Scm_NumEq(ScmObj arg0, ScmObj arg1)
@@ -2809,14 +2915,11 @@ int Scm_NumCmp(ScmObj arg0, ScmObj arg1)
             return 0;
         }
         if (SCM_BIGNUMP(arg1) || SCM_RATNUMP(arg1)) {
-            /* we fall back to inexact comparison, because (a) arg0 can be
-               infinity which cannot be converted to an exact number,
-               and (b) Scm_Sub uses inexact calculation in these cases,
-               and we want to keep the result consistent. */
-            double r = SCM_FLONUM_VALUE(arg0) - Scm_GetDouble(arg1);
-            if (r < 0) return -1;
-            if (r > 0) return 1;
-            return 0;
+            /* R7RS requires transitivity in '=', so we can't coerce
+               arg1 to inexact; we'd rather convert arg0 to exact.
+               NB: Thus we'll have a case that (= x y) => #f but
+               (- x y) => 0.0.  It's ok for the latter is inexact result. */
+            return Scm_NumCmp(Scm_Exact(arg0), arg1);
         }
         badnum = arg1;
     }
@@ -2843,15 +2946,15 @@ int Scm_NumCmp(ScmObj arg0, ScmObj arg1)
         if (SCM_RATNUMP(arg1)) {
             ScmObj n0 = SCM_RATNUM_NUMER(arg0), d0 = SCM_RATNUM_DENOM(arg0);
             ScmObj n1 = SCM_RATNUM_NUMER(arg1), d1 = SCM_RATNUM_DENOM(arg1);
-            int s0 = Scm_Sign(n0), s1 = Scm_Sign(n1), d, n;
+            int s0 = Scm_Sign(n0), s1 = Scm_Sign(n1);
 
             /* screen the obvious cases without allocating new numbers */
             if (s0 < s1) return -1;
             if (s0 > s1) return 1;
-            d = Scm_NumCmp(d0, d1);
+            int d = Scm_NumCmp(d0, d1);
             if (d == 0) return Scm_NumCmp(n0, n1);
             if ((s0 > 0 && s1 > 0) || (s0 < 0 && s1 < 0)) {
-                n = Scm_NumCmp(n0, n1) * s0;
+                int n = Scm_NumCmp(n0, n1) * s0;
                 if (d > 0 && n <= 0) return -s0;
                 if (d < 0 && n >= 0) return s0;
             }
@@ -2870,39 +2973,38 @@ int Scm_NumCmp(ScmObj arg0, ScmObj arg1)
 
 void Scm_MinMax(ScmObj arg0, ScmObj args, ScmObj *min, ScmObj *max)
 {
+    if (!SCM_REALP(arg0)) Scm_Error("real number required, but got %S", arg0);
+    if (nan_p(arg0)) goto got_nan;
     int inexact = !SCM_EXACTP(arg0);
     ScmObj mi = arg0;
     ScmObj ma = arg0;
 
-    for (;;) {
-        if (!SCM_REALP(arg0))
-            Scm_Error("real number required, but got %S", arg0);
-        if (SCM_NULLP(args)) {
-            if (min) {
-                if (inexact && SCM_EXACTP(mi)) {
-                    *min = Scm_Inexact(mi);
-                } else {
-                    *min = mi;
-                }
-            }
-            if (max) {
-                if (inexact && SCM_EXACTP(ma)) {
-                    *max = Scm_Inexact(ma);
-                } else {
-                    *max = ma;
-                }
-            }
-            return;
-        }
-        if (!SCM_EXACTP(SCM_CAR(args))) inexact = TRUE;
-        if (min && Scm_NumCmp(mi, SCM_CAR(args)) > 0) {
-            mi = SCM_CAR(args);
-        }
-        if (max && Scm_NumCmp(ma, SCM_CAR(args)) < 0) {
-            ma = SCM_CAR(args);
-        }
-        args = SCM_CDR(args);
+    for (;SCM_PAIRP(args); args = SCM_CDR(args)) {
+        ScmObj arg = SCM_CAR(args);
+        if (!SCM_REALP(arg)) Scm_Error("real number required, but got %S", arg);
+        if (nan_p(arg)) goto got_nan;
+        if (!SCM_EXACTP(arg)) inexact = TRUE;
+        if (min && Scm_NumCmp(mi, arg) > 0) mi = arg;
+        if (max && Scm_NumCmp(ma, arg) < 0) ma = arg;
     }
+    if (min) {
+        if (inexact && SCM_EXACTP(mi)) {
+            *min = Scm_Inexact(mi);
+        } else {
+            *min = mi;
+        }
+    }
+    if (max) {
+        if (inexact && SCM_EXACTP(ma)) {
+            *max = Scm_Inexact(ma);
+        } else {
+            *max = ma;
+        }
+    }
+    return;
+ got_nan:
+    if (min) *min = SCM_NAN;
+    if (max) *max = SCM_NAN;
 }
 
 /*===============================================================
@@ -2985,8 +3087,8 @@ static ScmObj scm_round(ScmObj num, int mode, int vmp)
         else return scm_add(quot, SCM_MAKE_INT(offset), vmp);
     }
     if (SCM_FLONUMP(num)) {
-        double r = 0.0, v;
-        v = SCM_FLONUM_VALUE(num);
+        double r = 0.0;
+        double v = SCM_FLONUM_VALUE(num);
         switch (mode) {
         case SCM_ROUND_FLOOR: r = floor(v); break;
         case SCM_ROUND_CEIL:  r = ceil(v); break;
@@ -3019,8 +3121,8 @@ ScmObj Scm_VMRound(ScmObj num, int mode)
 ScmObj Scm_RoundToExact(ScmObj num, int mode)
 {
     if (SCM_FLONUMP(num)) {
-        double r = 0.0, v;
-        v = SCM_FLONUM_VALUE(num);
+        double r = 0.0;
+        double v = SCM_FLONUM_VALUE(num);
         if (SCM_IS_NAN(v) || SCM_IS_INF(v)) {
             Scm_Error("Exact infinity/nan is not supported: %S", num);
         }
@@ -3060,7 +3162,7 @@ ScmObj Scm_Ash(ScmObj x, ScmSmallInt cnt)
     if (cnt >= 0x10000000) {
         Scm_Error("ash: shift amount too big to handle: %ld", cnt);
     }
-    
+
     if (SCM_INTP(x)) {
         long ix = SCM_INT_VALUE(x);
         if (cnt <= -(SIZEOF_LONG * 8)) {
@@ -3264,10 +3366,13 @@ static inline int numcmp3(ScmObj x, ScmObj d, ScmObj y)
 static void print_double(char *buf, int buflen, double val, int plus_sign,
                          int precision, int exp_lo, int exp_hi)
 {
-    /* Handle a few special cases first.
-       The notation of infinity is provisional; see how srfi-70 becomes. */
+    /* Handle a few special cases first. */
     if (val == 0.0) {
-        if (plus_sign) *buf++ = '+';
+        if (Scm_FlonumSign(val) > 0) {
+            if (plus_sign) *buf++ = '+';
+        } else {
+            *buf++ = '-';
+        }
         if (precision == 0) strcpy(buf, "0.");
         else strcpy (buf, "0.0");
         return;
@@ -3287,16 +3392,16 @@ static void print_double(char *buf, int buflen, double val, int plus_sign,
            note that m+ == m- for most cases, and m+ == 2*m- for the rest.
            so we calculate m+ from m- for each iteration, using the flag
            mp2 as   m+ = mp? m- : 2*m-. */
-        ScmObj f, r, s, mp, mm, q;
-        int exp, sign, est, tc1, tc2, tc3, digs, point, round;
+        ScmObj r, s, mm;
+        int exp, sign;
         int mp2 = FALSE, fixup = FALSE;
 
         IEXPT10_INIT();
         if (val < 0) val = -val;
 
         /* initialize r, s, m+ and m- */
-        f = Scm_DecodeFlonum(val, &exp, &sign);
-        round = !Scm_OddP(f);
+        ScmObj f = Scm_DecodeFlonum(val, &exp, &sign);
+        int round = !Scm_OddP(f);
         if (exp >= 0) {
             ScmObj be = Scm_Ash(SCM_MAKE_INT(1), exp);
             if (Scm_NumCmp(f, SCM_2_52) != 0) {
@@ -3325,7 +3430,7 @@ static void print_double(char *buf, int buflen, double val, int plus_sign,
         }
 
         /* estimate scale */
-        est = (int)ceil(log10(val) - 0.1);
+        int est = (int)ceil(log10(val) - 0.1);
         if (est >= 0) {
             s = Scm_Mul(s, iexpt10(est));
         } else {
@@ -3338,7 +3443,7 @@ static void print_double(char *buf, int buflen, double val, int plus_sign,
         if (Scm_NumCmp(r, s) >= 0) {
             fixup = TRUE;
         } else {
-            mp = (mp2? Scm_Ash(mm, 1) : mm);
+            ScmObj mp = (mp2? Scm_Ash(mm, 1) : mm);
             if (round) {
                 fixup = (numcmp3(r, mp, s) >= 0);
             } else {
@@ -3356,6 +3461,7 @@ static void print_double(char *buf, int buflen, double val, int plus_sign,
         /* Determine position of decimal point.  we avoid exponential
            notation if exponent is small, i.e. 0.9 and 30.0 instead of
            9.0e-1 and 3.0e1.  */
+        int point;
         if (est < exp_hi && est > exp_lo) { point = est; est = 1; }
         else { point = 1; }
 
@@ -3368,22 +3474,24 @@ static void print_double(char *buf, int buflen, double val, int plus_sign,
         if (point <= 0) {
             *buf++ = '0'; buflen--;
             *buf++ = '.', buflen--;
-            for (digs=point;digs<0 && buflen>5;digs++) {
+            for (int digs=point;digs<0 && buflen>5;digs++) {
                 *buf++ = '0'; buflen--;
             }
         }
 
         /* generate the digits */
+        int digs;
         for (digs=1;buflen>5;digs++) {
             ScmObj r10 = Scm_Mul(r, SCM_MAKE_INT(10));
-            q = Scm_Quotient(r10, s, &r);
+            ScmObj q = Scm_Quotient(r10, s, &r);
             mm = Scm_Mul(mm, SCM_MAKE_INT(10));
-            mp = (mp2? Scm_Ash(mm, 1) : mm);
+            ScmObj mp = (mp2? Scm_Ash(mm, 1) : mm);
 
             /* Scm_Printf(SCM_CURERR, "q=%S, r=%S, mp=%S, mm=%S\n",
                q, r, mp, mm);*/
 
             SCM_ASSERT(SCM_INTP(q));
+            int tc1, tc2;
             if (round) {
                 tc1 = (Scm_NumCmp(r, mm) <= 0);
                 tc2 = (numcmp3(r, mp, s) >= 0);
@@ -3405,7 +3513,7 @@ static void print_double(char *buf, int buflen, double val, int plus_sign,
                     *buf++ = (char)SCM_INT_VALUE(q) + '0';
                     break;
                 } else {
-                    tc3 = numcmp3(r, r, s); /* r*2 <=> s */
+                    int tc3 = numcmp3(r, r, s); /* r*2 <=> s */
                     if ((round && tc3 <= 0) || (!round && tc3 < 0)) {
                         *buf++ = (char)SCM_INT_VALUE(q) + '0';
                         break;
@@ -3442,52 +3550,64 @@ static void number_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
     Scm_PrintNumber(port, obj, NULL);
 }
 
-#define FLT_BUF 50
+#define FLT_BUF 65  /* need to hold binary representation of the least fixnum */
 
-static void
+static size_t
 print_number(ScmPort *port, ScmObj obj, u_long flags, ScmNumberFormat *fmt)
 {
-    ScmObj r = SCM_NIL;
     int use_upper = flags & SCM_NUMBER_FORMAT_USE_UPPER;
     int show_plus = flags & SCM_NUMBER_FORMAT_SHOW_PLUS;
     int radix = fmt->radix;
+    int nchars = 0;
     char buf[FLT_BUF];
 
     if (SCM_INTP(obj)) {
         long value = SCM_INT_VALUE(obj);
-        int i;
-        if (value == 0) { SCM_PUTC('0', port); return; }
+        if (value == 0) { SCM_PUTC('0', port); return 1; }
         if (value < 0) {
             SCM_PUTC('-', port);
+            nchars++;
             value = -value;     /* this won't overflow */
         }
+        int i;
         for (i = FLT_BUF-1; i >= 0 && value > 0; i--) {
             int c = value % radix;
             buf[i] = (c<10)?(c+'0'):(use_upper?(c-10+'A'):(c-10+'a'));
             value /= radix;
+            nchars++;
         }
         Scm_Putz(buf+i+1, FLT_BUF-i-1, port);
+        return nchars;
     } else if (SCM_BIGNUMP(obj)) {
-        SCM_PUTS(Scm_BignumToString(SCM_BIGNUM(obj), radix, use_upper), port);
+        ScmObj s = Scm_BignumToString(SCM_BIGNUM(obj), radix, use_upper);
+        Scm_Puts(SCM_STRING(s), port);
+        return SCM_STRING_BODY_LENGTH(SCM_STRING_BODY(s));
     } else if (SCM_FLONUMP(obj)) {
         print_double(buf, FLT_BUF, SCM_FLONUM_VALUE(obj),
                      show_plus, fmt->precision, fmt->exp_lo, fmt->exp_hi);
         Scm_Putz(buf, -1, port);
+        return strlen(buf);
     } else if (SCM_RATNUMP(obj)) {
-        print_number(port, SCM_RATNUM_NUMER(obj), flags, fmt);
+        nchars = print_number(port, SCM_RATNUM_NUMER(obj), flags, fmt);
         Scm_Putc('/', port);
-        print_number(port, SCM_RATNUM_DENOM(obj),
-                     flags & ~SCM_NUMBER_FORMAT_SHOW_PLUS, fmt);
+        nchars++;
+        nchars += print_number(port, SCM_RATNUM_DENOM(obj),
+                               flags & ~SCM_NUMBER_FORMAT_SHOW_PLUS, fmt);
+        return nchars;
     } else if (SCM_COMPNUMP(obj)) {
         print_double(buf, FLT_BUF, SCM_COMPNUM_REAL(obj),
                      show_plus, fmt->precision, fmt->exp_lo, fmt->exp_hi);
         Scm_Putz(buf, -1, port);
+        nchars += strlen(buf);
         print_double(buf, FLT_BUF, SCM_COMPNUM_IMAG(obj),
                      TRUE, fmt->precision, fmt->exp_lo, fmt->exp_hi);
         Scm_Putz(buf, -1, port);
+        nchars += strlen(buf);
         Scm_Putc('i', port);
+        return nchars+1;
     } else {
         Scm_Error("number required: %S", obj);
+        return 0;               /* dummy */
     }
 }
 
@@ -3514,29 +3634,31 @@ ScmObj Scm_NumberToString(ScmObj obj, int radix, u_long flags)
 }
 
 /* API.  FMT can be NULL. */
-void Scm_PrintNumber(ScmPort *port, ScmObj n, ScmNumberFormat *fmt)
+size_t Scm_PrintNumber(ScmPort *port, ScmObj n, ScmNumberFormat *fmt)
 {
     ScmNumberFormat defaults;
     if (fmt == NULL) {
         Scm_NumberFormatInit(&defaults);
         fmt = &defaults;
     }
-    print_number(port, n, fmt->flags, fmt);
+    return print_number(port, n, fmt->flags, fmt);
 }
 
 /* API.  FMT can be NULL.  Utility to expose Burger&Dybvig algorithm. */
-void Scm_PrintDouble(ScmPort *port, double d, ScmNumberFormat *fmt)
+size_t Scm_PrintDouble(ScmPort *port, double d, ScmNumberFormat *fmt)
 {
-    char buf[FLT_BUF];
-    ScmNumberFormat defaults;
     if (fmt == NULL) {
+        ScmNumberFormat defaults;
         Scm_NumberFormatInit(&defaults);
         fmt = &defaults;
     }
+    char buf[FLT_BUF];
     print_double(buf, FLT_BUF, d,
                  fmt->flags & SCM_NUMBER_FORMAT_SHOW_PLUS,
                  fmt->precision, fmt->exp_lo, fmt->exp_hi);
-    Scm_Putz(buf, (int)strlen(buf), port);
+    size_t nchars = strlen(buf);
+    Scm_Putz(buf, (int)nchars, port);
+    return nchars;
 }
 
 /*
@@ -3581,9 +3703,10 @@ struct numread_packet {
     int radix;                  /* radix */
     int exactness;              /* exactness; see enum below */
     int padread;                /* '#' padding has been read */
-    int strict;                 /* when true, reports an error if the
-                                   input violates implementation limitation;
-                                   otherwise, the routine returns #f. */
+    int explicit;               /* explicit prefix is appeared */
+    int strict;                 /* reject gauche extension */
+    int throwerror;             /* throws error on parse, instead of
+                                   returning #f. */
 };
 
 enum { /* used in the exactness flag */
@@ -3620,9 +3743,7 @@ static ScmObj read_uint(const char **strp, int *lenp,
     u_long limit = longlimit[radix-RADIX_MIN], bdig = bigdig[radix-RADIX_MIN];
     u_long value_int = 0;
     ScmBignum *value_big = NULL;
-    char c;
     static const char tab[] = "0123456789abcdefghijklmnopqrstuvwxyz";
-    const char *ptab;
 
     if (!SCM_FALSEP(initval)) {
         if (SCM_INTP(initval)) {
@@ -3643,7 +3764,12 @@ static ScmObj read_uint(const char **strp, int *lenp,
 
     while (len--) {
         int digval = -1;
-        c = tolower(*str++);
+        char c = tolower(*str++);
+        if (ctx->explicit && !ctx->strict && c == '_') {
+            /* Gauche extension - allow '_' in digits for readability
+               when number is expliticly prefixed. */
+            continue;
+        }
         if (ctx->padread) {
             if (c == '#') digval = 0;
             else break;
@@ -3654,7 +3780,7 @@ static ScmObj read_uint(const char **strp, int *lenp,
                 ctx->exactness = INEXACT;
             }
         } else {
-            for (ptab = tab; ptab < tab+radix; ptab++) {
+            for (const char *ptab = tab; ptab < tab+radix; ptab++) {
                 if (c == *ptab) {
                     digval = (int)(ptab-tab);
                     digread = TRUE;
@@ -3696,9 +3822,9 @@ static ScmObj read_uint(const char **strp, int *lenp,
  */
 static double algorithmR(ScmObj f, int e, double z)
 {
-    ScmObj m, x, y, abs_d, d2;
-    int k, s, kprev, sign_d;
-    m = Scm_DecodeFlonum(z, &k, &s);
+    int k, s;
+    ScmObj m = Scm_DecodeFlonum(z, &k, &s);
+    ScmObj x, y;
     IEXPT10_INIT();
   retry:
     if (k >= 0) {
@@ -3718,15 +3844,15 @@ static double algorithmR(ScmObj f, int e, double z)
             y = Scm_Mul(m, iexpt10(-e));
         }
     }
-    kprev = k;
+    int kprev = k;
 
     /* compare  */
     for (;;) {
         /*Scm_Printf(SCM_CURERR, "z=%.20lg,\nx=%S,\ny=%S\nf=%S\nm=%S\ne=%d, k=%d\n", z, x, y, f, m, e, k);*/
         /* compare */
-        sign_d = Scm_NumCmp(x, y);
-        abs_d = (sign_d > 0)? Scm_Sub(x, y) : Scm_Sub(y, x);
-        d2 = Scm_Ash(Scm_Mul(m, abs_d), 1);
+        int sign_d = Scm_NumCmp(x, y);
+        ScmObj abs_d = (sign_d > 0)? Scm_Sub(x, y) : Scm_Sub(y, x);
+        ScmObj d2 = Scm_Ash(Scm_Mul(m, abs_d), 1);
         switch (Scm_NumCmp(d2, y)) {
         case -1: /* d2 < y */
             if (Scm_NumCmp(m, SCM_2_52) == 0
@@ -3823,11 +3949,11 @@ static ScmObj read_real(const char **strp, int *lenp,
 
     /* Recognize specials */
     if (sign_seen && (*lenp) >= 5) {
-        if (strncmp(*strp, "inf.0", 5) == 0) {
+        if (strncasecmp(*strp, "inf.0", 5) == 0) {
             (*strp) += 5; (*lenp) -= 5;
             return minusp?SCM_NEGATIVE_INFINITY:SCM_POSITIVE_INFINITY;
         }
-        if (strncmp(*strp, "nan.0", 5) == 0) {
+        if (strncasecmp(*strp, "nan.0", 5) == 0) {
             (*strp) += 5; (*lenp) -= 5;
             return SCM_NAN;
         }
@@ -3881,12 +4007,11 @@ static ScmObj read_real(const char **strp, int *lenp,
     /* Read fractional part.
        At this point, simple integer is already eliminated. */
     if (**strp == '.') {
-        int lensave;
         if (ctx->radix != 10) {
             return numread_error("(only 10-based fraction is supported)", ctx);
         }
         (*strp)++; (*lenp)--;
-        lensave = *lenp;
+        int lensave = *lenp;
         fraction = read_uint(strp, lenp, ctx, intpart);
         fracdigs = lensave - *lenp;
     } else {
@@ -3947,29 +4072,46 @@ static ScmObj read_real(const char **strp, int *lenp,
         /* Explicit exact number.  We can continue exact arithmetic
            (it may end up ratnum) */
         ScmObj e = Scm_Mul(fraction,
-                           exact_expt(SCM_MAKE_INT(10),
-                                      Scm_MakeInteger(exponent-fracdigs)));
+                           Scm_ExactIntegerExpt(SCM_MAKE_INT(10),
+                                                Scm_MakeInteger(exponent-fracdigs)));
         if (minusp) return Scm_Negate(e);
         else        return e;
-    } else {
-        double realnum = Scm_GetDouble(fraction);
+    } 
+      
+    /* Get double approximaiton of fraction.  If fraction >= 2^53 we'll
+       only get approximation, but the error will be corrected in
+       AlgorithmR.  We have to be careful, however, not to overflow
+       the following GetDouble call. */
+    int raise_factor = exponent - fracdigs;
+    double realnum = Scm_GetDouble(fraction);
 
-        realnum = raise_pow10(realnum, exponent-fracdigs);
-
-        if (SCM_IS_INF(realnum)) {
-            /* Special case.  We catch too big exponent here. */
+    if (SCM_IS_INF(realnum)) {
+        /* We have too many digits to fit in double.  We can still get finite
+           number if raise_factor is small, but we need to calculate realnum
+           via rational. */
+        if (raise_factor >= 0) {
+            /* Exponent is too big. */
             return (minusp? SCM_NEGATIVE_INFINITY : SCM_POSITIVE_INFINITY);
         }
-
-        if (realnum > 0.0
-            && (Scm_NumCmp(fraction, SCM_2_52) > 0
-                || exponent-fracdigs > MAX_EXACT_10_EXP
-                || exponent-fracdigs < -MAX_EXACT_10_EXP)) {
-            realnum = algorithmR(fraction, exponent-fracdigs, realnum);
-        }
-        if (minusp) realnum = -realnum;
-        return Scm_MakeFlonum(realnum);
+        IEXPT10_INIT();
+        realnum = Scm_GetDouble(Scm_Div(fraction, iexpt10(-raise_factor)));
+    } else {
+        realnum = raise_pow10(realnum, raise_factor);
     }
+    
+    if (SCM_IS_INF(realnum)) {
+        /* Exponent is too big. */
+        return (minusp? SCM_NEGATIVE_INFINITY : SCM_POSITIVE_INFINITY);
+    }
+
+    if (realnum > 0.0
+        && (Scm_NumCmp(fraction, SCM_2_52) > 0
+            || raise_factor > MAX_EXACT_10_EXP
+            || raise_factor < -MAX_EXACT_10_EXP)) {
+        realnum = algorithmR(fraction, raise_factor, realnum);
+    }
+    if (minusp) realnum = -realnum;
+    return Scm_MakeFlonum(realnum);
 }
 
 /* Entry point */
@@ -3977,13 +4119,14 @@ static ScmObj read_number(const char *str, int len, int radix, int strict)
 {
     struct numread_packet ctx;
     int radix_seen = 0, exactness_seen = 0, sign_seen = 0;
-    ScmObj realpart;
 
     ctx.buffer = str;
     ctx.buflen = len;
     ctx.exactness = NOEXACT;
     ctx.padread = FALSE;
+    ctx.explicit = FALSE;
     ctx.strict = strict;
+    ctx.throwerror = FALSE;
 
 #define CHK_EXACT_COMPLEX()                                                 \
     do {                                                                    \
@@ -4005,26 +4148,32 @@ static ScmObj read_number(const char *str, int len, int radix, int strict)
         case 'x':; case 'X':;
             if (radix_seen) return SCM_FALSE;
             ctx.radix = 16; radix_seen++;
+            ctx.explicit = TRUE;
             continue;
         case 'o':; case 'O':;
             if (radix_seen) return SCM_FALSE;
             ctx.radix = 8; radix_seen++;
+            ctx.explicit = TRUE;
             continue;
         case 'b':; case 'B':;
             if (radix_seen) return SCM_FALSE;
             ctx.radix = 2; radix_seen++;
+            ctx.explicit = TRUE;
             continue;
         case 'd':; case 'D':;
             if (radix_seen) return SCM_FALSE;
             ctx.radix = 10; radix_seen++;
+            ctx.explicit = TRUE;
             continue;
         case 'e':; case 'E':;
             if (exactness_seen) return SCM_FALSE;
             ctx.exactness = EXACT; exactness_seen++;
+            ctx.explicit = TRUE;
             continue;
         case 'i':; case 'I':;
             if (exactness_seen) return SCM_FALSE;
             ctx.exactness = INEXACT; exactness_seen++;
+            ctx.explicit = TRUE;
             continue;
         }
         return SCM_FALSE;
@@ -4042,7 +4191,7 @@ static ScmObj read_number(const char *str, int len, int radix, int strict)
         sign_seen = TRUE;
     }
 
-    realpart = read_real(&str, &len, &ctx);
+    ScmObj realpart = read_real(&str, &len, &ctx);
     if (SCM_FALSEP(realpart) || len == 0) return realpart;
 
     switch (*str) {
@@ -4051,14 +4200,12 @@ static ScmObj read_number(const char *str, int len, int radix, int strict)
         if (len <= 1) {
             return SCM_FALSE;
         } else {
-            ScmObj angle;
-            double dmag, dangle;
             str++; len--;
-            angle = read_real(&str, &len, &ctx);
+            ScmObj angle = read_real(&str, &len, &ctx);
             if (SCM_FALSEP(angle) || len != 0) return SCM_FALSE;
             CHK_EXACT_COMPLEX();
-            dmag = Scm_GetDouble(realpart);
-            dangle = Scm_GetDouble(angle);
+            double dmag = Scm_GetDouble(realpart);
+            double dangle = Scm_GetDouble(angle);
             return Scm_MakeComplexPolar(dmag, dangle);
         }
     case '+':
@@ -4071,7 +4218,8 @@ static ScmObj read_number(const char *str, int len, int radix, int strict)
                                    (*str == '+' ? 1.0 : -1.0));
         } else {
             ScmObj imagpart = read_real(&str, &len, &ctx);
-            if (SCM_FALSEP(imagpart) || len != 1 || *str != 'i') {
+            if (SCM_FALSEP(imagpart) || len != 1
+                || (*str != 'i' && *str != 'I')) {
                 return SCM_FALSE;
             }
             CHK_EXACT_COMPLEX();
@@ -4093,7 +4241,7 @@ static ScmObj read_number(const char *str, int len, int radix, int strict)
 
 static ScmObj numread_error(const char *msg, struct numread_packet *context)
 {
-    if (context->strict) {
+    if (context->throwerror) {
         Scm_Error("bad number format %s: %A", msg,
                   Scm_MakeString(context->buffer, context->buflen,
                                  context->buflen, 0));
@@ -4125,14 +4273,13 @@ ScmObj Scm__ConstObjs[SCM_NUM_CONST_OBJS] = { SCM_FALSE };
 void Scm__InitNumber(void)
 {
     ScmModule *mod = Scm_GaucheModule();
-    int radix, i;
-    u_long n;
 
-    for (radix = RADIX_MIN; radix <= RADIX_MAX; radix++) {
+    for (int radix = RADIX_MIN; radix <= RADIX_MAX; radix++) {
         longlimit[radix-RADIX_MIN] =
             (u_long)floor((double)LONG_MAX/radix - radix);
         /* Find max D where R^(D+1)-1 <= LONG_MAX */
-        for (i = 0, n = 1; ; i++, n *= radix) {
+        u_long n = 1;
+        for (int i = 0; ; i++, n *= radix) {
             if (n >= (u_long)(LONG_MAX/radix)) {
                 longdigs[radix-RADIX_MIN] = i-1;
                 bigdig[radix-RADIX_MIN] = n;
@@ -4150,6 +4297,12 @@ void Scm__InitNumber(void)
     SCM_2_32 = Scm_Ash(SCM_MAKE_INT(1), 32);
     SCM_2_31 = Scm_Ash(SCM_MAKE_INT(1), 31);
     SCM_MINUS_2_31 = Scm_Negate(SCM_2_31);
+    SCM_MIN_DENORMALIZED_FLONUM_EXACT =
+        Scm_Reciprocal(Scm_Ash(SCM_MAKE_INT(1), 1075));
+    SCM_MAX_FINITE_FLONUM_EXACT = Scm_Add(Scm_Sub(Scm_Ash(SCM_MAKE_INT(1), 1024),
+                                                  Scm_Ash(SCM_MAKE_INT(1), 971)),
+                                          Scm_Sub(Scm_Ash(SCM_MAKE_INT(1), 970),
+                                                  SCM_MAKE_INT(1)));
 
     SCM_POSITIVE_INFINITY = Scm_MakeFlonum(SCM_DBL_POSITIVE_INFINITY);
     SCM_NEGATIVE_INFINITY = Scm_MakeFlonum(SCM_DBL_NEGATIVE_INFINITY);

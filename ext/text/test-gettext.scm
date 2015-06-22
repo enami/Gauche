@@ -1,7 +1,5 @@
 (use gauche.test)
 (use gauche.charconv)
-(use util.list)
-(use srfi-1)
 
 (add-load-path "../../test")
 (define *test-locale-dirs* '("../../test/data/locale"))
@@ -17,7 +15,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; load test data.  this defines *tests*
 
-(let1 test-file #`"data/gettext.data.,(gauche-character-encoding)"
+(let1 test-file #"data/gettext.data.~(gauche-character-encoding)"
   (load test-file))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

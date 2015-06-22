@@ -1,7 +1,7 @@
 ;;;
 ;;; port.stk - stk compatibility interface
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -202,7 +202,7 @@
 (define posix-stat sys-stat)
 (define (posix-stat->vector stat)
   (apply vector
-         (map (lambda (p) (p stat))
+         (map (^p (p stat))
               (list sys-stat->dev
                     sys-stat->ino
                     sys-stat->mode

@@ -1,7 +1,7 @@
 ;;;
 ;;; library utilities - to be autoloaded.
 ;;;
-;;;   Copyright (c) 2003-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2003-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -35,7 +35,7 @@
   (use srfi-1)
   (use srfi-13)
   (export library-exists? library-fold library-map library-for-each
-          library-has-module?))
+          library-has-module? library-name->module-name))
 (select-module gauche.libutil)
 
 ;; library-fold - iterate over the modules or libraries whose name matches
@@ -60,7 +60,7 @@
   ;; file - path components after prefix, e.g. gauche/mop
   ;; base - the last component of file, e.g. mop
   (define (search pats prefix file base seed)
-    (let* ([path (topath prefix file)])
+    (let1 path (topath prefix file)
       (cond [(and (not (null? (cdr pats)))
                   (match? (car pats) base)
                   (file-is-directory? path))
@@ -155,9 +155,14 @@
   (let1 exp (guard (e [else #f])
               (with-input-from-file file read :if-does-not-exist #f))
     (and (pair? exp)
-         (eq? (car exp) 'define-module)
-         (pair? (cdr exp))
-         (eq? (cadr exp) name)
+         (or (and (eq? (car exp) 'define-module)
+                  (pair? (cdr exp))
+                  (eq? (cadr exp) name))
+             (and (eq? (car exp) 'define-library)
+                  (pair? (cdr exp))
+                  ;; This should be optimized---it's waste of time running
+                  ;; library-name->module-name for every library on the way.
+                  (eq? (library-name->module-name (cadr exp)) name)))
          file)))
 
 ;; Auxiliary procedures
@@ -194,3 +199,27 @@
                [else (write-char c) (loop (read-char))])))
          (display "$"))))))
 
+;; mapping R7RS library name to Gauche module name
+;;
+;; We simply maps R7RS (foo bar baz) to Gauche's foo.bar.baz . The caveat
+;; is that R7RS library name component may include dots.  We map them in R7RS
+;; library names into consecutive dots in Gauche module name, which will be
+;; mapped to a single dot again in pathnames.
+;; (The latter translation is done by module-name->path and path->module-name
+;; in src/libmod.scm)
+;;
+;;  R7RS library name   Gauche module name      File pathname
+;;
+;;  (foo bar baz)       foo.bar.baz             foo/bar/baz
+;;  (foo b.r baz)       foo.b..r.baz            foo/b.r/baz
+;;
+;; TODO: R7RS library name can contain weird characters, and we need a rule
+;; to map them.
+(define (library-name->module-name libname)
+  (define (stringify x)
+    (cond [(keyword? x) (write-to-string x)]
+          [(symbol? x) (symbol->string x)]
+          [(and (integer? x) (exact? x) (>= x 0)) (number->string x)]
+          [else (error "Bad name component in library name:" x)]))    
+  ($ string->symbol $ (cut string-join <> ".")
+     $ map ($ (cut regexp-replace-all #/\./ <> "..") $ stringify $) libname))

@@ -1,7 +1,7 @@
 ;;;
 ;;; process.scm - process interface
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -535,7 +535,7 @@
 (define (shell-escape-string str)
   (cond-expand
    [gauche.os.windows
-    ;; This is supported in src/scmlib.scm.  See the comment in it.
+    ;; This is supported in src/libsys.scm.  See the comment in it.
     (%sys-escape-windows-command-line str)]
    [else
     ;; We follow standard unix shell convention: if STR contains special

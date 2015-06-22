@@ -139,6 +139,37 @@ VGhpcyBpcyBhIHRlc3Qgc2VudGVuY2Uu
 (multipart-parse-test ps1)
 (multipart-parse-test ps2)
 
+(define ps3 "--boundary
+Content-Disposition: form-data; name=aaa
+
+111
+--boundary
+Content-Disposition: form-data; name=bbb
+
+000
+--boundary
+Content-Disposition: form-data; name=aaa
+
+222
+--boundary
+Content-Disposition: form-data; name=\"aaa\"
+
+333
+--boundary
+Content-Disposition: form-data; name=bbb
+
+999
+--boundary--")
+
+(define pr3 '(("aaa" "111" "222" "333") ("bbb" "000" "999")))
+
+(test* "cgi-parse-parameter (multipart, multivalue)" pr3
+       (parameterize ((cgi-metavariables
+                       `(("REQUEST_METHOD" "POST")
+                         ("CONTENT_TYPE" "multipart/form-data; boundary=boundary")
+                         ("CONTENT_LENGTH" ,(string-size ps3)))))
+         (with-input-from-string ps3 cgi-parse-parameters)))
+
 (test* "cgi-get-parameter" "foo bar"
        (cgi-get-parameter "a" qr1))
 (test* "cgi-get-parameter" '("foo bar" "  ")
@@ -331,6 +362,20 @@ VGhpcyBpcyBhIHRlc3Qgc2VudGVuY2Uu
 
   (sys-system "rm -rf test.o")])
 
+;;------------------------------------------------
+(test-section "www.css")
+(use www.css)
+(test-module 'www.css)
+
+;; NB: this assumes the test is run either under src/ or test/
+(define (run-css-parser-test)
+  (dolist [infile (glob "../test/data/css-*.css")]
+    (test* #"css parser ~infile"
+           (call-with-input-file (path-swap-extension infile "sxcss") read)
+           (css-parse-file infile)
+           equal?)))
+
+(run-css-parser-test)
 
 (test-end)
 

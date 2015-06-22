@@ -199,6 +199,21 @@
               (bar (make <bar> :a x :b x)))
          (write-to-string bar write/ss)))
 
+(define-class <baz> ()
+  ((a :init-keyword :a)
+   (b :init-keyword :b)))
+(define-method write-object ((self <baz>) port)
+  (display "#," port)
+  (write `(baz :a ,(ref self 'a) :b ,(ref self 'b)) port))
+(test* "user defined mixed"
+       "#,(baz :a (#0=#,(foo foo foob) #1=#,(foo fee feeb)) :b (#,(bar #0# #1#) #,(bar #1# #0#)))"
+       (let* ((f0 (make <foo> :a 'foo :b 'foob))
+              (f1 (make <foo> :a 'fee :b 'feeb))
+              (b1 (make <bar> :a f0 :b f1))
+              (b2 (make <bar> :a f1 :b f0))
+              (c  (make <baz> :a (list f0 f1) :b (list b1 b2))))
+         (write-to-string c write/ss)))
+
 ;; This test doesn't involve shared structure.  It is to test
 ;; we can handle deep list without busting C stack.
 (test* "deep list doesn't bust C stack" 2000002
@@ -220,7 +235,7 @@
          (set-cdr! a a)
          (format/ss "The answer is ~a" a)))
 
-(test* "format/ss" "The answer is #0=(a . #0#) #0=(a . #0#)"
+(test* "format/ss" "The answer is #0=(a . #0#) #0#"
        (let ((a (list 'a)))
          (set-cdr! a a)
          (format/ss "The answer is ~s ~s" a a)))
@@ -283,7 +298,7 @@
 (test* "skipws" 'a
        (read-from-string
         (cond-expand
-         [gauche.ces.utf8 "\u00a0\u1680\u180e\u2000\u200a\u2028\u2029\
+         [gauche.ces.utf8 "\u00a0\u1680\u2000\u200a\u2028\u2029\
                            \u202f\u205f\u3000a"]
          [(or gauche.ces.eucjp gauche.ces.sjis) "\u3000a"]
          [else "a"])))
@@ -307,4 +322,76 @@
        (read-from-string "#0=#,(foo a #0#)")
        isomorphic?)
 
+
+;;===============================================================
+;; Read lexical mode
+;;
+
+(test-section "read lexical mode")
+
+(define (test-reader-lexical-mode mode input expect)
+  (test* (format "reader lexical mode ~s: ~s" mode input) expect
+         (let1 old-mode #f
+           (dynamic-wind
+             (^[] (set! old-mode (reader-lexical-mode mode)))
+             (^[] (guard (e [else 'error])
+                    (let* ([warn-port (open-output-string)]
+                           [r (with-error-to-port warn-port
+                                (cut read-from-string input))]
+                           [w (rxmatch-case (get-output-string warn-port)
+                                [#/^WARNING/ () 'warn]
+                                [else #f])])
+                      (if w (list r w) r))))
+             (^[] (reader-lexical-mode old-mode))))))
+
+;; data ::= ((input expect ...) ...)
+(define (test-reader-lexical-modes data)
+  (dolist [d data]
+    (for-each (^[m e] (test-reader-lexical-mode m (car d) e))
+              '(legacy permissive warn-legacy strict-r7)
+              (cdr d))))
+
+(test-reader-lexical-modes
+ '(("\"a\\x30zz\"" "a0zz" "a0zz" ("a0zz" warn) error)))
+(test-reader-lexical-modes
+ '(("\"a\\x30;zz\"" "a0;zz" "a0zz" "a0zz" "a0zz")))
+(test-reader-lexical-modes
+ '(("\"a\\x0030zz\"" "a\030zz" "a\030zz" ("a\030zz" warn) error)))
+(test-reader-lexical-modes
+ '(("\"a\\x0030;zz\"" "a\030;zz" "a0zz" "a0zz" "a0zz")))
+
+;; Load and reader-lexical-mode
+(sys-unlink "test.o")
+(sys-unlink "test1.o")
+
+(with-output-to-file "test.o"
+  (lambda ()
+    (write '(reader-lexical-mode 'legacy))))
+
+(test* "load restores read lexical mode" #t
+       (let1 x (reader-lexical-mode)
+         (load "./test.o")
+         (eq? (reader-lexical-mode) x)))
+
+(define (test-reader-lexical-mode-directive directive literal)
+  (with-output-to-file "test.o"
+    (lambda ()
+      (display directive)
+      (display "\n")
+      (display "(with-output-to-file \"test1.o\" (lambda () (display ")
+      (display literal)
+      (display ")))")))
+  (load "./test.o")
+  (with-input-from-file "test1.o" (cut read-line)))
+
+(test* "#!gauche-legacy directive" "0;z"
+       (test-reader-lexical-mode-directive "#!gauche-legacy" "\"\\x30;z\""))
+(test* "#!r7rs directive" "0z"
+       (test-reader-lexical-mode-directive "#!r7rs" "\"\\x30;z\""))
+(test* "#!r7rs directive" (test-error <read-error>)
+       (test-reader-lexical-mode-directive "#!r7rs" "\"\\x30\""))
+
+(sys-unlink "test.o")
+(sys-unlink "test1.o")
+     
 (test-end)

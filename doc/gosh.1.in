@@ -17,14 +17,29 @@ gosh \- a Scheme script interpreter
 [-l
 .I file
 ]
+[-L
+.I file
+]
 [-e
 .I expr
 ]
 [-E
 .I expr
 ]
+[-m
+.I module
+]
 [-f
 .I flag
+]
+[-F
+.I feature
+]
+[-p
+.I type
+]
+[-r
+.I standard
 ]
 [--]
 [
@@ -127,21 +142,42 @@ Same as -e, except that the
 is read as if it is surrounded by parenthesis.
 .TP
 .BI -p type
-Turns on the profiler.  Currently
-.I type
-can only be 'time'.
+Turns on the profiler.
+.I Type
+can be either 'time' or 'load'.
+.TP
+.BI -m module
+When the script file is given, this option specifies the name of
+the module in which the "main" procedure is defined.
+The default is "user".
+.TP
+.BI -r standard
+Starts gosh with the default environment defined
+in RnRS, where n is determined by
+.I standard.
+Currently, only 7 is the valid value of
+.I standard.
 .TP
 .BI -f flag
 Sets various flags.
-  case-fold       uses case-insensitive reader (as in R5RS)
+  case-fold       use case-insensitive reader (as in R5RS)
   load-verbose    report while loading files
+  include-verbose report while including files
   no-inline       don't inline primitive procedures and constants
-                  (combined no-inline-globals, no-inline-locals, and
-                  no-inline-constants.)
+                  (combined no-inline-globals, no-inline-locals,
+                  and no-inline-constants.)
   no-inline-globals don't inline global procedures.
   no-inline-locals  don't inline local procedures.
   no-inline-constants don't inline constants.
   no-post-inline-pass don't run post-inline optimization pass.
+  no-lambda-lifting-pass don't run lambda lifting optimization pass.
+  no-source-info  don't retain source information.
+  warn-legacy-syntax print warning when legacy Gauche syntax
+                  is encountered.
+  test            assume being run in the build tree; tries to
+                  load files from the current build instead of
+                  installation directories.  Useful to test
+                  the build without installation.
 .TP
 .BI -F feature
 Makes

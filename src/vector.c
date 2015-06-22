@@ -1,7 +1,7 @@
 /*
  * vector.c - vector implementation
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -44,17 +44,38 @@
 
 static void vector_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
 {
-    int i;
     SCM_PUTZ("#(", -1, port);
-    for (i=0; i<SCM_VECTOR_SIZE(obj); i++) {
+    for (int i=0; i<SCM_VECTOR_SIZE(obj); i++) {
         if (i != 0) SCM_PUTC(' ', port);
-        Scm_Write(SCM_VECTOR_ELEMENT(obj, i), SCM_OBJ(port), ctx->mode);
+        Scm_Write(SCM_VECTOR_ELEMENT(obj, i), SCM_OBJ(port),
+                  Scm_WriteContextMode(ctx));
     }
     SCM_PUTZ(")", -1, port);
 }
 
-SCM_DEFINE_BUILTIN_CLASS(Scm_VectorClass, vector_print, NULL, NULL, NULL,
-                         SCM_CLASS_SEQUENCE_CPL);
+static int vector_compare(ScmObj x, ScmObj y, int equalp)
+{
+    if (equalp) {
+        /* Vector equality is handled in Scm_Eq* and will never come
+           here, but just in case. */
+        return Scm_EqualP(x, y)? 0 : 1;
+    }
+    /* Follow srfi-114 */
+    ScmWord xlen = SCM_VECTOR_SIZE(x);
+    ScmWord ylen = SCM_VECTOR_SIZE(y);
+    if (xlen < ylen) return -1;
+    if (xlen > ylen) return 1;
+    for (int i=0; i<xlen; i++) {
+        int r = Scm_Compare(SCM_VECTOR_ELEMENT(x, i),
+                            SCM_VECTOR_ELEMENT(y, i));
+        if (r != 0) return r;
+    }
+    return 0;
+}
+
+
+SCM_DEFINE_BUILTIN_CLASS(Scm_VectorClass, vector_print, vector_compare,
+                         NULL, NULL, SCM_CLASS_SEQUENCE_CPL);
 
 static ScmVector *make_vector(ScmSmallInt size)
 {
@@ -67,22 +88,18 @@ static ScmVector *make_vector(ScmSmallInt size)
 
 ScmObj Scm_MakeVector(ScmSmallInt size, ScmObj fill)
 {
-    ScmSmallInt i;
-    ScmVector *v;
     if (size < 0) {
         Scm_Error("vector size must be a positive integer, but got %d", size);
     }
-    v = make_vector(size);
+    ScmVector *v = make_vector(size);
     if (SCM_UNBOUNDP(fill)) fill = SCM_UNDEFINED;
-    for (i=0; i<size; i++) v->elements[i] = fill;
+    for (ScmSmallInt i=0; i<size; i++) v->elements[i] = fill;
     return SCM_OBJ(v);
 }
 
 ScmObj Scm_ListToVector(ScmObj l, ScmSmallInt start, ScmSmallInt end)
 {
     ScmVector *v;
-    ScmObj e;
-    ScmSmallInt i;
 
     if (end < 0) {
         ScmSmallInt size = Scm_Length(l);
@@ -93,8 +110,8 @@ ScmObj Scm_ListToVector(ScmObj l, ScmSmallInt start, ScmSmallInt end)
         SCM_CHECK_START_END(start, end, end);
         v = make_vector(end - start);
     }
-    e = Scm_ListTail(l, start, SCM_UNBOUND);
-    for (i=0; i<end-start; i++, e=SCM_CDR(e)) {
+    ScmObj e = Scm_ListTail(l, start, SCM_UNBOUND);
+    for (ScmSmallInt i=0; i<end-start; i++, e=SCM_CDR(e)) {
         if (!SCM_PAIRP(e)) {
             Scm_Error("list too short: %S", l);
         }
@@ -134,9 +151,9 @@ ScmObj Scm_VectorSet(ScmVector *vec, ScmSmallInt i, ScmObj obj)
 ScmObj Scm_VectorFill(ScmVector *vec, ScmObj fill,
                       ScmSmallInt start, ScmSmallInt end)
 {
-    ScmSmallInt i, len = SCM_VECTOR_SIZE(vec);
+    ScmSmallInt len = SCM_VECTOR_SIZE(vec);
     SCM_CHECK_START_END(start, end, len);
-    for (i=start; i < end; i++) {
+    for (ScmSmallInt i=start; i < end; i++) {
         SCM_VECTOR_ELEMENT(vec, i) = fill;
     }
     return SCM_OBJ(vec);
@@ -145,7 +162,7 @@ ScmObj Scm_VectorFill(ScmVector *vec, ScmObj fill,
 ScmObj Scm_VectorCopy(ScmVector *vec,
                       ScmSmallInt start, ScmSmallInt end, ScmObj fill)
 {
-    ScmSmallInt i, len = SCM_VECTOR_SIZE(vec);
+    ScmSmallInt len = SCM_VECTOR_SIZE(vec);
     ScmVector *v = NULL;
     if (end < 0) end = len;
     if (end < start) {
@@ -156,7 +173,7 @@ ScmObj Scm_VectorCopy(ScmVector *vec,
     } else {
         if (SCM_UNBOUNDP(fill)) fill = SCM_UNDEFINED;
         v = make_vector(end - start);
-        for (i=0; i<end-start; i++) {
+        for (ScmSmallInt i=0; i<end-start; i++) {
             if (i+start < 0 || i+start >= len) {
                 SCM_VECTOR_ELEMENT(v, i) = fill;
             } else {
@@ -246,8 +263,8 @@ const char *Scm_UVectorTypeName(int type) /* for error msgs etc. */
 /* Returns the size of element of the uvector of given class */
 int Scm_UVectorElementSize(ScmClass *klass)
 {
-    static int sizes[] = { 1, 1, 2, 2, 4, 4, 8, 8,
-                           2, sizeof(float), sizeof(double) };
+    static const int sizes[] = { 1, 1, 2, 2, 4, 4, 8, 8,
+                                 2, sizeof(float), sizeof(double) };
     int ind = (int)Scm_UVectorType(klass);
     if (ind >= 0) return sizes[ind];
     return -1;
@@ -263,10 +280,9 @@ int Scm_UVectorSizeInBytes(ScmUVector *uv)
 ScmObj Scm_MakeUVectorFull(ScmClass *klass, ScmSmallInt size, void *init,
                            int immutable, void *owner)
 {
-    ScmUVector *vec;
     int eltsize = Scm_UVectorElementSize(klass);
     SCM_ASSERT(eltsize >= 1);
-    vec = SCM_NEW(ScmUVector);
+    ScmUVector *vec = SCM_NEW(ScmUVector);
     SCM_SET_CLASS(vec, klass);
     if (init) {
         vec->elements = init;   /* trust the caller */
@@ -288,6 +304,68 @@ ScmObj Scm_MakeUVector(ScmClass *klass, ScmSmallInt size, void *init)
     return Scm_MakeUVectorFull(klass, size, init, FALSE, NULL);
 }
 
+ScmObj Scm_ListToUVector(ScmClass *klass, ScmObj list, int clamp)
+{
+    ScmUVectorType type = Scm_UVectorType(klass);
+    if (type < 0) Scm_Error("uvector class required, but got: %S", klass);
+    ScmSmallInt length = Scm_Length(list);
+    if (length < 0) Scm_Error("improper list not allowed: %S", list);
+
+    ScmUVector *v = (ScmUVector*)Scm_MakeUVector(klass, length, NULL);
+    ScmObj cp = list;
+    for (int i=0; i<length; i++, cp = SCM_CDR(cp)) {
+        switch (type) {
+        case SCM_UVECTOR_S8:
+            SCM_S8VECTOR_ELEMENTS(v)[i] =
+                (signed char)Scm_GetInteger8Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_U8:
+            SCM_U8VECTOR_ELEMENTS(v)[i] =
+                (unsigned char)Scm_GetIntegerU8Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_S16:
+            SCM_S16VECTOR_ELEMENTS(v)[i] =
+                (short)Scm_GetInteger16Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_U16:
+            SCM_U16VECTOR_ELEMENTS(v)[i] =
+                (u_short)Scm_GetIntegerU16Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_S32:
+            SCM_S32VECTOR_ELEMENTS(v)[i] =
+                (ScmInt32)Scm_GetInteger32Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_U32:
+            SCM_U32VECTOR_ELEMENTS(v)[i] =
+                (ScmUInt32)Scm_GetIntegerU32Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_S64:
+            SCM_S64VECTOR_ELEMENTS(v)[i] =
+                (ScmInt64)Scm_GetInteger64Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_U64:
+            SCM_U64VECTOR_ELEMENTS(v)[i] =
+                (ScmUInt64)Scm_GetIntegerU64Clamp(SCM_CAR(cp), clamp, NULL);
+            break;
+        case SCM_UVECTOR_F16:
+            SCM_F16VECTOR_ELEMENTS(v)[i] =
+                (ScmHalfFloat)Scm_DoubleToHalf(Scm_GetDouble(SCM_CAR(cp)));
+            break;
+        case SCM_UVECTOR_F32:
+            SCM_F32VECTOR_ELEMENTS(v)[i] =
+                (float)Scm_GetDouble(SCM_CAR(cp));
+            break;
+        case SCM_UVECTOR_F64:
+            SCM_F64VECTOR_ELEMENTS(v)[i] =
+                Scm_GetDouble(SCM_CAR(cp));
+            break;
+        default:
+            Scm_Error("[internal error] unknown uvector type given to Scm_ListToUVector");
+        }
+    }
+    return SCM_OBJ(v);
+}
+
 /* Generic accessor, intended to be called from VM loop.
    (As the 'VM' in the name suggests, the return value of this API
    should immediately be passed to VM.  See comments on FFX in gauche/number.h)
@@ -295,7 +373,13 @@ ScmObj Scm_MakeUVector(ScmClass *klass, ScmSmallInt size, void *init)
 ScmObj Scm_VMUVectorRef(ScmUVector *v, int t, ScmSmallInt k, ScmObj fallback)
 {
     SCM_ASSERT(Scm_UVectorType(SCM_CLASS_OF(v)) == t);
-    if (k < 0 || k >= SCM_UVECTOR_SIZE(v)) return fallback;
+    if (k < 0 || k >= SCM_UVECTOR_SIZE(v)) {
+        if (SCM_UNBOUNDP(fallback)) {
+            Scm_Error("%s-ref index out of range: %ld",
+                      Scm_UVectorTypeName(t), k);
+        }
+        return fallback;
+    }
     switch (t) {
     case SCM_UVECTOR_S8:  return SCM_MAKE_INT(SCM_S8VECTOR_ELEMENT(v, k));
     case SCM_UVECTOR_U8:  return SCM_MAKE_INT(SCM_U8VECTOR_ELEMENT(v, k));
@@ -321,18 +405,18 @@ ScmObj Scm_VMUVectorRef(ScmUVector *v, int t, ScmSmallInt k, ScmObj fallback)
 /*
  * Inidividual constructors for convenience
  */
-#define DEF_UVCTOR(tag, T) \
+#define DEF_UVCTOR_FILL(tag, T) \
 ScmObj SCM_CPP_CAT3(Scm_Make,tag,Vector)(ScmSmallInt size, T fill)      \
 {                                                                       \
     ScmUVector *u =                                                     \
         (ScmUVector*)Scm_MakeUVector(SCM_CPP_CAT3(SCM_CLASS_,tag,VECTOR),\
                                      size, NULL);                       \
-    ScmSmallInt i;                                                      \
-    for (i=0; i<size; i++) {                                            \
-        SCM_CPP_CAT3(SCM_,tag,VECTOR_ELEMENTS)(u)[i] = fill;            \
-    }                                                                   \
+    T *elts = SCM_CPP_CAT3(SCM_,tag,VECTOR_ELEMENTS)(u);                \
+    for (ScmSmallInt i=0; i<size; i++) *elts++ = fill;                  \
     return SCM_OBJ(u);                                                  \
-}                                                                       \
+}
+
+#define DEF_UVCTOR_ARRAY(tag, T) \
 ScmObj SCM_CPP_CAT3(Scm_Make,tag,VectorFromArray)(ScmSmallInt size,     \
                                                   const T array[])      \
 {                                                                       \
@@ -348,17 +432,77 @@ ScmObj SCM_CPP_CAT3(Scm_Make,tag,VectorFromArrayShared)(ScmSmallInt size,\
                            size, (void*)array);                         \
 }
 
-DEF_UVCTOR(S8, signed char)
-DEF_UVCTOR(U8, unsigned char)
-DEF_UVCTOR(S16, short)
-DEF_UVCTOR(U16, u_short)
-DEF_UVCTOR(S32, ScmInt32)
-DEF_UVCTOR(U32, ScmUInt32)
-DEF_UVCTOR(S64, ScmInt64)
-DEF_UVCTOR(U64, ScmUInt64)
-DEF_UVCTOR(F16, ScmHalfFloat)
-DEF_UVCTOR(F32, float)
-DEF_UVCTOR(F64, double)
+/* NB: For u8vector and s8vector we can let memset() to fill the
+   contents, expecting it's optimized. */
+ScmObj Scm_MakeS8Vector(ScmSmallInt size, signed char fill)
+{
+    ScmUVector *u =
+        (ScmUVector*)Scm_MakeUVector(SCM_CLASS_S8VECTOR, size, NULL);
+    (void)memset(SCM_S8VECTOR_ELEMENTS(u), fill, size);
+    return SCM_OBJ(u);
+}
+
+ScmObj Scm_MakeU8Vector(ScmSmallInt size, unsigned char fill)
+{
+    ScmUVector *u =
+        (ScmUVector*)Scm_MakeUVector(SCM_CLASS_U8VECTOR, size, NULL);
+    (void)memset(SCM_U8VECTOR_ELEMENTS(u), fill, size);
+    return SCM_OBJ(u);
+}
+
+DEF_UVCTOR_FILL(S16, short)
+DEF_UVCTOR_FILL(U16, u_short)
+DEF_UVCTOR_FILL(S32, ScmInt32)
+DEF_UVCTOR_FILL(U32, ScmUInt32)
+DEF_UVCTOR_FILL(S64, ScmInt64)
+DEF_UVCTOR_FILL(U64, ScmUInt64)
+DEF_UVCTOR_FILL(F16, ScmHalfFloat)
+DEF_UVCTOR_FILL(F32, float)
+DEF_UVCTOR_FILL(F64, double)
+
+DEF_UVCTOR_ARRAY(S8, signed char)
+DEF_UVCTOR_ARRAY(U8, unsigned char)
+DEF_UVCTOR_ARRAY(S16, short)
+DEF_UVCTOR_ARRAY(U16, u_short)
+DEF_UVCTOR_ARRAY(S32, ScmInt32)
+DEF_UVCTOR_ARRAY(U32, ScmUInt32)
+DEF_UVCTOR_ARRAY(S64, ScmInt64)
+DEF_UVCTOR_ARRAY(U64, ScmUInt64)
+DEF_UVCTOR_ARRAY(F16, ScmHalfFloat)
+DEF_UVCTOR_ARRAY(F32, float)
+DEF_UVCTOR_ARRAY(F64, double)
+
+/*
+ * Reader
+ */
+ScmObj Scm_ReadUVector(ScmPort *port, const char *tag, ScmReadContext *ctx)
+{
+    ScmChar c;
+    SCM_GETC(c, port);
+    if (c != '(') Scm_Error("bad uniform vector syntax for %s", tag);
+    ScmObj list = Scm_ReadList(SCM_OBJ(port), ')');
+    ScmClass *klass = NULL;
+    if (strcmp(tag, "s8") == 0)       klass = SCM_CLASS_S8VECTOR;
+    else if (strcmp(tag, "u8") == 0)  klass = SCM_CLASS_U8VECTOR;
+    else if (strcmp(tag, "s16") == 0) klass = SCM_CLASS_S16VECTOR;
+    else if (strcmp(tag, "u16") == 0) klass = SCM_CLASS_U16VECTOR;
+    else if (strcmp(tag, "s32") == 0) klass = SCM_CLASS_S32VECTOR;
+    else if (strcmp(tag, "u32") == 0) klass = SCM_CLASS_U32VECTOR;
+    else if (strcmp(tag, "s64") == 0) klass = SCM_CLASS_S64VECTOR;
+    else if (strcmp(tag, "u64") == 0) klass = SCM_CLASS_U64VECTOR;
+    else if (strcmp(tag, "f16") == 0) klass = SCM_CLASS_F16VECTOR;
+    else if (strcmp(tag, "f32") == 0) klass = SCM_CLASS_F32VECTOR;
+    else if (strcmp(tag, "f64") == 0) klass = SCM_CLASS_F64VECTOR;
+    else Scm_Error("invalid unform vector tag: %s", tag);
+
+    ScmObj uv = Scm_ListToUVector(klass, list, 0);
+    
+    /* If we are reading source file, let literal uvectors be immutable. */
+    if (Scm_ReadContextLiteralImmutable(ctx)) {
+        SCM_UVECTOR_IMMUTABLE_P(uv) = TRUE;
+    }
+    return uv;
+}
 
 /*
  * Class-dependent functions
@@ -371,9 +515,8 @@ static void SCM_CPP_CAT3(print_,tag,vector)(ScmObj obj,                 \
                                             ScmPort *out,               \
                                             ScmWriteContext *ctx)       \
 {                                                                       \
-    int i;                                                              \
     Scm_Printf(out, "#"#tag"(");                                        \
-    for (i=0; i<SCM_CPP_CAT3(SCM_,TAG,VECTOR_SIZE)(obj); i++) {         \
+    for (int i=0; i<SCM_CPP_CAT3(SCM_,TAG,VECTOR_SIZE)(obj); i++) {     \
         T elt = SCM_CPP_CAT3(SCM_,TAG,VECTOR_ELEMENTS)(obj)[i];         \
         if (i != 0) Scm_Printf(out, " ");                               \
         pr(out, elt);                                                   \
@@ -431,23 +574,33 @@ DEF_PRINT(F64, f64, double, fpr)
 
 /* comparer */
 
-#define DEF_CMP(TAG, tag, T, eq)                                        \
+#define DEF_CMP(TAG, tag, T, eq, lt)                                    \
 static int SCM_CPP_CAT3(compare_,tag,vector)(ScmObj x, ScmObj y, int equalp) \
 {                                                                       \
-    ScmSmallInt len = SCM_CPP_CAT3(SCM_,TAG,VECTOR_SIZE)(x), i;         \
-    T xx, yy;                                                           \
-    if (SCM_CPP_CAT3(SCM_,TAG,VECTOR_SIZE)(y) != len) return -1;        \
-    for (i=0; i<len; i++) {                                             \
-        xx = SCM_CPP_CAT3(SCM_,TAG,VECTOR_ELEMENTS)(x)[i];              \
-        yy = SCM_CPP_CAT3(SCM_,TAG,VECTOR_ELEMENTS)(y)[i];              \
-        if (!eq(xx,yy)) {                                               \
-            return -1;                                                  \
+    ScmSmallInt xlen = SCM_CPP_CAT3(SCM_,TAG,VECTOR_SIZE)(x);           \
+    ScmSmallInt ylen = SCM_CPP_CAT3(SCM_,TAG,VECTOR_SIZE)(y);           \
+    if (equalp) {                                                       \
+        if (xlen != ylen) return -1;                                    \
+        for (ScmSmallInt i=0; i<xlen; i++) {                            \
+            T xx = SCM_CPP_CAT3(SCM_,TAG,VECTOR_ELEMENTS)(x)[i];        \
+            T yy = SCM_CPP_CAT3(SCM_,TAG,VECTOR_ELEMENTS)(y)[i];        \
+            if (!eq(xx,yy)) return -1;                                  \
         }                                                               \
+        return 0;                                                       \
+    } else {                                                            \
+        if (xlen != ylen) return (xlen < ylen) ? -1 : 1;                \
+        for (ScmSmallInt i=0; i<xlen; i++) {                            \
+            T xx = SCM_CPP_CAT3(SCM_,TAG,VECTOR_ELEMENTS)(x)[i];        \
+            T yy = SCM_CPP_CAT3(SCM_,TAG,VECTOR_ELEMENTS)(y)[i];        \
+            if (lt(xx, yy)) return -1;                                  \
+            if (!eq(xx,yy)) return 1;                                   \
+        }                                                               \
+        return 0;                                                       \
     }                                                                   \
-    return 0;                                                           \
 }
 
 #define common_eqv(x, y)  ((x)==(y))
+#define common_lt(x, y)   ((x)<(y))
 
 static inline int int64eqv(ScmInt64 x, ScmInt64 y)
 {
@@ -467,16 +620,35 @@ static inline int uint64eqv(ScmUInt64 x, ScmUInt64 y)
 #endif
 }
 
-#define f16eqv(a, b) SCM_HALF_FLOAT_CMP(==, a, b)
+static inline int int64lt(ScmInt64 x, ScmInt64 y)
+{
+#if SCM_EMULATE_INT64
+    return (x.hi < y.hi || (x.hi == y.hi && x.lo < y.lo));
+#else
+    return x < y;
+#endif
+}
 
-DEF_CMP(S8, s8, signed char, common_eqv)
-DEF_CMP(U8, u8, unsigned char, common_eqv)
-DEF_CMP(S16, s16, short, common_eqv)
-DEF_CMP(U16, u16, u_short, common_eqv)
-DEF_CMP(S32, s32, ScmInt32, common_eqv)
-DEF_CMP(U32, u32, ScmUInt32, common_eqv)
-DEF_CMP(S64, s64, ScmInt64, int64eqv)
-DEF_CMP(U64, u64, ScmUInt64, uint64eqv)
-DEF_CMP(F16, f16, ScmHalfFloat, f16eqv)
-DEF_CMP(F32, f32, float, common_eqv)
-DEF_CMP(F64, f64, double, common_eqv)
+static inline int uint64lt(ScmUInt64 x, ScmUInt64 y)
+{
+#if SCM_EMULATE_INT64
+    return (x.hi < y.hi || (x.hi == y.hi && x.lo < y.lo));
+#else
+    return x < y;
+#endif
+}
+
+#define f16eqv(a, b) SCM_HALF_FLOAT_CMP(==, a, b)
+#define f16lt(a, b)  SCM_HALF_FLOAT_CMP(<, a, b)
+
+DEF_CMP(S8, s8, signed char, common_eqv, common_lt)
+DEF_CMP(U8, u8, unsigned char, common_eqv, common_lt)
+DEF_CMP(S16, s16, short, common_eqv, common_lt)
+DEF_CMP(U16, u16, u_short, common_eqv, common_lt)
+DEF_CMP(S32, s32, ScmInt32, common_eqv, common_lt)
+DEF_CMP(U32, u32, ScmUInt32, common_eqv, common_lt)
+DEF_CMP(S64, s64, ScmInt64, int64eqv, int64lt)
+DEF_CMP(U64, u64, ScmUInt64, uint64eqv, uint64lt)
+DEF_CMP(F16, f16, ScmHalfFloat, f16eqv, f16lt)
+DEF_CMP(F32, f32, float, common_eqv, common_lt)
+DEF_CMP(F64, f64, double, common_eqv, common_lt)

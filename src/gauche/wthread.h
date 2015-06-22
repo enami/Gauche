@@ -1,7 +1,7 @@
 /*
  * wthread.h - win32 thread primitives
  *
- *   Copyright (c) 2011-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2011-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -126,12 +126,15 @@ typedef struct ScmInternalCondRec {
 #define SCM_INTERNAL_COND_TIMEDOUT          1
 #define SCM_INTERNAL_COND_INTR              2
 
+/* alternative timespec.  the definition is in system.h  */
+struct ScmTimeSpecRec;
+
 SCM_EXTERN void Scm__InternalCondInit(ScmInternalCond *cond);
 SCM_EXTERN int  Scm__InternalCondSignal(ScmInternalCond *cond);
 SCM_EXTERN int  Scm__InternalCondBroadcast(ScmInternalCond *cond);
 SCM_EXTERN int  Scm__InternalCondWait(ScmInternalCond *cond,
                                       ScmInternalMutex *mutex,
-                                      struct timespec *pts);
+                                      struct ScmTimeSpecRec *pts);
 SCM_EXTERN void Scm__InternalCondDestroy(ScmInternalCond *cond);
 
 /* We don't provide fast lock */
@@ -140,5 +143,16 @@ typedef HANDLE ScmInternalFastlock;
 #define SCM_INTERNAL_FASTLOCK_LOCK(fl)   SCM_INTERNAL_MUTEX_LOCK(fl)
 #define SCM_INTERNAL_FASTLOCK_UNLOCK(fl) SCM_INTERNAL_MUTEX_UNLOCK(fl)
 #define SCM_INTERNAL_FASTLOCK_DESTROY(fl) SCM_INTERNAL_MUTEX_DESTROY(fl)
+
+/* Issues a full memory barrier */
+#if 0        /* MinGW doesn't seem to have MemoryBarrier() */
+#define SCM_INTERNAL_SYNC()                 MemoryBarrier()
+#else
+#define SCM_INTERNAL_SYNC()                     \
+    do {                                        \
+        long dummy = 0;                         \
+        InterlockedExchange(&dummy, 1);         \
+    } while (0)
+#endif
 
 #endif /* GAUCHE_WTHREAD_H */

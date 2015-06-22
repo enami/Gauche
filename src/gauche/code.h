@@ -1,7 +1,7 @@
 /*
  * code.h - Virtual machine code
  *
- *   Copyright (c) 2005-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2005-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -61,7 +61,7 @@ struct ScmCompiledCodeRec {
     ScmObj name;                /* If this is the body of a closure, holds
                                    its name.  Otherwise #f. */
     ScmObj info;                /* debug info.  alist of instruction offset
-                                   and info. */
+                                   and info. (*5) */
     ScmObj argInfo;             /* If this code is the body of the closure,
                                    keeps a list of args.  #f otherwise. (*3) */
     ScmObj parent;              /* ScmCompiledCode if this code is compiled
@@ -86,6 +86,9 @@ struct ScmCompiledCodeRec {
  *   *3) This info isn't set for the time being.
  *   *4) This IForm is a direct result of Pass1, i.e. non-optimized form.
  *       Pass2 scans it when IForm is inlined into the caller site.
+ *   *5) ((<offset> <info> ...) ...)
+ *       At this moment, only used <info> is (source-info . <source>).
+ *       For the debug info of the entire closure, <offset> is 'definition.
  */
 
 SCM_CLASS_DECL(Scm_CompiledCodeClass);
@@ -105,6 +108,8 @@ SCM_CLASS_DECL(Scm_CompiledCodeClass);
       (reqargs), (optargs), (name), (info), (arginfo),   \
       (parent), (iform) }
 
+SCM_EXTERN void   Scm_CompiledCodeCopyX(ScmCompiledCode *dest,
+                                        const ScmCompiledCode *src);
 SCM_EXTERN void   Scm_CompiledCodeDump(ScmCompiledCode *cc);
 SCM_EXTERN ScmObj Scm_CompiledCodeToList(ScmCompiledCode *cc);
 SCM_EXTERN ScmObj Scm_CompiledCodeFullName(ScmCompiledCode *cc);
@@ -112,8 +117,8 @@ SCM_EXTERN void   Scm_VMExecuteToplevels(ScmCompiledCode *cv[]);
 
 /* Builder API */
 SCM_EXTERN ScmObj Scm_MakeCompiledCodeBuilder(int reqargs, int optargs,
-                                              ScmObj name, ScmObj parent,
-                                              ScmObj intForm);
+                                              ScmObj name, ScmObj arginfo,
+                                              ScmObj parent, ScmObj intForm);
 SCM_EXTERN ScmObj Scm_CompiledCodeCurrentInsn(ScmCompiledCode *cc);
 SCM_EXTERN void   Scm_CompiledCodeReplaceInsn(ScmCompiledCode *cc,
                                               ScmObj insn,
@@ -126,6 +131,7 @@ SCM_EXTERN void   Scm_CompiledCodePutInsn(ScmCompiledCode *cc,
                                           ScmObj info);
 SCM_EXTERN ScmObj Scm_CompiledCodeNewLabel(ScmCompiledCode *cc);
 SCM_EXTERN void   Scm_CompiledCodeSetLabel(ScmCompiledCode *cc, ScmObj label);
+SCM_EXTERN void   Scm_CompiledCodePushInfo(ScmCompiledCode *cc, ScmObj info);
 SCM_EXTERN void   Scm_CompiledCodeFinishBuilder(ScmCompiledCode *cc,
                                                 int maxstack);
 SCM_EXTERN void   Scm_CompiledCodeEmit(ScmCompiledCode *cc,
@@ -155,6 +161,12 @@ SCM_EXTERN void   Scm_CompiledCodeEmit(ScmCompiledCode *cc,
 #define SCM_VM_INSN1(code, arg)     SCM_WORD((long)((arg)<<12) | (code))
 #define SCM_VM_INSN2(code, arg0, arg1)  \
     SCM_WORD((long)((arg1) << 22) | ((arg0) << 12) | (code))
+
+/* insn flags.  see vminsn.scm for details. */
+enum ScmVMInsnFlag {
+    SCM_VM_INSN_OBSOLETED = (1L<<0),
+    SCM_VM_INSN_FOLD_LREF = (1L<<1)
+};
 
 /* Operand type */
 enum {

@@ -1,7 +1,7 @@
 ;;;
 ;;; sequence.scm - sequence operations
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -42,6 +42,9 @@
           fold-right
           fold-with-index map-with-index map-to-with-index for-each-with-index
           find-index find-with-index group-sequence
+          sequence->kmp-stepper sequence-contains
+          break-list-by-sequence! break-list-by-sequence
+          common-prefix-to common-prefix
           permute-to permute permute!
           shuffle-to shuffle shuffle!)
   )
@@ -294,6 +297,107 @@
       (reverse! results)
       (reverse! (cons (reverse! (cdr bucket)) results)))
     ))
+
+;; searching sequence -----------------------------------------------
+
+;; Returns procedure to do one step of kmp match.  If NEEDLE's length
+;; is 0, returns #f.
+(define (sequence->kmp-stepper needle :key ((:test test-proc) eqv?))
+  (define restarts
+    (rlet1 v (make-vector (size-of needle) -1)
+      (dotimes [i (- (vector-length v) 1)]
+        (let loop ([k (+ (vector-ref v i) 1)])
+          (if (and (> k 0)
+                   (not (test-proc (ref needle i) (ref needle (- k 1)))))
+            (loop (+ (vector-ref v (- k 1)) 1))
+            (vector-set! v (+ i 1) k))))))
+  (let* ([pat (coerce-to <vector> needle)]
+         [plen-1 (- (vector-length pat) 1)])
+    (and (>= plen-1 0)
+         ;; Match pattern[i] with elt; returns next i and a flag of whether
+         ;; match is completed or not.  If the flag is #t, i is always equal
+         ;; to the plen.
+         ;; or #f if there's no more pattern to check (i.e. match)
+         (^[elt i]
+           (let loop ([i i])
+             (if (test-proc elt (vector-ref pat i))
+               (values (+ i 1) (= i plen-1))
+               (let1 i (vector-ref restarts i)
+                 (if (= i -1) (values 0 #f) (loop i)))))))))
+
+;; Search NEEDLE from SEQ.  Returns index if found, #f if not.
+;; The name is aligned to string-contains in srfi-13.
+(define-method sequence-contains ((hay <sequence>) (needle <sequence>)
+                                  :key ((:test test-proc) eqv?))
+  (if-let1 stepper (sequence->kmp-stepper needle :test test-proc)
+    (with-iterator [hay end? next]
+      (let loop ([s 0] [i 0])
+        (if (end?)
+          #f
+          (receive (i found) (stepper (next) i)
+            (if found
+              (- s i -1)
+              (loop (+ s 1) i))))))
+    0))
+
+;; Search NEEDLE from LIS and split LIS right in front of found NEEDLE.
+(define-method break-list-by-sequence! (lis (needle <sequence>)
+                                            :key (test eqv?))
+  (%break-list-1 lis needle test #f))
+(define-method break-list-by-sequence (lis (needle <sequence>)
+                                           :key (test eqv?))
+  (%break-list-1 lis needle test #t))
+
+(define (%break-list-1 lis needle test-proc copy?)
+  (if-let1 stepper (sequence->kmp-stepper needle :test test-proc)
+    (let loop ([cur lis]
+               [prev #f] ; prev cell of cur
+               [last #f] ; last cell before the current match
+               [i 0])    ; index in needle
+      (if (null? cur)
+        (values lis '())
+        (receive (i found) (stepper (car cur) i)
+          (cond [found
+                 (if last
+                   (let1 head (cdr last)
+                     (if copy?
+                       (let loop ([p lis] [h '()] [t '()])
+                         (cond [(eq? p head) (values h p)]
+                               [(null? h) (let1 h (list (car p))
+                                            (loop (cdr p) h h))]
+                               [else (set-cdr! t (list (car p)))
+                                     (loop (cdr p) h (cdr t))]))
+                       (begin (set-cdr! last '())
+                              (values lis head))))
+                   (values '() lis))]
+                [(= i 0) ; match failure - we'll start over fresh.
+                 (loop (cdr cur) cur cur i)]
+                [else
+                 (loop (cdr cur) cur last i)]))))
+    (values '() lis)))
+
+;; prefix, suffix ------------------------------------------------
+
+(define-method common-prefix-to ((class <class>)
+                                 (a <sequence>)
+                                 (b <sequence>)
+                                 :key (key identity) (test eqv?))
+  (with-builder (class add! get)
+    (with-iterator (a a-end? a-next)
+      (with-iterator (b b-end? b-next)
+        (let loop ()
+          (if (or (a-end?) (b-end?))
+            (get)
+            (let ([a1 (a-next)]
+                  [b1 (b-next)])
+              (if (test (key a1) (key b1))
+                (begin (add! a1) (loop))
+                (get)))))))))
+
+(define-method common-prefix ((a <sequence>) (b <sequence>) . args)
+  (apply common-prefix-to (class-of a) a b args))
+
+;; TODO: suffix
 
 ;; permute -------------------------------------------------------
 

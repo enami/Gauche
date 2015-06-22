@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.cgen.type - type management
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -91,7 +91,7 @@
 ;;   <uint32>     <integer>    uint
 ;;   <ushort>     <integer>    ushort
 ;;   <ulong>      <integer>    ulong
-;;   <float>      <real>       float       Unboxed value casted to float
+;;   <float>      <real>       float       Unboxed value cast to float
 ;;   <double>     <real>       double      Alias of <real>
 ;;
 ;;   <boolean>    <boolean>    int         Boolean value
@@ -240,6 +240,7 @@
    (<procedure> "ScmProcedure*" "procedure" "SCM_PROCEDUREP" "SCM_PROCEDURE")
    (<closure> "ScmClosure*" "closure" "SCM_CLOSUREP" "SCM_CLOSURE")
    (<promise> "ScmPromise*" "promise" "SCM_PROMISEP" "SCM_PROMISE")
+   (<comparator> "ScmComparator*" "comparator" "SCM_COMPARATORP" "SCM_COMPARATOR")
    (<hash-table> "ScmHashTable*" "hash table" "SCM_HASH_TABLE_P" "SCM_HASH_TABLE")
    (<tree-map> "ScmTreeMap*" "tree map" "SCM_TREE_MAP_P" "SCM_TREE_MAP")
    (<class> "ScmClass*" "class" "SCM_CLASSP" "SCM_CLASS")
@@ -257,6 +258,7 @@
                     "SCM_COMPILED_CODE_P" "SCM_COMPILED_CODE")
    (<foreign-pointer> "ScmForeignPointer*" "foreign pointer"
                       "SCM_FOREIGN_POINTER_P" "SCM_FOREIGN_POINTER")
+   (<box>  "ScmBox*" "box" "SCM_BOXP" "SCM_BOX")
    ))
 
 ;;

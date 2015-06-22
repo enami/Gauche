@@ -1,7 +1,7 @@
 ;;;
 ;;; libeval.scm - eval, load and related stuff
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -36,7 +36,8 @@
 (inline-stub
  (declcode (.include <gauche/vminsn.h>
                      <gauche/class.h>
-                     <gauche/macro.h>)))
+                     <gauche/priv/macroP.h>
+                     <gauche/priv/readerP.h>)))
 
 (declare (keep-private-macro autoload add-load-path
                              define-compiler-macro))
@@ -47,16 +48,18 @@
 
 (select-module scheme)
 
+;; API
 (define-cproc eval (expr env) Scm_VMEval)
 
+;; API
 ;; for now, just return a module.
 (define-cproc null-environment (version::<fixnum>)
   (when (!= version 5) (Scm_Error "unknown rNrs version: %d" version))
-  (result (SCM_OBJ (Scm_NullModule))))
+  (return (SCM_OBJ (Scm_NullModule))))
 (define-cproc scheme-report-environment (version::<fixnum>)
   (when (!= version 5) (Scm_Error "unknown rNrs version: %d" version))
-  (result (SCM_OBJ (Scm_SchemeModule))))
-(define-cproc interaction-environment () (result (SCM_OBJ (Scm_UserModule))))
+  (return (SCM_OBJ (Scm_SchemeModule))))
+(define-cproc interaction-environment () (return (SCM_OBJ (Scm_UserModule))))
 
 ;;;
 ;;; Load
@@ -64,64 +67,149 @@
 
 (select-module gauche.internal)
 
-(define-cproc %record-load-start (path) ::<void>
-  Scm__RecordLoadStart)
-
-;; Main entry of `load'
+;; API: Main entry of `load'
 (define-in-module scheme (load file :key (paths *load-path*)
                                          (suffixes *load-suffixes*)
                                          (error-if-not-found #t)
                                          (environment #f)
-                                         (ignore-coding #f)
-                                         (main-script #f))
+                                         (ignore-coding #f))
   ;; NB: 'File not found' error is handled in find-load-file.
   (and-let* ([r (find-load-file file paths suffixes error-if-not-found #t)])
     (let* ([path (car r)]
            [remaining-paths (cadr r)]
-           [opener (if (pair? (cddr r)) (caddr r) open-input-file)]
+           [hooked? (pair? (cddr r))]
+           [opener (if hooked? (caddr r) open-input-file)]
            [port (guard (e [else e]) (opener path))])
-      (%record-load-start path)
+      (when (%load-verbose?)
+        (format (current-error-port) ";;~aLoading ~a~a...\n"
+                (make-string (* (length (current-load-history)) 2) #\space)
+                path
+                (if hooked? " (hooked) " "")))
       (if (not (input-port? port))
-        (and error-if-not-found (raise e))
+        (and error-if-not-found (raise port))
         (load-from-port (if ignore-coding
                           port
                           (open-coding-aware-port port))
                         :environment environment
-                        :paths remaining-paths
-                        :main-script main-script)))))
+                        :paths remaining-paths)))))
+
+
+(select-module gauche.internal)
+
+;; API: The actual load operation is done here.
+(define-in-module gauche (load-from-port port
+                                         :key (paths #f)
+                                              (environment #f))
+  (unless (input-port? port)
+    (error "input port required, but got:" port))
+  (unless (or (module? environment) (not environment))
+    (error "module or #f required, but got:" environment))
+  (let ([prev-module  (vm-current-module)]
+        [prev-port    (current-load-port)]
+        [prev-history (current-load-history)]
+        [prev-next    (current-load-next)]
+        [prev-reader-lexical-mode (reader-lexical-mode)]
+        [prev-eval-situation (vm-eval-situation)]
+        [prev-read-context (current-read-context)])
+
+    (define (setup-load-context)
+      (when (port-closed? port) (error "port alrady closed:" port))
+      (%port-lock! port)
+      (when environment (vm-set-current-module environment))
+      (current-load-port port)
+      (current-load-next paths)
+      (current-load-history
+       (cons (if (port? prev-port)
+               (list prev-port (port-current-line prev-port))
+               (list #f))
+             prev-history))
+      (vm-eval-situation SCM_VM_LOADING)
+      (current-read-context (%new-read-context-for-load))
+      (%record-load-stat (or (current-load-path) "(unnamed source)")))
+
+    (define (restore-load-context)
+      (vm-set-current-module prev-module)
+      (current-load-port prev-port)
+      (current-load-history prev-history)
+      (current-load-next prev-next)
+      (reader-lexical-mode prev-reader-lexical-mode)
+      (vm-eval-situation prev-eval-situation)
+      (current-read-context prev-read-context)
+      (close-port port)
+      (%record-load-stat #f)
+      (%port-unlock! port))
+
+    (guard (e [else (let1 e2 (if (condition? e)
+                               ($ make-compound-condition e
+                                  $ make <load-condition-mixin>
+                                  :history (current-load-history)
+                                  :port (current-load-port)
+                                  :expr #f)
+                               e)
+                      (restore-load-context)
+                      (raise e2))])
+      (setup-load-context)
+      (do ([s (read port) (read port)])
+          [(eof-object? s)]
+        (eval s #f)))
+    (restore-load-context)
+    #t))
+
+;; A few helper procedures
+(define-cproc %record-load-stat (path) ::<void>
+  (.if "defined(HAVE_GETTIMEOFDAY)"
+       (let* ([vm::ScmVM* (Scm_VM)])
+         (when (SCM_VM_RUNTIME_FLAG_IS_SET vm SCM_COLLECT_LOAD_STATS)
+           (let* ([t0::(struct timeval)])
+             (gettimeofday (& t0) NULL)
+             (let* ([t (Scm_MakeIntegerU (+ (* (ref t0 tv_sec) 1000000)
+                                            (ref t0 tv_usec)))])
+               (set! (ref (-> vm stat) loadStat)
+                     (Scm_Cons
+                      (?: (SCM_FALSEP path) t (Scm_Cons path t))
+                      (ref (-> vm stat) loadStat)))))))))
+
+(define-cproc %new-read-context-for-load ()
+  (let* ([ctx::ScmReadContext* (Scm_MakeReadContext NULL)])
+    (set! (-> ctx flags)
+          (logior (-> ctx flags)
+                  (logior RCTX_LITERAL_IMMUTABLE
+                          RCTX_SOURCE_INFO)))
+    (return (SCM_OBJ ctx))))
+
+(define-cproc %load-verbose? () ::<boolean>
+  (return (SCM_VM_RUNTIME_FLAG_IS_SET (Scm_VM) SCM_LOAD_VERBOSE)))
+
 
 (select-module gauche)
 
-(define-cproc current-load-history () Scm_CurrentLoadHistory)
-(define-cproc current-load-next ()    Scm_CurrentLoadNext)
-(define-cproc current-load-port ()    Scm_CurrentLoadPort)
-
-(define-cproc load-from-port (port::<input-port>
-                              :key (paths #f) (environment #f)
-                              (main-script #f))
-  (let* ([flags::int (?: (SCM_FALSEP main-script) 0 SCM_LOAD_MAIN_SCRIPT)])
-    (result (Scm_VMLoadFromPort port paths environment flags))))
-
+;; API
 (define-cproc dynamic-load (file::<string>
                             :key (init-function #f)
                             (export-symbols #f)); for backward compatibility
-  (result (Scm_DynLoad file init_function 0)))
+  (return (Scm_DynLoad file init_function 0)))
 
+;; API
 (define-cproc provide (feature)   Scm_Provide)
+;; API
 (define-cproc provided? (feature) ::<boolean> Scm_ProvidedP)
+
+(select-module gauche.internal)
+(define-cproc %loaded-dlobjs () Scm_DLObjs) ; for internal use; name may change
 
 (select-module gauche.internal)
 ;; NB: 'require' is recognized by the compiler, which calls
 ;; this one directly.
 (define-cproc %require (feature) ::<boolean>
-  (result (not (Scm_Require feature SCM_LOAD_PROPAGATE_ERROR NULL))))
+  (return (not (Scm_Require feature SCM_LOAD_PROPAGATE_ERROR NULL))))
 
 (define-cproc %add-load-path (path::<const-cstring> :optional afterp)
-  (result (Scm_AddLoadPath path (not (SCM_FALSEP afterp)))))
+  (return (Scm_AddLoadPath path (not (SCM_FALSEP afterp)))))
 
 (define-cproc %autoload (mod::<module> file-or-module entries)
   ::<void> Scm_DefineAutoload)
 
+;; API
 ;; Get the file path currently loading from.
 ;; We may swap the implementation with more reliable way in future.
 (define-in-module gauche (current-load-path)
@@ -131,10 +219,12 @@
              [ (not (#/^\(.*\)$/ info)) ])
     info))
 
+;; API
 (select-module gauche)
 (define-macro (autoload file . vars)
   `((with-module gauche.internal %autoload) (current-module) ',file ',vars))
 
+;; API
 ;; Load path needs to be dealt with at the compile time.  this is a
 ;; hack to do so.   Don't modify *load-path* directly, since it causes
 ;; weird compiler-evaluator problem.
@@ -158,7 +248,7 @@
 (define-cproc %delete-load-path-hook! (proc)
   ::<void> Scm_DeleteLoadPathHook)
 
-;; find-load-file
+;; API: find-load-file
 ;;
 ;;   Core function to search specified file from the search path *PATH.
 ;;   Search rules are:
@@ -180,11 +270,13 @@
 ;;   The element in SUFFIXES is directly appended to the FILENAME;
 ;;   so usually it begins with dot.
 ;;
-;;   PATHs may contain a regular file.  In which case, procedures chained
-;;   to *load-path-hooks* are called in turn.  It receives three arguments;
-;;   the regular filename in PATHs, the (partial) filename given to the
-;;   find-load-file, and the list of suffixes.  The hook is mainly intended
-;;   to allow loading from archive files.   If the hook procedure "finds"
+;;   PATHs may contain a regular file, or an empty string "".
+;;   In which case, procedures chained to *load-path-hooks* are called
+;;   in turn.  It receives three arguments; the regular filename in PATHs
+;;   or "", the (partial) filename given to the find-load-file, and the
+;;   list of suffixes.  The hook is mainly intended to allow loading
+;;   from archive files or from special location (e.g. prelinked in the
+;;   executing binary).   If the hook procedure "finds"
 ;;   the searched file in the archive file, it should return a pair of
 ;;   the canonical filename (given filename plus suffix if applicable), and
 ;;   a thunk that opens and returns a port to read the file.  If the hook
@@ -192,7 +284,6 @@
 ;;
 ;;   NB: find-file-in-paths in file.util is similar to this, but this one
 ;;   captures the exact behavior of `load'.
-
 (select-module gauche.internal)
 (define (find-load-file filename paths suffixes
                         :optional (error-if-not-found #f)
@@ -219,7 +310,8 @@
       (if-let1 found (try-suffixes (string-append (car ps) "/" filename))
         (list found (cdr ps))
         (do-relative (cdr ps)))]
-     [(and allow-archive (file-is-regular? (car ps)))
+     [(and allow-archive
+           (or (equal? (car ps) "") (file-is-regular? (car ps))))
       (if-let1 r (any (^p (p (car ps) filename suffixes)) *load-path-hooks*)
         (list (car r) (cdr ps) (cdr r))
         (do-relative (cdr ps)))]
@@ -244,9 +336,10 @@
 
 (select-module gauche.internal)
 
-(define (%repl-print . vals) (for-each (^e (write/ss e) (newline)) vals))
+(define (%repl-print . vals) (for-each (^e (write e) (newline)) vals))
 (define (%repl-prompt) (display "gosh> ") (flush))
 
+;; API
 (define-in-module gauche (read-eval-print-loop :optional (reader #f)
                                                          (evaluator #f)
                                                          (printer #f)
@@ -273,13 +366,16 @@
 ;;; Macros
 ;;;
 
+(select-module gauche.internal)
+;; API
+(define-in-module gauche (macroexpand form)
+  (%internal-macro-expand form (make-cenv (vm-current-module)) #f))
+;; API
+(define-in-module gauche (macroexpand-1 form)
+  (%internal-macro-expand form (make-cenv (vm-current-module)) #t))
+
 (select-module gauche)
-
-(define-cproc macroexpand (form)
-  (result (Scm_VMMacroExpand form SCM_NIL FALSE)))
-(define-cproc macroexpand-1 (form)
-  (result (Scm_VMMacroExpand form SCM_NIL TRUE)))
-
+;; API
 (define-cproc unwrap-syntax (form) Scm_UnwrapSyntax)
 
 (select-module gauche.internal)
@@ -295,11 +391,16 @@
 (define-cproc make-macro-transformer (name::<symbol> proc::<procedure>)
   Scm_MakeMacroTransformerOld)
 
-(define-cproc compile-syntax-rules (name literals rules mod env)
+(define-cproc %make-macro-transformer (name::<symbol>? proc)
+  Scm_MakeMacro)
+
+(define-cproc compile-syntax-rules (name ellipsis literals rules mod env)
   Scm_CompileSyntaxRules)
 
-(define-cproc call-macro-expander (mac::<macro> expr env)
-  Scm_CallMacroExpander)
+(define-cproc macro-transformer (mac::<macro>) Scm_MacroTransformer)
+
+(define (call-macro-expander mac expr cenv)
+  ((macro-transformer mac) expr cenv))
 
 (define-cproc make-syntax (name::<symbol> proc)
   Scm_MakeSyntax)
@@ -309,22 +410,26 @@
 
 (define-cproc call-syntax-handler (syn program cenv)
   (SCM_ASSERT (SCM_SYNTAXP syn))
-  (result (Scm_VMApply2 (-> (SCM_SYNTAX syn) handler) program cenv)))
+  (return (Scm_VMApply2 (-> (SCM_SYNTAX syn) handler) program cenv)))
 
 (define-cproc syntax-handler (syn)
   (SCM_ASSERT (SCM_SYNTAXP syn))
-  (result (-> (SCM_SYNTAX syn) handler)))
-
-(define-cproc %internal-macro-expand (form env once::<boolean>)
-  Scm_VMMacroExpand)
+  (return (-> (SCM_SYNTAX syn) handler)))
 
 ;;;
 ;;; System termination
 ;;;
 
 (select-module gauche)
-(define-cproc %exit (:optional (code::<fixnum> 0)) ::<void> Scm_Exit)
+(define-cproc %exit (:optional (code 0)) ::<void>
+  (let* ([status::int 0])
+    (cond
+     [(SCM_EQ code SCM_TRUE)]  ; status == 0
+     [(SCM_INTP code) (set! status (SCM_INT_VALUE code))]
+     [else (set! status 70)])  ; EX_SOFTWARE
+    (Scm_Exit status)))
 
+;; API
 ;; exit handler.  we don't want to import the fluff with gauche.parameter,
 ;; so we manually allocate parameter slot.
 (select-module gauche.internal)
@@ -341,6 +446,7 @@
         (when (pair? maybe-arg)
           (%vm-parameter-set! index #f (car maybe-arg)))))))
 
+;; API
 (define-in-module gauche (exit :optional (code 0) (fmt #f) :rest args)
   (cond [(exit-handler)
          => (^h (guard (e [(<error> e) #f]) (h code fmt args)))])
@@ -351,10 +457,12 @@
 ;;;
 
 (select-module gauche)
+;; API
 (define-cproc gc () (call <void> GC_gcollect))
 
+;; API
 (define-cproc gc-stat ()
-  (result
+  (return
    (list
     (list ':total-heap-size
           (Scm_MakeIntegerFromUI (cast u_long (GC_get_heap_size))))
@@ -374,19 +482,21 @@
 ;;;
 
 (select-module gauche)
+;; API
 ;; Obtain info about gauche itself
-(define-cproc gauche-version () ::<const-cstring> (result GAUCHE_VERSION))
-(define-cproc gauche-architecture () ::<const-cstring> (result GAUCHE_ARCH))
+(define-cproc gauche-version () ::<const-cstring> (return GAUCHE_VERSION))
+(define-cproc gauche-architecture () ::<const-cstring> Scm_HostArchitecture)
 (define-cproc gauche-library-directory () Scm_LibraryDirectory)
 (define-cproc gauche-architecture-directory () Scm_ArchitectureDirectory)
 (define-cproc gauche-site-library-directory () Scm_SiteLibraryDirectory)
 (define-cproc gauche-site-architecture-directory () Scm_SiteArchitectureDirectory)
-(define-cproc gauche-dso-suffix () ::<const-cstring> (result SHLIB_SO_SUFFIX))
+(define-cproc gauche-dso-suffix () ::<const-cstring> (return SHLIB_SO_SUFFIX))
 
 ;; Temporary - only usable on Windows(mingw) and Darwin; used to replace
 ;; '@' in the paths embedded in gauche.config.
 (define-cproc %gauche-runtime-directory () Scm__RuntimeDirectory)
 
+;; API
 ;; Command line - R7RS adds 'command-line' procedure.  We provide it as
 ;; a predefined parameter.  Like exit-handler, we manually allocate a
 ;; parametre slot to avoid importing gauche.parameter.
@@ -420,20 +530,24 @@
       (Scm_Printf port "#<thread %S %s %p>" (-> vm name) state vm)))
    )
  )
+;; API
 ;; Other thread stuff is in ext/threads/thrlib.stub
-(define-cproc current-thread () (result (SCM_OBJ (Scm_VM))))
+(define-cproc current-thread () (return (SCM_OBJ (Scm_VM))))
 
+;; API
 (define-cproc vm-dump
   (:optional (vm::<thread> (c "SCM_OBJ(Scm_VM())"))) ::<void>
   (Scm_VMDump vm))
 
+;; API
 (define-cproc vm-get-stack-trace
   (:optional (vm::<thread> (c "SCM_OBJ(Scm_VM())")))
-  (result (Scm_VMGetStack vm)))
+  (return (Scm_VMGetStack vm)))
 
+;; API
 (define-cproc vm-get-stack-trace-lite
   (:optional (vm::<thread> (c "SCM_OBJ(Scm_VM())")))
-  (result (Scm_VMGetStackLite vm)))
+  (return (Scm_VMGetStackLite vm)))
 
 (define-cproc %vm-show-stack-trace (trace :key
                                           (port::<port> (current-output-port))
@@ -444,10 +558,12 @@
   (Scm_ShowStackTrace port trace maxdepth skip offset
                       SCM_STACK_TRACE_FORMAT_ORIGINAL))
 
-(define-cproc vm-set-default-exception-handler (vm::<thread> handler) ::<void>
+;; API
+(select-module gauche.internal)
+(define-cproc %vm-custom-error-reporter-set! (vm::<thread> handler) ::<void>
   (unless (or (SCM_FALSEP handler) (SCM_PROCEDUREP handler))
     (SCM_TYPE_ERROR handler "a procedure or #f"))
-  (set! (-> vm defaultEscapeHandler) handler))
+  (set! (-> vm customErrorReporter) handler))
 
 ;; parameter internal API
 ;; These will be called by the public API in gauche.parameter.  The protocol
@@ -459,20 +575,21 @@
 (define-cproc %vm-make-parameter-slot () ::<int>
   (let* ([loc::ScmParameterLoc])
     (Scm_InitParameterLoc (Scm_VM) (& loc) SCM_FALSE)
-    (result (ref loc index))))
+    (return (ref loc index))))
 
 (define-cproc %vm-parameter-ref (index::<int> init-value)
   (let* ([loc::ScmParameterLoc])
     (set! (ref loc index) index
           (ref loc initialValue) init-value)
-    (result (Scm_ParameterRef (Scm_VM) (& loc)))))
+    (return (Scm_ParameterRef (Scm_VM) (& loc)))))
 
 (define-cproc %vm-parameter-set! (index::<int> init-value new-value)
   (let* ([loc::ScmParameterLoc])
     (set! (ref loc index) index
           (ref loc initialValue) init-value)
-    (result (Scm_ParameterSet (Scm_VM) (& loc) new-value))))
+    (return (Scm_ParameterSet (Scm_VM) (& loc) new-value))))
 
+;; TRANSIENT
 ;; For the backward compatibility---files precompiled by 0.9.2 or before
 ;; can contain reference to the old API (as the result of expansion of
 ;; parameterize).  These definition converts them to the new API.
@@ -489,21 +606,35 @@
 ;;;Tentative compiler macro
 ;;;
 
-;;  (define-compiler-macro <name>
+;;
+;;  (define-compiler-macro <name> <transformer>)
+;;
+;;  The <transformer> is the same as macro transformers, except that
+;;  <transformer> can return the given form untouched if it gives up
+;;  expansion.
+;;
+;;  For the backward compatilibity, the following form is also recognized
+;;  as <transfomer>:
+;;
 ;;    (er-transformer
 ;;     (lambda (form rename compare) ...)))
 ;;
-;; Er-transformer is a wrapper to indicate the transformer is
-;; explicit-renaming.  It leaves room to support other type of macro
-;; transformers in future.
-;; The transformer itself must return <FORM> itself if it aborts
-;; expansion.
+;;  This resembles er-macro-transformer, but in fact we dispatch to a
+;;  half-baked temporary implementation of macro transformer; it is
+;;  for internal optimization experiment until the 'real' macro system
+;;  is in place.   It'll be dropped once we have revised macro system,
+;;  and user code shouldn't use it.
 
+(select-module gauche)
+
+;; API
 (define-macro (define-compiler-macro name xformer-spec)
-  ;; TODO: Rewrite this after we get builtin patter matching.
-  (unless (and (= (length xformer-spec) 2)
-               (eq? (unwrap-syntax (car xformer-spec)) 'er-transformer))
-    (error "malformed define-compiler-macro: "
-           `(define-compiler-macro ,name ,xformer-spec)))
-  `((with-module gauche.internal %bind-inline-er-transformer)
-    (current-module) ',name ,(cadr xformer-spec)))
+  (if (and (= (length xformer-spec) 2)
+           (eq? (unwrap-syntax (car xformer-spec)) 'er-transformer))
+    `((with-module gauche.internal %bind-inline-er-transformer)
+      (current-module) ',name ,(cadr xformer-spec))
+    `((with-module gauche.internal %attach-inline-transformer)
+      (current-module) ',name
+      (^[form cenv]
+        ((with-module gauche.internal call-macro-expander)
+         ,xformer-spec form cenv)))))

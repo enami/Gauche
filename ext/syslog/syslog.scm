@@ -1,7 +1,7 @@
 ;;;
 ;;; syslog - syslog interface
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -63,10 +63,10 @@
    (initcode "Scm_AddFeature(\"gauche.sys.syslog\", NULL);"))
 
  (define-cproc sys-logmask (prio::<fixnum>) ::<fixnum>
-   (.if "defined(HAVE_SETLOGMASK)" (result (LOG_MASK prio)) (result 0)))
+   (.if "defined(HAVE_SETLOGMASK)" (return (LOG_MASK prio)) (return 0)))
 
  (define-cproc sys-setlogmask (mask::<fixnum>) ::<fixnum>
-   (.if "defined(HAVE_SETLOGMASK)" (result (setlogmask mask)) (result 0)))
+   (.if "defined(HAVE_SETLOGMASK)" (return (setlogmask mask)) (return 0)))
 
  (when "defined(HAVE_SETLOGMASK)"
    (initcode "Scm_AddFeature(\"gauche.sys.setlogmask\", NULL);"))

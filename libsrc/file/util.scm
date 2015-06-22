@@ -1,7 +1,7 @@
 ;;;
 ;;; file/util.scm - filesystem utility functions
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -40,9 +40,7 @@
 
 (define-module file.util
   (use srfi-1)
-  (use srfi-11)
   (use srfi-13)
-  (use util.list)
   (use util.match)
   (use gauche.parameter)
   (export current-directory directory-list directory-list2 directory-fold
@@ -52,7 +50,7 @@
           create-directory-tree check-directory-tree
           build-path resolve-path expand-path simplify-path decompose-path
           absolute-path? relative-path? find-file-in-paths
-	  path-separator
+          path-separator
           path-extension path-sans-extension path-swap-extension
           file-is-readable? file-is-writable? file-is-executable?
           file-is-symlink?
@@ -126,7 +124,7 @@
 ;; utility for directory-list and directory-list2
 (define (%directory-filter dir pred filter-add-path?)
   (if filter-add-path?
-    (filter (lambda (e) (pred (build-path dir e))) (sys-readdir dir))
+    (filter (^e (pred (build-path dir e))) (sys-readdir dir))
     (filter pred (sys-readdir dir))))
 
 (define (%directory-filter-compose opts)
@@ -134,7 +132,7 @@
                       (filter #f))
     (apply every-pred
            (cond-list
-            [children? (lambda (e) (not (member (sys-basename e) '("." ".."))))]
+            [children? (^e (not (member (sys-basename e) '("." ".."))))]
             [filter]))))
 
 ;; directory-list DIR &keyword ADD-PATH? FILTER-ADD-PATH? CHILDREN? FILTER
@@ -160,7 +158,7 @@
          [entries (sort (%directory-filter dir filters filter-add-path?))])
     (if add-path?
       (partition selector (map (cut build-path dir <>) entries))
-      (partition (lambda (e) (selector (build-path dir e))) entries))))
+      (partition (^e (selector (build-path dir e))) entries))))
 
 ;; directory-fold DIR PROC KNIL &keyword LISTER FOLDER FOLLOW-LINK?
 (define (directory-fold dir proc knil
@@ -530,7 +528,7 @@
  [gauche.os.windows
   (define (%stat-compare s1 s2 f1 f2)
     (let ([p1 (sys-normalize-pathname f1 :absolute #t :canonicalize #t)]
-	  [p2 (sys-normalize-pathname f2 :absolute #t :canonicalize #t)])
+          [p2 (sys-normalize-pathname f2 :absolute #t :canonicalize #t)])
       (equal? p1 p2)))
   (define (file-eq? f1 f2)  (%stat-compare #f #f f1 f2))
   (define (file-eqv? f1 f2) (%stat-compare #f #f f1 f2))
@@ -792,7 +790,7 @@
 ;; object.  We'll fix that later.)
 (define (remove-file file)
   (or (sys-unlink file)
-      (error "File does not exist:" file)))
+      (error <system-error> :errno ENOENT "File does not exist:" file)))
 (define delete-file remove-file)
 
 (define (remove-files . paths)

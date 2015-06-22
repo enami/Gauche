@@ -1,7 +1,7 @@
 /*
  * binary.c - Binary I/O routines
  *
- *   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -76,10 +76,10 @@
 /* generic routine to handle byte-stream */
 static inline int getbytes(char *buf, int len, ScmPort *iport)
 {
-    int nread = 0, r;
+    int nread = 0;
     ENSURE_IPORT(iport);
     while (nread < len) {
-        r = Scm_Getz(buf, len-nread, iport);
+        int r = Scm_Getz(buf, len-nread, iport);
         if (r <= 0) return EOF;
         nread += r;
         buf += r;
@@ -301,16 +301,15 @@ void Scm_WriteBinaryF64(ScmObj sval, ScmPort *oport, ScmSymbol *endian)
  * Getters
  */
 
-static void extract(ScmUVector *uv, unsigned char *buf, int off, int eltsize)
+static void extract(ScmUVector *uv, char *buf, int off, int eltsize)
 {
     int size = Scm_UVectorSizeInBytes(uv);
     unsigned char *b = (unsigned char*)SCM_UVECTOR_ELEMENTS(uv) + off;
-    int i;
 
     if (off < 0 || off+eltsize > size) {
         Scm_Error("offset %d is out of bound of the uvector.", off);
     }
-    for (i=0; i<eltsize; i++) {
+    for (int i=0; i<eltsize; i++) {
         *buf++ = *b++;
     }
 }
@@ -320,16 +319,16 @@ ScmObj Scm_GetBinaryU8(ScmUVector *uv, int off, ScmSymbol *endian)
 {
     unsigned char b;
     CHECK_ENDIAN(endian);
-    extract(uv, &b, off, 1);
+    extract(uv, (char *)&b, off, 1);
     return SCM_MAKE_INT(b);
 }
 
 ScmObj Scm_GetBinaryS8(ScmUVector *uv, int off, ScmSymbol *endian)
 {
-    unsigned char b; int r;
+    unsigned char b;
     CHECK_ENDIAN(endian);
-    extract(uv, &b, off, 1);
-    r = b;
+    extract(uv, (char *)&b, off, 1);
+    int r = b;
     if (r >= 128) r -= 256;
     return SCM_MAKE_INT(r);
 }
@@ -419,18 +418,17 @@ ScmObj Scm_GetBinaryF64(ScmUVector *uv, int off, ScmSymbol *endian)
  * Putters
  */
 
-static void inject(ScmUVector *uv, unsigned char *buf, int off, int eltsize)
+static void inject(ScmUVector *uv, char *buf, int off, int eltsize)
 {
     int size = Scm_UVectorSizeInBytes(uv);
     unsigned char *b = (unsigned char*)SCM_UVECTOR_ELEMENTS(uv) + off;
-    int i;
 
     SCM_UVECTOR_CHECK_MUTABLE(SCM_OBJ(uv));
 
     if (off < 0 || off+eltsize > size) {
         Scm_Error("offset %d is out of bound of the uvector.", off);
     }
-    for (i=0; i<eltsize; i++) {
+    for (int i=0; i<eltsize; i++) {
         *b++ = *buf++;
     }
 }
@@ -439,14 +437,14 @@ void Scm_PutBinaryU8(ScmUVector *uv, int off, ScmObj val, ScmSymbol *e)
 {
     u_char v = (u_char)Scm_GetIntegerU8Clamp(val, SCM_CLAMP_NONE, NULL);
     CHECK_ENDIAN(e);
-    inject(uv, &v, off, 1);
+    inject(uv, (char *)&v, off, 1);
 }
 
 void Scm_PutBinaryS8(ScmUVector *uv, int off, ScmObj val, ScmSymbol *e)
 {
     u_char v = (u_char)Scm_GetInteger8Clamp(val, SCM_CLAMP_NONE, NULL);
     CHECK_ENDIAN(e);
-    inject(uv, &v, off, 1);
+    inject(uv, (char *)&v, off, 1);
 }
 
 void Scm_PutBinaryU16(ScmUVector *uv, int off, ScmObj val, ScmSymbol *e)
@@ -528,16 +526,4 @@ void Scm_PutBinaryF64(ScmUVector *uv, int off, ScmObj val, ScmSymbol *e)
     v.val = Scm_GetDouble(val);
     SWAP_D(e, v);
     inject(uv, v.buf, off, 8);
-}
-
-/*
- * Init
- */
-extern void Scm_Init_binarylib(ScmModule *mod);
-
-SCM_EXTENSION_ENTRY void Scm_Init_binary__io(void)
-{
-    ScmModule *mod_io = SCM_FIND_MODULE("binary.io", SCM_FIND_MODULE_CREATE);
-    SCM_INIT_EXTENSION(binary__io);
-    Scm_Init_binarylib(mod_io);
 }

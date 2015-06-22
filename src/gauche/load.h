@@ -1,7 +1,7 @@
 /*
  * load.h - Public API for loading files
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -42,6 +42,8 @@
 
 /* Flags for Scm_VMLoad (V), Scm_Load (L), Scm_Require (R), Scm_VMLoadPort (P),
  * and Scm_FindFile (F).
+ * NB: We intended to use 1L<<3 for MAIN_SCRIPT flag but it turned out
+ * unnecessary.
  */
 typedef enum {
     SCM_LOAD_QUIET_NOFILE = (1L<<0),
@@ -53,10 +55,6 @@ typedef enum {
 
     SCM_LOAD_PROPAGATE_ERROR = (1L<<2),
     /* [L,R] do not capture an error; let the caller handle it.  */
-
-    SCM_LOAD_MAIN_SCRIPT = (1L<<3),
-    /* [L,V,P] indicates we're loading the file as a "main script"
-       ---a script file given to gosh to load. */
 
     SCM_LOAD_SEARCH_ARCHIVE = (1L<<4)
     /* [F] Search a file to load from archive file, using the hook of
@@ -73,21 +71,13 @@ typedef struct ScmLoadPacketRec {
 SCM_EXTERN ScmObj Scm_VMLoadFromPort(ScmPort *port, ScmObj next_paths,
                                      ScmObj env, int flags);
 SCM_EXTERN ScmObj Scm_VMLoad(ScmString *file, ScmObj paths, ScmObj env,
-			     int flags);
+                             int flags);
 
-#if !defined(GAUCHE_API_PRE_0_9)
 SCM_EXTERN void Scm_LoadPacketInit(ScmLoadPacket *p);
 SCM_EXTERN int Scm_LoadFromPort(ScmPort *port, u_long flags, ScmLoadPacket *p);
 SCM_EXTERN int Scm_Load(const char *file, u_long flags, ScmLoadPacket *p);
-#else  /*!GAUCHE_API_PRE_0_9*/
-#define Scm_LoadFromPort(port, flags)  Scm__LoadFromPortCompat(port, flags)
-#define Scm_Load(port, flags)          Scm__LoadCompat(port, flags)
-SCM_EXTERN void Scm__LoadFromPortCompat(ScmPort *port, int flags);
-SCM_EXTERN int  Scm__LoadCompat(const char *file, int flags);
-#endif /*!GAUCHE_API_PRE_0_9*/
-
-/* Inernal */
-SCM_EXTERN void   Scm__RecordLoadStart(ScmObj path);
+SCM_EXTERN int Scm_LoadFromCString(const char *program, u_long flags,
+                                   ScmLoadPacket *p);
 
 /*=================================================================
  * Dynamic state access
@@ -110,18 +100,21 @@ SCM_EXTERN void   Scm_DeleteLoadPathHook(ScmObj proc);
  * Dynamic Loading
  */
 
+/* The implementation of ScmDLObjRec is in load.c */
+SCM_CLASS_DECL(Scm_DLObjClass);
+#define SCM_CLASS_DLOBJ        (&Scm_DLObjClass)
+#define SCM_DLOBJ(obj)         ((ScmDLObj*)(obj))
+#define SCM_DLOBJP(obj)        (SCM_XTYPEP(obj, SCM_CLASS_DLOBJ))
+
 SCM_EXTERN ScmObj Scm_DynLoad(ScmString *path, ScmObj initfn, u_long flags);
+
+SCM_EXTERN ScmObj Scm_DLObjs(void);
 
 /*=================================================================
  * Require & Provide
  */
 
-#if !defined(GAUCHE_API_PRE_0_9)
 SCM_EXTERN int Scm_Require(ScmObj feature, int flags, ScmLoadPacket *p);
-#else  /*GAUCHE_API_PRE_0_9*/
-#define Scm_Require(feature) Scm__RequireCompat(feature)
-SCM_EXTERN ScmObj Scm__RequireCompat(ScmObj feature);
-#endif /*GAUCHE_API_PRE_0_9*/
 SCM_EXTERN ScmObj Scm_Provide(ScmObj feature);
 SCM_EXTERN int    Scm_ProvidedP(ScmObj feature);
 
@@ -159,7 +152,7 @@ SCM_CLASS_DECL(Scm_AutoloadClass);
 
 SCM_EXTERN ScmObj Scm_MakeAutoload(ScmModule *where,
                                    ScmSymbol *name, ScmString *path,
-				   ScmSymbol *import_from);
+                                   ScmSymbol *import_from);
 SCM_EXTERN void   Scm_DefineAutoload(ScmModule *where, ScmObj file_or_module,
                                      ScmObj list);
 SCM_EXTERN ScmObj Scm_ResolveAutoload(ScmAutoload *autoload, int flags);

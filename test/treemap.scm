@@ -47,7 +47,7 @@
            (tree-map->alist (ctor)))
     (test* "tree-map->alist" '((0 . "0") (1 . "1") (2 . "2"))
            (let1 tree (ctor)
-             (for-each (lambda (p) (tree-map-put! tree (car p) (cdr p)))
+             (for-each (^p (tree-map-put! tree (car p) (cdr p)))
                        '((0 . "0") (1 . "1") (2 . "2")))
              (tree-map->alist tree)))
     (test* "alist->tree-map" '((0 . "0") (1 . "1") (2 . "2"))
@@ -387,18 +387,18 @@
   (define (get-val key) (if (string? key) (cdr (assoc key alist)) key))
 
   (define (test-key-val name key expected-key both-proc key-proc val-proc)
-    (test* #`",name (,key)" (list expected-key (get-val expected-key))
+    (test* #"~name (~key)" (list expected-key (get-val expected-key))
            (receive (k v) (both-proc tree key) (list k v)))
-    (test* #`",|name|-key (,key)" expected-key
+    (test* #"~|name|-key (~key)" expected-key
            (key-proc tree key))
-    (test* #`",|name|-value (,key)" (get-val expected-key)
+    (test* #"~|name|-value (~key)" (get-val expected-key)
            (val-proc tree key))
     (unless expected-key
-      (test* #`",name (,key) / fallback" (list 0 1)
+      (test* #"~name (~key) / fallback" (list 0 1)
              (receive (k v) (both-proc tree key 0 1) (list k v)))
-      (test* #`",|name|-key (,key) / fallback" 0
+      (test* #"~|name|-key (~key) / fallback" 0
              (key-proc tree key 0))
-      (test* #`",|name|-value (,key) / fallback" 0
+      (test* #"~|name|-value (~key) / fallback" 0
              (val-proc tree key 0))))
 
   (define (tester key floor ceil pred succ)
@@ -426,10 +426,25 @@
 
 (let1 tree (make-tree-map = <)
   (test* "tree-map-pop-min! and num-entries" 0 
-	 (begin
-	   (tree-map-put! tree 0 0)
-	   (tree-map-pop-min! tree)
-	   (tree-map-num-entries tree))))
+         (begin
+           (tree-map-put! tree 0 0)
+           (tree-map-pop-min! tree)
+           (tree-map-num-entries tree))))
+
+(let* ([comparator (make-comparator string? #t
+                                    (^[a b] (compare (string->number a)
+                                                     (string->number b)))
+                                    #f)]
+       [tmap (make-tree-map comparator)])
+  (test* "custom comparator" '(("00" . a) ("1" . b) ("10" . c))
+         (begin
+           (dolist [p '(("00" . x) ("1" . t) ("10" . c) ("01" . b)
+                        ("000" . y) ("0" . a))]
+             (tree-map-put! tmap (car p) (cdr p)))
+           (tree-map->alist tmap)))
+  (test* "comparator error check" (test-error)
+         (tree-map-put! tmap 3 'z))
+  )
 
 (test-end)
 

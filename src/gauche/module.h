@@ -1,7 +1,7 @@
 /*
  * module.h - Modules
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -76,9 +76,6 @@ SCM_CLASS_DECL(Scm_ModuleClass);
 
 SCM_EXTERN ScmObj Scm_MakeModule(ScmSymbol *name, int error_if_exists);
 
-/* internal */
-SCM_EXTERN ScmObj Scm__MakeWrapperModule(ScmModule *origin, ScmObj prefix);
-
 /* Flags for Scm_FindBinding (F), MakeBinding (M)
    and Scm_GlobalVariableRef (R)*/
 enum {
@@ -87,11 +84,12 @@ enum {
     SCM_BINDING_INLINABLE = (1L<<2),      /*(M) inlinable binding */
     SCM_BINDING_EXTERNAL = (1L<<3)        /*(F) only search externally visible
                                             bindings, as if we're importing
-                                            the module. */
+                                            the module.  Currently used to
+                                            create alias binding. */
 };
 
 SCM_EXTERN ScmGloc *Scm_FindBinding(ScmModule *module, ScmSymbol *symbol,
-				    int flags);
+                                    int flags);
 SCM_EXTERN ScmGloc *Scm_MakeBinding(ScmModule *module, ScmSymbol *symbol,
                                     ScmObj value, int flags);
 SCM_EXTERN ScmObj Scm_GlobalVariableRef(ScmModule *module,
@@ -104,7 +102,7 @@ SCM_EXTERN int    Scm_AliasBinding(ScmModule *target, ScmSymbol *targetName,
 /* Convenience API.  Wrapper of Scm_MakeBinding. */
 SCM_EXTERN ScmObj Scm_Define(ScmModule *module,
                              ScmSymbol *symbol,
-			     ScmObj value);
+                             ScmObj value);
 SCM_EXTERN ScmObj Scm_DefineConst(ScmModule *module,
                                   ScmSymbol *symbol,
                                   ScmObj value);

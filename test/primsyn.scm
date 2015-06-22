@@ -26,7 +26,9 @@
 
 (prim-test "when" 4          (lambda ()  (when 3 5 4)))
 (prim-test "when" (undefined)    (lambda ()  (when #f 5 4)))
+(prim-test "when" (undefined)    (lambda ()  (when #f unbound-var)))
 (prim-test "unless" (undefined)  (lambda ()  (unless 3 5 4)))
+(prim-test "unless" (undefined)  (lambda ()  (unless #t unbound-var)))
 (prim-test "unless" 4        (lambda ()  (unless #f 5 4)))
 
 (prim-test "cond" (undefined)  (lambda ()  (cond (#f 2))))
@@ -502,6 +504,28 @@
           (do ((x 0 (+ x 1)))
               ((> x 3) x)
             #f))))
+
+;;----------------------------------------------------------------
+(test-section "letrec and letrec*")
+
+(prim-test "letrec reordering" '((1 3) . (2 3 1))
+           (lambda ()
+             (let ((r '()))
+               (cons (letrec ((a (begin (set! r (cons 1 r)) 1))
+                              (b (begin (set! r (cons 2 r)) 2))
+                              (c (begin (set! r (cons 3 r)) 3)))
+                       (list a c))
+                     r))))
+
+(prim-test "letrec* non-reordering" '((1 3) . (3 2 1))
+           (lambda ()
+             (let ((r '()))
+               (cons (letrec* ((a (begin (set! r (cons 1 r)) 1))
+                               (b (begin (set! r (cons 2 r)) 2))
+                               (c (begin (set! r (cons 3 r)) 3)))
+                       (list a c))
+                     r))))
+
 
 (test-end)
 

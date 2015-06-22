@@ -1,7 +1,7 @@
 /*
  * spvec.h - Sparse vector
  *
- *   Copyright (c) 2009-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2009-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -59,6 +59,7 @@ typedef struct SparseVectorRec {
     CompactTrie trie;
     u_long      numEntries;
     u_long      flags;          /* reserved */
+    ScmObj      defaultValue;
 } SparseVector;
 
 /* Iterator. */
@@ -102,15 +103,15 @@ struct SparseVectorDescriptorRec {
 
 /* Max # of bits for index.  Theoretrically we can extend this
    as much as we like; current limitation is only for simplicity. */
-#define SPARSE_VECTOR_MAX_INDEX_BITS 32
+#define SPARSE_VECTOR_MAX_INDEX_BITS  (SIZEOF_LONG*8)
 
-/* Flags for constructors */
+/* Flags for constructors (currently unused) */
 enum {
     SPARSE_VECTOR_ORDERED = (1L<<0)
 };
 
 /* Generic API. */
-extern ScmObj MakeSparseVector(ScmClass *klass, u_long flags);
+extern ScmObj MakeSparseVector(ScmClass *klass, ScmObj defaultValue, u_long flags);
 extern ScmObj SparseVectorRef(SparseVector *sv, u_long index, ScmObj fallback);
 extern void   SparseVectorSet(SparseVector *sv, u_long index, ScmObj value);
 extern ScmObj SparseVectorDelete(SparseVector *sv, u_long index);
@@ -191,5 +192,69 @@ SCM_CLASS_DECL(Scm_SparseF64VectorClass);
 #define SCM_CLASS_SPARSE_F64VECTOR  (&Scm_SparseF64VectorClass)
 #define SPARSE_F64VECTOR(obj)       ((SparseVector*)(obj))
 #define SPARSE_F64VECTOR_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_F64VECTOR)
+
+SCM_CLASS_DECL(Scm_SparseMatrixBaseClass);
+#define SCM_CLASS_SPARSE_MATRIX_BASE  (&Scm_SparseMatrixBaseClass)
+#define SPARSE_MATRIX_BASE_P(obj) SCM_ISA(obj, SCM_CLASS_SPARSE_MATRIX_BASE)
+
+SCM_CLASS_DECL(Scm_SparseMatrixClass);
+#define SCM_CLASS_SPARSE_MATRIX   (&Scm_SparseMatrixClass)
+#define SPARSE_MATRIX(obj)        ((SparseVector*)(obj))
+#define SPARSE_MATRIX_P(obj)      SCM_XTYPEP(obj, SCM_CLASS_SPARSE_MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseS8MatrixClass);
+#define SCM_CLASS_SPARSE_S8MATRIX   (&Scm_SparseS8MatrixClass)
+#define SPARSE_S8MATRIX(obj)        ((SparseVector*)(obj))
+#define SPARSE_S8MATRIX_P(obj)      SCM_XTYPEP(obj, SCM_CLASS_SPARSE_S8MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseU8MatrixClass);
+#define SCM_CLASS_SPARSE_U8MATRIX   (&Scm_SparseU8MatrixClass)
+#define SPARSE_U8MATRIX(obj)        ((SparseVector*)(obj))
+#define SPARSE_U8MATRIX_P(obj)      SCM_XTYPEP(obj, SCM_CLASS_SPARSE_U8MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseS16MatrixClass);
+#define SCM_CLASS_SPARSE_S16MATRIX  (&Scm_SparseS16MatrixClass)
+#define SPARSE_S16MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_S16MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_S16MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseU16MatrixClass);
+#define SCM_CLASS_SPARSE_U16MATRIX  (&Scm_SparseU16MatrixClass)
+#define SPARSE_U16MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_U16MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_U16MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseS32MatrixClass);
+#define SCM_CLASS_SPARSE_S32MATRIX  (&Scm_SparseS32MatrixClass)
+#define SPARSE_S32MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_S32MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_S32MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseU32MatrixClass);
+#define SCM_CLASS_SPARSE_U32MATRIX  (&Scm_SparseU32MatrixClass)
+#define SPARSE_U32MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_U32MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_U32MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseS64MatrixClass);
+#define SCM_CLASS_SPARSE_S64MATRIX  (&Scm_SparseS64MatrixClass)
+#define SPARSE_S64MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_S64MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_S64MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseU64MatrixClass);
+#define SCM_CLASS_SPARSE_U64MATRIX  (&Scm_SparseU64MatrixClass)
+#define SPARSE_U64MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_U64MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_U64MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseF16MatrixClass);
+#define SCM_CLASS_SPARSE_F16MATRIX  (&Scm_SparseF16MatrixClass)
+#define SPARSE_F16MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_F16MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_F16MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseF32MatrixClass);
+#define SCM_CLASS_SPARSE_F32MATRIX  (&Scm_SparseF32MatrixClass)
+#define SPARSE_F32MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_F32MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_F32MATRIX)
+
+SCM_CLASS_DECL(Scm_SparseF64MatrixClass);
+#define SCM_CLASS_SPARSE_F64MATRIX  (&Scm_SparseF64MatrixClass)
+#define SPARSE_F64MATRIX(obj)       ((SparseVector*)(obj))
+#define SPARSE_F64MATRIX_P(obj)     SCM_XTYPEP(obj, SCM_CLASS_SPARSE_F64MATRIX)
 
 #endif /*GAUCHE_SPVEC_H*/

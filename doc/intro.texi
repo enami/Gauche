@@ -75,8 +75,8 @@ recent version on the web:
 @c COMMON
 
 @menu
-* Overview of Gauche::
-* Notations::
+* Overview of Gauche::          
+* Notations::                   
 @end menu
 
 @node Overview of Gauche, Notations, Introduction, Introduction
@@ -87,15 +87,15 @@ recent version on the web:
 Gauche is a Scheme script engine; it reads Scheme programs,
 compiles it on-the-fly and executes it on a virtual machine.
 Gauche conforms the language standard
-"Revised^5 Report on the Algorithmic Language Scheme"
-(@ref{r5rs,[R5RS],R5RS}),
+"Revised^7 Report on the Algorithmic Language Scheme"
+(@ref{r7rs,[R7RS],R7RS}),
 and supports various common libraries defined in SRFIs
 (@uref{http://srfi.schemers.org}).
 @c JP
 GaucheはScheme言語のスクリプトエンジンです。
 Schemeプログラムを読み込み、直ちにコンパイルして仮想マシンで実行します。
-Scheme言語の標準である、"Revised^5 Report on the Algorithmic Language Scheme"
-(@ref{r5rs,[R5RS],R5RS})に準拠しています。また、SRFI
+Scheme言語の標準である、"Revised^7 Report on the Algorithmic Language Scheme"
+(@ref{r7rs,[R7RS],R7RS})に準拠しています。また、SRFI
 (@uref{http://srfi.schemers.org}) に規定されている数多くのライブラリを
 サポートしています。
 @c COMMON
@@ -140,6 +140,23 @@ Gaucheは頻繁に使われる共通の機能については、豊富な組み�
 @c COMMON
 
 @c EN
+@item Fully utilizing multi-core
+@c JP
+@item マルチコアの完全な活用
+@c COMMON
+@c EN
+Gauche supports native threads on most platforms.
+The internals are fully aware of preemptive/concurrent threads
+(that is, no ``giant global lock''),
+so that you can utilize multiple cores on your machine.
+@c JP
+Gaucheは多くのプラットフォームでネイティブスレッドをサポートしています。
+内部は全てプリエンプティブな並行スレッドを意識してかかれており
+(つまり、「巨大なひとつのロック」はありません)、
+複数のコアを存分に活用できるようになっています。
+@c COMMON
+
+@c EN
 @item Multibyte strings
 @c JP
 @item マルチバイト文字列
@@ -150,7 +167,7 @@ The practical language implementations are required to handle
 multibyte (wide) characters.
 Gauche supports multibyte strings natively, providing robust and
 consistent support than @i{ad hoc} library-level implementation.
-@xref{Multibyte Strings}, for details.
+@xref{Multibyte strings}, for details.
 @c JP
 文字列が1バイトキャラクタのみを扱っていれば良かった時代は過ぎ去りました。
 現代のプログラミングシステムは、様々なエンコーディングによるマルチバイト文字／文字列を
@@ -158,21 +175,7 @@ consistent support than @i{ad hoc} library-level implementation.
 Gaucheは内部的に文字列を全て、コンパイル時に選択したエンコーディングの
 マルチバイト文字列として扱います。後から付け足したライブラリレベルでの
 マルチバイト文字列のサポートよりも、一貫性がありロバストな文字列操作が可能になっています。
-詳しくは@ref{Multibyte Strings}を参照してください。
-@c COMMON
-
-@c EN
-@item Modular development
-@c JP
-@item モジュラー開発
-@c COMMON
-@c EN
-Gauche has a simple module system to separate namespaces,
-which allows the developers to work in parallel without
-worrying name collision.
-@c JP
-Gaucheは名前空間を分離する単純なモジュールシステムを備えており、
-名前の衝突を心配せずに複数の開発者が並行して作業をすることができます。
+詳しくは@ref{Multibyte strings}を参照してください。
 @c COMMON
 
 @c EN
@@ -229,29 +232,45 @@ Gaucheはポートオブジェクトを入出力のための統合された抽�
 それを通して下位のI/Oシステム層にアクセスするユーティリティ関数を提供しています。
 @ref{Input and output}を参照して下さい。
 @c COMMON
-@end table
 
 @c EN
-On the other hand, Gauche is @emph{not} designed for
-applications such like high-performance number cruncher or
-very large scale database handling.
-
-You can still use Gauche as a "glue" language for such applications,
-however.  For example, you can write a performance-critical part
-in another language that compiles to native code, and use Gauche to set up.
+@item Extended language
 @c JP
-一方、Gaucheは所詮インタプリタですから、高速に大量の計算をこなしたり
-巨大なデータセットを扱ったりするのは苦手です。
-
-但し、そのような場合でも、Gaucheを各コンポーネントをつなぐ「糊」言語として
-使うことは可能です。例えば性能の要求の厳しい部分はネイティブコードにコンパイルする言語で
-書いておき、セットアップにGaucheを使うといった方法があります。
+@item 拡張された言語
 @c COMMON
+@c EN
+Gauche is not just an implementation of Scheme; it has some
+language-level enhancements.  For example, @emph{lazy sequences}
+allows you to have lazy data structures that behaves as if
+they're ordinary lists (except that they're realized lazily).
+It is different from library-level lazy structure implementation such as
+streams (srfi-41), in a sense that you can use any list-processing
+procedures on lazy sequences.  It enables programs to use
+lazy algorithms more liberally.
+@c JP
+Gaucheは単なるScheme実装というだけでなく、言語レベルでいくつかの拡張が施されています。
+例えば、@emph{遅延シーケンス}によって、あたかもそれが(遅延して実体化される点を除いて)
+普通のリストであるかのように振るまう遅延データ構造を扱うことが可能になります。
+あらゆるリスト処理を使用できるという意味で、遅延シーケンスは、
+例えばストリーム(srfi-41)のようにライブラリレベルで
+実装した遅延構造とは異なります。
+これによって、遅延アルゴリズムをよりふんだんに使用したプログラミングが可能になります。
+@c COMMON
+@end table
 
 
 @node Notations,  , Overview of Gauche, Introduction
 @section Notations
 @c NODE 表記について
+
+@menu
+* Entry format::                
+* Names and namespaces::        
+@end menu
+
+@node Entry format, Names and namespaces, Notations, Notations
+@subsection Entry format
+@c NODE 項目の形式
 
 @c EN
 In this manual, each entry is represented like this:
@@ -284,9 +303,9 @@ The following categories will appear in this manual:
 @c COMMON
 @item Special Form
 @c EN
-@tab A special form (in the R5RS term, ``syntax'').
+@tab A special form (in the R7RS term, ``syntax'').
 @c JP
-@tab 特殊形式 (R5RSでは「構文」)
+@tab 特殊形式 (R7RSでは「構文」)
 @c COMMON
 @item Macro
 @c EN
@@ -323,6 +342,26 @@ The following categories will appear in this manual:
 @tab A lexical syntax that is interpreted by the reader.
 @c JP
 @tab リーダによって解釈される構文要素
+@c COMMON
+@item Parameter
+@c EN
+@tab A parameter, which is a procedure that follows a certain
+protocol and used to manipulate the dynamic environment.  
+@xref{Parameters}, for the details.
+@c JP
+@tab パラメータ。特定のプロトコルに従う手続きで、動的環境の操作に使われるもの。
+詳しくは@ref{Parameters}参照。
+@c COMMON
+@c COMMON
+@item Generic application
+@c EN
+@tab In Gauche, you can ``apply'' a non-procedure object to arguments
+as if it is a procedure (@xref{Applicable objects}, for the details).
+This entry explains the behavior of an object applied to arguments.
+@c JP
+@tab Gaucheでは、手続きでないオブジェクトをあたかの手続きのように
+引数に「適用」することができます(詳しくは@ref{Applicable objects}を参照してください)。
+このエントリは、オブジェクトが引数に適用された時のふるまいを説明します。
 @c COMMON
 @end multitable
 
@@ -392,15 +431,27 @@ of the description.  The following origins are noted:
 @c COMMON
 
 @table @asis
-@item [R5RS]
+@item [R7RS]
+@itemx [R7RS+]
+@itemx [R6RS]
+@itemx [R6RS+]
+@itemx [R5RS]
 @itemx [R5RS+]
 @c EN
-The entry works as specified in ``Revised^5 Report of Algorithmic Language
-Scheme.''.  If it is marked as "[R5RS+]", the entry has additional
+The entry works as specified in R7RS, R6RS or R5RS, respectively.
+If a plus sign is appended such as "[R7RS+]", the entry has additional
 functionality.
+
+Since R7RS is mostly upward-compatible to R5RS, and has a lot
+in common with R6RS, we mark an entry as R5RS or R6RS only if
+it is not a part of R7RS.
 @c JP
-この項目はR5RSに定義されるように動作します。"[R5RS+]"とマークされている場合は
-R5RSの仕様に上位互換な形で追加の機能が実装されていることを示します。
+この項目はそれぞれR7RS, R6RS, R5RSで定義されるように動作します。
+"[R7RS+]"のようにプラス記号がついている場合は、
+R7RSの仕様に上位互換な形で追加の機能が実装されていることを示します。
+
+R7RSはほぼR5RSの上位互換であり、R6RSとも多くの機能を共有しているので、
+R5RS、R6RSの表示はそれらがR7RSに含まれていない場合のみ記されます。
 @c COMMON
 @item [SRFI-@var{n}]
 @itemx [SRFI-@var{n}+]
@@ -419,11 +470,67 @@ The API of the entry reflects the API specified in POSIX.
 @c COMMON
 @end table
 
+
+@node Names and namespaces,  , Entry format, Notations
+@subsection Names and namespaces
+@c NODE 名前と名前空間
+
+@c EN
+Since R6RS, you can split toplevel definitions of Scheme programs
+into multiple namespaces.  In the standards such namespaces are called
+@emph{libraries}.  Gauche predates R6RS and has been calling
+them @emph{modules}, and we use the latter throughout this manual.
+@c JP
+R6RSから、Schemeプログラムのトップレベル定義を複数の名前空間に分けて
+書くことができるようになりました。Schemeの言語標準では名前空間を
+@emph{ライブラリ}と呼んでいます。GaucheはR6RSより前から名前空間を
+サポートし、@emph{モジュール}と呼んできました。本マニュアルでは
+従来どおり@emph{モジュール}という呼称を使います。
+@c COMMON
+
+@c EN
+(Note: RnRS libraries are more abstract concept than Gauche's
+modules; RnRS defines libraries in a way that they can be implemented
+in various ways, and it just happens that Gauche realises the library
+semantics using modules.  When you write a portable R7RS library,
+be aware not to rely on Gauche-specific module semantics.  Especially,
+RnRS libraries are more static than Gauche modules; you cannot
+add definitions to exiting libraries within RnRS, for example.)
+@c JP
+(註: RnRSライブラリは、厳密に言えばGaucheのモジュールよりも抽象的な概念です。
+RnRSでは処理系がライブラリを様々な方法で実装できるように規程しています。
+Gaucheではたまたま、モジュールという仕組みを使ってRnRSライブラリのの概念が
+実現されているということです。ポータブルなR7RSライブラリを書く時は、
+Gauche特有のモジュールのセマンティクスに依存しないように気をつけてください。
+特に、RnRSライブラリはGaucheのモジュールよりも静的です。
+例えばRnRSの規格内では、既に存在するライブラリに定義を追加することはできません。)
+@c COMMON
+
+@c EN
+Sometimes the same name is used for multiple definitions in
+different modules.  If we need to distinguish those names,
+we prefix the name with the module name and a hash sign.
+For example, @code{gauche#lambda} means @code{lambda}
+defined in @code{gauche} module.  This does not mean
+you can write @code{gauche#lambda} in the source code,
+though: This notation is just for explanation.
+@c JP
+時に、同じ名前に対して異なるモジュールで別々の定義が与えられることがあります。
+それらを区別する必要がある時は、本マニュアルでは名前の前にモジュール名と
+ハッシュ記号をつけて表記します。例えば、@code{gauche#lambda}は
+@code{gauche}モジュールで定義された@code{lambda}を指します。
+これはあくまで説明のための表記で、
+ソースコードに@code{gauche#lambda}と書けるわけではないことに
+注意してください。
+@c COMMON
+
+
 @c @node Structure of this document,  , Notations, Introduction
 @c @section Structure of this document
 @c @c NODE 本書の構成
 
 @c @c EN
+
 @c @c JP
 @c @c COMMON
 

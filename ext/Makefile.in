@@ -1,7 +1,9 @@
 @SET_MAKE@
-SUBDIRS= gauche util srfi threads uvector charconv binary net termios \
+SUBDIRS= gauche util data srfi uvector threads charconv binary net termios \
          fcntl file sxml syslog dbm mt-random bcrypt digest vport \
-         text zlib sparse peg windows tls
+         text rfc zlib sparse peg windows tls
+
+.PHONY: $(SUBDIRS)
 
 CONFIG_GENERATED = Makefile Makefile.ext
 
@@ -24,21 +26,41 @@ DESTDIR     =
 GAUCHE_INSTALL = $(GOSH) $(top_srcdir)/src/gauche-install.in -C
 TEMPLATE_INST_DIR = $(datadir)/gauche-@GAUCHE_ABI_VERSION@/$(GAUCHE_VERSION)
 
-TEMPLATES = template.Makefile.in template.configure.ac \
+TEMPLATES = template.Makefile.in template.configure template.configure.ac \
 	    template.extension.h template.extension.c \
 	    template.extensionlib.stub template.module.scm \
-	    template.test.scm template.DIST
+	    template.test.scm
 
-all:
-	for d in $(SUBDIRS); do (cd $$d; $(MAKE) default); done
+all: $(SUBDIRS)
+
+$(SUBDIRS):
+	(cd $@; $(MAKE) default)
+
+uvector: data util
+
+gauche srfi: util uvector
+
+charconv net: gauche srfi
+
+text: uvector charconv
+
+threads bcrypt sxml vport mt-random digest zlib termios windows: uvector
+
+tls: vport
+
+bcrypt: mt-random
+
+dbm : threads
+
+rfc: gauche util
 
 test : check
 
 check:
-	for d in $(SUBDIRS); do (cd $$d; $(MAKE) check); done
+	for d in $(SUBDIRS); do (cd $$d; $(MAKE) check) || exit 1; done
 
 install:
-	for d in $(SUBDIRS); do (cd $$d; $(MAKE) install); done
+	for d in $(SUBDIRS); do (cd $$d; $(MAKE) install) || exit 1; done
 	$(GAUCHE_INSTALL) -m 444 -S $(srcdir) $(TEMPLATES) $(DESTDIR)$(TEMPLATE_INST_DIR)
 
 uninstall:
@@ -73,3 +95,6 @@ maintainer-clean: clean
 
 install-check:
 	for d in $(SUBDIRS); do (cd $$d; $(MAKE) install-check); done
+
+list-objects:
+	for d in $(SUBDIRS); do (cd $$d; $(MAKE) list-objects); done

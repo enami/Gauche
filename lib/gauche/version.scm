@@ -1,7 +1,7 @@
 ;;;
 ;;; version.scm - deal with version numbers
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -104,10 +104,10 @@
 
 (define (next-component ver)
   (cond ((rxmatch #/[._-]/ ver)
-         => (lambda (m) (values (rxmatch-before m)
-                                (if (string=? (rxmatch-substring m) "_")
-                                    'pre 'post)
-                                (rxmatch-after m))))
+         => (^m (values (rxmatch-before m)
+			(if (string=? (rxmatch-substring m) "_")
+			    'pre 'post)
+			(rxmatch-after m))))
         (else (values ver #f #f))))
 
 (define (version-compare va vb)

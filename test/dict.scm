@@ -60,5 +60,61 @@
          (cut lset= equal? <> <>))
   )
 
+(let1 bm (make-bimap (make-hash-table 'eqv?) (make-hash-table 'eqv?))
+  (bimap-put! bm 'a 1)
+  (test* "bimap conflict (left)" (test-error)
+         (bimap-put! bm 'a 2 :on-conflict :error))
+  (test* "bimap conflict (right)" (test-error)
+         (bimap-put! bm 'b 1 :on-conflict :error))
+  (test* "bimap conflict (ignore)" 1
+         (begin
+           (bimap-put! bm 'a 3 :on-conflict #f)
+           (bimap-left-get bm 'a))))
+
+(let1 bm (make-bimap (make-hash-table 'eqv?) (make-hash-table 'eqv?)
+                     :on-conflict :error)
+  (bimap-put! bm 'a 1)
+  (test* "bimap conflict default (left)" (test-error)
+         (bimap-put! bm 'a 2))
+  (test* "bimap conflict default (right)" (test-error)
+         (bimap-put! bm 'b 1))
+  (test* "bimap conflict default override (ignore)" 3
+         (begin
+           (bimap-put! bm 'a 3 :on-conflict :supersede)
+           (bimap-left-get bm 'a))))
+
+(test-section "stacked map")
+
+(let* ([m0 (alist->hash-table '((a . 0) (b . 1) (c . 2)) 'eq?)]
+       [m1 (alist->hash-table '((a . 10) (d . 11)) 'eq?)]
+       [sm (make-stacked-map m1 m0)])
+  (test* "stacked map search" '(10 1 2 11 none)
+         (map (cut dict-get sm <> 'none) '(a b c d e)))
+  (test* "stacked map search" (test-error)
+         (dict-get sm 'e))
+  (test* "stacked map exists?" '(#t #t #f)
+         (map (cut dict-exists? sm <>) '(a c e)))
+  (test* "stacked-map put!" '(12 12 2)
+         (begin (dict-put! sm 'c 12)
+                (list (dict-get sm 'c)
+                      (dict-get m1 'c)
+                      (dict-get m0 'c))))
+  (test* "stacked-map fold" '((b . 1) (a . 10) (d . 11) (c . 12))
+         (sort-by (dict-fold sm acons '()) cdr))
+  (test* "stacked-map delete"'(#f #f #f)
+         (begin (dict-delete! sm 'c)
+                (list (dict-get sm 'c #f)
+                      (dict-get m1 'c #f)
+                      (dict-get m0 'c #f))))
+
+  (test* "stacked-map push!"
+         '((d . 11) (a . 100) (b . 101) (c . 102) (e . 103))
+         (begin (stacked-map-push! sm (alist->hash-table '((a . 100)
+                                                           (b . 101)
+                                                           (c . 102)
+                                                           (e . 103))))
+                (sort-by (dict->alist sm) cdr)))
+  )
+
 (test-end)
 

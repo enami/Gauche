@@ -1,7 +1,7 @@
 ;;; ftp.scm - FTP library
 ;;;
 ;;;  Copyright (c) 2005 OOHASHI Daichi, All rights reserved.
-;;;  Copyright (c) 2007-2013  Shiro Kawai  <shiro@acm.org>
+;;;  Copyright (c) 2007-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;  Redistribution and use in source and binary forms, with or without
 ;;;  modification, are permitted provided that the following conditions
@@ -36,11 +36,9 @@
 ;; RFC 2428 FTP Extensions for IPv6 and NATs
 
 (define-module rfc.ftp
-  (use srfi-1)
   (use srfi-13)
   (use srfi-19)
   (use rfc.uri)
-  (use util.list)
   (use gauche.net)
   (use gauche.logger)
   (export <ftp-connection> <ftp-error> call-with-ftp-connection
@@ -283,7 +281,7 @@
     (let* ((asock (make-server-socket (make (class-of
                                              (socket-address (ref conn 'socket)))
                                         :host "localhost")))
-	   (psname (sockaddr-name (socket-address asock))))
+           (psname (sockaddr-name (socket-address asock))))
       (if (ipv4? conn)
         (rxmatch-let (#/(\d+)\.(\d+)\.(\d+)\.(\d+):(\d+)/ psname)
             (#f a b c d p)

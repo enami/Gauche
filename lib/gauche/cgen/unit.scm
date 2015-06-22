@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.cgen.unit - cgen-unit
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -32,11 +32,9 @@
 ;;;
 
 (define-module gauche.cgen.unit
-  (use srfi-1)
   (use srfi-13)
   (use srfi-42)
   (use util.match)
-  (use util.list)
   (use gauche.parameter)
   (use gauche.sequence)
   (export <cgen-unit> cgen-current-unit
@@ -49,7 +47,8 @@
           cgen-extern cgen-decl cgen-body cgen-init
           cgen-include cgen-define
 
-          cgen-safe-name cgen-safe-name-friendly cgen-safe-comment
+          cgen-safe-name cgen-safe-name-friendly
+          cgen-safe-string cgen-safe-comment
 
           ;; semi-private routines
           cgen-emit-static-data)
@@ -307,9 +306,9 @@
 (define-method cgen-emit-decl ((node <cgen-cpp-define>))
   (cpp-define-common node))
 
-(define (cgen-define name . maybe-value)
+(define (cgen-define name :optional (value ""))
   (cgen-add!
-   (make <cgen-cpp-define> :name name :value (get-optional maybe-value ""))))
+   (make <cgen-cpp-define> :name name :value value)))
 
 ;;=============================================================
 ;; Utilities
@@ -335,7 +334,7 @@
   (with-string-io str
     (^[] (let loop ((b (read-byte)))
            (cond [(eof-object? b)]
-                 [(or (<= 48 b 57)
+                 [(or (<= 48 b 58)
                       (<= 65 b 90)
                       (<= 97 b 122))
                   (write-byte b) (loop (read-byte))]
@@ -359,16 +358,26 @@
                [(#\!) (display #\X) (loop (read-char))]
                [(#\<) (display "_LT") (loop (read-char))]
                [(#\>) (display "_GT") (loop (read-char))]
-               [(#\* #\> #\@ #\$ #\% #\^ #\& #\* #\+ #\= #\: #\. #\/ #\~)
+               [(#\* #\> #\@ #\$ #\% #\^ #\& #\* #\+ #\= #\. #\/ #\~)
                 (display #\_)
                 (display (number->string (char->integer c) 16))
                 (loop (read-char))]
                [else (display c) (loop (read-char))]
                ))))))
 
+(define (cgen-safe-string value)
+  (with-string-io value
+    (lambda ()
+      (display "\"")
+      (generator-for-each
+       (^b (if (or (= #x20 b) (= #x21 b) ; #x22 = #\"
+                   (<= #x23 b #x3e)      ; #x3f = #\?  - avoid trigraph trap
+                   (<= #x40 b #x5b)      ; #x5c = #\\
+                   (<= #x5d b #x7e))
+             (write-byte b)
+             (format #t "\\~3,'0o" b))) read-byte)
+      (display "\""))))
+
 ;; Escape  '*/' so that str can be inserted safely within a comment.
 (define (cgen-safe-comment str)
   (regexp-replace-all* (x->string str) #/\/\*/ "/ *" #/\*\// "* /"))
-
-
-

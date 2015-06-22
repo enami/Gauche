@@ -8,6 +8,8 @@ string.scm
 symkey.scm
 hash.scm
 list.scm
+vector.scm
+compare.scm
 treemap.scm
 io.scm
 procedure.scm

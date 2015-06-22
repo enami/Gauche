@@ -1,7 +1,7 @@
 ;;;
 ;;; auxiliary treemap utilities.  to be autoloaded.
 ;;;
-;;;   Copyright (c) 2007-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2007-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -43,10 +43,19 @@
 
 (define make-tree-map
   (case-lambda
-    [() (%make-tree-map compare)]
-    [(cmp) (%make-tree-map cmp)]
+    [() (%make-tree-map default-comparator)]
+    [(cmp)
+     (if (comparator? cmp)
+       (begin
+         (unless (comparator-comparison-procedure? cmp)
+           (error "make-tree-map needs a comparator with comparison \
+                  procedure, but got:" cmp))
+         (%make-tree-map cmp))
+       (%make-tree-map (make-comparator #t #t cmp #f)))]
     [(=? <?)
-     (%make-tree-map (^[x y](cond [(=? x y) 0] [(<? x y) -1] [else 1])))]))
+     (%make-tree-map
+      ($ make-comparator #t =?
+         (^[x y](cond [(=? x y) 0] [(<? x y) -1] [else 1])) #f))]))
 
 (define (tree-map-empty? tm) (zero? (tree-map-num-entries tm)))
 
@@ -86,8 +95,8 @@
 (define (tree-map->alist tm)
   (tree-map-fold-right tm acons '()))
 
-(define (alist->tree-map alist key=? key<?)
-  (rlet1 tm (make-tree-map key=? key<?)
+(define (alist->tree-map alist . args)
+  (rlet1 tm (apply make-tree-map args)
     (dolist (kv alist)
       (tree-map-put! tm (car kv) (cdr kv)))))
 

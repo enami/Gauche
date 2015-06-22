@@ -1,7 +1,7 @@
 /*
  * symbol.h - Public API for Scheme symbols
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -50,7 +50,7 @@ typedef enum {
 } ScmSymbolFlags;
 
 #define SCM_SYMBOL(obj)          ((ScmSymbol*)(obj))
-#define SCM_SYMBOLP(obj)         SCM_XTYPEP(obj, SCM_CLASS_SYMBOL)
+#define SCM_SYMBOLP(obj)         SCM_ISA(obj, SCM_CLASS_SYMBOL)
 #define SCM_SYMBOL_NAME(obj)     (SCM_SYMBOL(obj)->name)
 #define SCM_SYMBOL_INTERNED(obj) \
     (SCM_SYMBOL(obj)->flags&SCM_SYMBOL_FLAG_INTERNED)
@@ -79,6 +79,26 @@ SCM_EXTERN void Scm_WriteSymbolName(ScmString *snam, ScmPort *port,
 /* flags for Scm_WriteSymbolName */
 #define SCM_SYMBOL_WRITER_NOESCAPE_INITIAL  1u
 #define SCM_SYMBOL_WRITER_NOESCAPE_EMPTY    2u
+
+typedef ScmSymbol ScmKeyword;
+
+SCM_CLASS_DECL(Scm_KeywordClass);
+#define SCM_CLASS_KEYWORD       (&Scm_KeywordClass)
+
+#define SCM_KEYWORD(obj)        ((ScmKeyword*)(obj))
+#define SCM_KEYWORDP(obj)       SCM_XTYPEP(obj, SCM_CLASS_KEYWORD)
+#define SCM_KEYWORD_NAME(obj)   (SCM_KEYWORD(obj)->name)
+
+SCM_EXTERN ScmObj Scm_MakeKeyword(ScmString *name);
+SCM_EXTERN ScmObj Scm_GetKeyword(ScmObj key, ScmObj list, ScmObj fallback);
+SCM_EXTERN ScmObj Scm_DeleteKeyword(ScmObj key, ScmObj list);
+SCM_EXTERN ScmObj Scm_DeleteKeywordX(ScmObj key, ScmObj list);
+SCM_EXTERN ScmObj Scm_KeywordToString(ScmKeyword *k);
+
+#define SCM_MAKE_KEYWORD(cstr) \
+    Scm_MakeKeyword(SCM_STRING(SCM_MAKE_STR_IMMUTABLE(cstr)))
+#define SCM_GET_KEYWORD(cstr, list, fallback) \
+    Scm_GetKeyword(SCM_MAKE_KEYWORD(cstr), list, fallback)
 
 #endif /* GAUCHE_SYMBOL_H */
 

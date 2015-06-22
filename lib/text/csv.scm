@@ -1,7 +1,7 @@
 ;;;
 ;;; csv.scm - read and write CSV (actually, xSV) format.
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -35,7 +35,6 @@
   (use srfi-1)
   (use srfi-11)
   (use srfi-13)
-  (use gauche.regexp)
   (export <csv>
           make-csv-reader
           make-csv-writer)
@@ -56,67 +55,71 @@
 
 (define-method initialize ((self <csv>) initargs)
   (next-method)
-  (let ((p (slot-ref self 'port)))
+  (let1 p (slot-ref self 'port)
     (unless (is-a? (slot-ref self 'port) <port>)
       (error "port must be given to instantiate <csv>"))
     (slot-set! self 'ioproc
                (if (input-port? p)
-                   (make-csv-reader (slot-ref self 'separator))
-                   (make-csv-writer (slot-ref self 'separator))))))
+                 (make-csv-reader (slot-ref self 'separator))
+                 (make-csv-writer (slot-ref self 'separator))))))
 
-(define (make-csv-reader separator . args)
-  (let* ((quote-char (get-optional args #\"))
-         (quote-string (string quote-char)))
-    (lambda (port)
-      (define (start line fields)
-        (if (eof-object? line)
-          (reverse! fields)
-          (let ((next (string-trim line #[ ])))
-            (if (string-prefix? quote-string next)
-              (quoted (string-drop next 1) fields '())
-              (noquote next fields)))))
-      (define (noquote line fields)
-        (cond ((string-index line separator)
-               => (lambda (i)
-                    (start (string-drop line (+ i 1))
-                           (cons (string-trim-right (string-take line i))
-                                 fields))))
-              (else (reverse! (cons (string-trim-right line #[ ]) fields)))))
-      (define (quoted line fields partial)
-        (cond ((eof-object? line) (error "unterminated quoted field"))
-              ((string-null? line)
-               (quoted (read-line port) fields (cons "\n" partial)))
-              (else
-               (receive (this next) (string-scan line quote-char 'both)
-                 (if this
-                   (if (string-prefix? quote-string next)
-                     (quoted (string-drop next 1) fields
-                             (list* quote-string this partial))
-                     (let ((next-next (string-scan next separator 'after))
-                           (f (string-concatenate-reverse (cons this partial))))
-                       (if next-next
-                         (start next-next (cons f fields))
-                         (reverse!(cons f fields)))))
-                   (quoted (read-line port) fields
-                           (list*  "\n" line partial)))))))
-      (let ((line (read-line port)))
-        (if (eof-object? line)
-          line
-          (start line '())))
-      )))
+;; API
+(define (make-csv-reader separator :optional (quote-char #\"))
+  (^[:optional (port (current-input-port))]
+    (csv-reader separator quote-char port)))
+
+(define (csv-reader sep quo port)
+  (define (eor? ch) (or (eqv? ch #\newline) (eof-object? ch)))
+
+  (define (start fields)
+    (let1 ch (read-char port)
+      (cond [(eor? ch) (reverse! (cons "" fields))]
+            [(eqv? ch sep) (start (cons "" fields))]
+            [(eqv? ch quo) (quoted fields)]
+            [(char-whitespace? ch) (start fields)]
+            [else (unquoted (list ch) fields)])))
+
+  (define (unquoted chs fields)
+    (let loop ([ch (read-char port)] [last chs] [chs chs])
+      (cond [(eor? ch) (reverse! (cons (finish last) fields))]
+            [(eqv? ch sep) (start (cons (finish last) fields))]
+            [(char-whitespace? ch) (loop (read-char port) last (cons ch chs))]
+            [else (let1 chs (cons ch chs)
+                    (loop (read-char port) chs chs))])))
+
+  (define (finish rchrs) (list->string (reverse! rchrs)))
+
+  (define (quoted fields)
+    (let loop ([ch (read-char port)] [chs '()])
+      (cond [(eof-object? ch) (error "unterminated quoted field")]
+            [(eqv? ch quo)
+             (if (eqv? (peek-char port) quo)
+               (begin (read-char port) (loop (read-char port) (cons quo chs)))
+               (quoted-tail (cons (finish chs) fields)))]
+            [else (loop (read-char port) (cons ch chs))])))
+
+  (define (quoted-tail fields)
+    (let loop ([ch (read-char port)])
+      (cond [(eor? ch) (reverse! fields)]
+            [(eqv? ch sep) (start fields)]
+            [else (loop (read-char port))])))
+
+  (if (eof-object? (peek-char port))
+    (eof-object)
+    (start '())))
 
 (define (make-csv-writer separator :optional (newline "\n") (quote-char #\"))
-  (let* ((quote-string (string quote-char))
-         (quote-escape (string-append quote-string quote-string))
-         (quote-rx (string->regexp (regexp-quote quote-string)))
-         (separator-chars (if (string? separator)
+  (let* ([quote-string (string quote-char)]
+         [quote-escape (string-append quote-string quote-string)]
+         [quote-rx (string->regexp (regexp-quote quote-string))]
+         [separator-chars (if (string? separator)
                             (string->list separator)
-                            (list separator)))
-         (special-chars
+                            (list separator))]
+         [special-chars
           (apply char-set quote-char #\space #\newline #\return
-                 separator-chars)))
+                 separator-chars)])
 
-    (lambda (port fields)
+    (^[port fields]
       (define (write-a-field field)
         (if (string-index field special-chars)
           (begin (display quote-char port)
@@ -126,9 +129,8 @@
 
       (unless (null? fields)
         (write-a-field (car fields))
-        (for-each (lambda (field)
-                    (display separator port)
-                    (write-a-field field))
-                  (cdr fields)))
+        (dolist [field (cdr fields)]
+          (display separator port)
+          (write-a-field field)))
       (display newline port))))
 

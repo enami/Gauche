@@ -2,7 +2,7 @@
 ;;; combinations.scm - combinations and that sort of stuff.
 ;;;
 ;;;  Copyright(C) 2003 by Alex Shinn (foof@synthcode.com)
-;;;  Copyright (c) 2003-2013  Shiro Kawai  <shiro@acm.org>
+;;;  Copyright (c) 2003-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;  Permission to use, copy, modify, distribute this software and
 ;;;  accompanying documentation for any purpose is hereby granted,
@@ -205,7 +205,7 @@
       (list '())
       (let ((x (car set))
             (rest (power-set-binary (cdr set))))
-        (append rest (map (lambda (s) (cons x s)) rest)))))
+        (append rest (map (^s (cons x s)) rest)))))
 
 ;; use combinations for nice ordering
 (define (power-set set)
@@ -281,10 +281,10 @@
   (if (null? lol)
       (list '())
       (let ((l (car lol))
-            (rest (cartesian-product (cdr lol))))
+            (rest (cartesian-product-right (cdr lol))))
         (append-map!
          (lambda (sub-prod)
-           (map (lambda (x) (cons x sub-prod)) l))
+           (map (^x (cons x sub-prod)) l))
          rest))))
 
 (define (cartesian-product-right-for-each proc lol)
@@ -292,7 +292,7 @@
       (proc '())
       (cartesian-product-right-for-each
        (lambda (sub-prod)
-         (for-each (lambda (x) (proc (cons x sub-prod))) (car lol)))
+         (for-each (^x (proc (cons x sub-prod))) (car lol)))
        (cdr lol))))
 
 

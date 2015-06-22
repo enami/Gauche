@@ -239,16 +239,24 @@ Prohibits the compiler from inlining global procedures.
 Prohibits the compiler from inlining local procedures.
 @item no-inline-constants
 Prohibits the compiler from inlining constants.
+@item no-post-inline-pass
+Prohibits the compiler from running post-inline optimization pass.
+@item no-lambda-lifting-pass
+Prohibits the compiler from running lambda-lifting pass.
 @item load-verbose
 Reports whenever a file is loaded.
-@c Uncomment this after documenting 'include' form.
-@c @item include-verbose
-@c Reports whenever a file is included.
+Useful to check precisely which files are loaded in what order.
+@item include-verbose
+Reports whenever a file is included.
+Useful to check precisely which files are included in what order.
+@item warn-legacy-syntax
+Warns if the reader sees leagacy hex-escape syntax in string literals.
+@xref{Reader lexical mode}.
 @item no-source-info
 Don't keep source information for debugging.  Consumes less memory.
 @item case-fold
-Ignore case for symbols as specified in R5RS.
-(It is distinguished by default).  @xref{Case-sensitivity}.
+Ignore case for symbols.
+@xref{Case-sensitivity}.
 @item test
 Adds "@code{../src}" and "@code{../lib}" to the load path before loading
 initialization file.  This is useful when you want to test the
@@ -267,16 +275,24 @@ no-inline-locals および no-inline-constants を同時に指定したのと等
 局所(local)関数のインライン展開を展開を行ないません。
 @item no-inline-constants
 定数のインライン展開を行ないません。
+@item no-post-inline-pass
+インライン展開後に再び最適化パスを走らせるのを抑止します。
+@item no-lambda-lifting-pass
+lambda lifting最適化パスを抑止します。
 @item no-source-info
 デバッグのためのソースファイル情報を保持しません。メモリの使用量は小さくなります。
 @item load-verbose
 ファイルがロードされる時にそれを報告します。
-@c Uncomment this after documenting 'include' form.
-@c @item include-verbose
-@c ファイルがincludeされる時にそれを報告します。
+正確にどのファイルがどういう順序でロードされているかを調べるのに便利です。
+@item include-verbose
+ファイルがincludeされる時にそれを報告します。
+正確にどのファイルがどういう順序でincludeされているかを調べるのに便利です。
+@item warn-legacy-syntax
+文字列リテラル中に古い形式の16進数エスケープ形式があったら警告します。
+@ref{Reader lexical mode} を参照して下さい。
 @item case-fold
-R5RSに示される通り、シンボルの大文字小文字を区別しません。
-(デフォルトではこれらは区別されます)。 @ref{Case-sensitivity} を参照して下さい。
+シンボルの大文字小文字を区別しません。
+@ref{Case-sensitivity} を参照して下さい。
 @item test
 "@code{../src}" と "@code{../lib}" を、初期化ファイルを読む前に
 ロードパスに加えます。これは、作成された@code{gosh}をインストールせずに
@@ -317,6 +333,71 @@ Useful to tune start-up time of the scripts.
 See @ref{Using profiler} for the details of the profiler.
 @c JP
 詳しくは@ref{Using profiler}を参照して下さい。
+@c COMMON
+@end deftp
+
+@deftp {Command Option} -r standard-revision
+@c EN
+Start @code{gosh} with an environment of the specified revision
+of Scheme standard.  Currently only 7 is supported as
+@var{standar-revision}.
+
+By default, @code{gosh} starts with @code{user} module, which inherits
+@code{gauche} module.  That means you can use whole Gauche core
+procedures by default without explicitly declaring it.
+
+Proper R7RS code always begins with either @code{define-library}
+or R7RS-style @code{import} form, and Gauche recognizes it and
+automatically switch to R7RS environments so that R7RS scripts and libraries
+can be executed by Gauche without special options.
+However, users who are learning R7RS Scheme may be confused
+when the initial environment doesn't look like R7RS.
+
+By giving @code{-r7} option, @code{gosh} starts with @code{r7rs.user} module
+that extends the @code{r7rs} module, which defines two R7RS forms,
+@code{import} and @code{define-library}.
+
+If you invoke @code{gosh} into an interactive REPL mode with @code{-r7} option,
+all standard R7RS-small libraries (except @code{(scheme r5rs)} are already
+imported for your convenience.
+
+@xref{Library modules - R7RS integration}, for the details on
+how Gauche supports R7RS.
+
+(Note: The @code{-r7} option doesn't change reader lexiacl mode
+(@xref{Reader lexical mode}) to @code{strict-r7}.  That's because
+using @code{strict-r7} mode by default prevents many Gauche code
+from being loaded.)
+@c JP
+@code{gosh}を、指定されたリビジョンのScheme標準環境で起動します。
+現在のバージョンでは@var{standard-revision}として7のみがサポートされます。
+
+デフォルトでは、@code{gosh}起動時のモジュールは@code{user}モジュールで、
+これは@code{gauche}モジュールを継承しています。すなわち、特に何も指定しないでも
+Gaucheのコア関数は全て使えるようになっています。
+
+正しいR7RSプログラムは常に@code{define-library}フォームか
+R7RS式の@code{import}フォームで始まり、Gaucheはそれらを見つけると
+自動的にR7RS環境へと切り替えるので、特になにもしなくても
+R7RSスクリプトやライブラリを使うことはできます。
+しかし、R7RS Schemeを勉強中のユーザにとっては、最初に入る環境が
+R7RSでないと混乱してしまうかもしれません。
+
+@code{-r7}オプションが与えられると、@code{gosh}は起動時のモジュールを
+@code{r7rs.user}モジュールにします。これは@code{r7rs}モジュールを継承した
+もので、@code{import}と@code{define-library}だけが定義されています。
+
+@code{-r7}をつけた@code{gosh}を対話REPLとして起動した場合は、簡便のために
+@code{(scheme r5rs)}を除く全てのR7RS-smallライブラリが
+importされた状態になっています。
+
+GaucheがR7RSをどのようにサポートしているかの詳細については
+@ref{Library modules - R7RS integration}を参照してください。
+
+(註: @code{-r7}オプションは、リーダ字句モードを@code{strict-r7}に
+替えることはしません。@code{strict-r7}モードをデフォルトにすると、
+多くのGaucheコードをロードすることができなくなるからです。リーダ字句モードについては
+@ref{Reader lexical mode}を参照してください。)
 @c COMMON
 @end deftp
 
@@ -362,11 +443,17 @@ The following environment variables are recognized:
 You can specify additional load paths by this environment
 variable, delimiting the paths by '@code{:}'.
 The paths are appended before the system default load paths.
+
+@xref{Loading Scheme file}, for the details of how Gauche finds
+files to load.
 @c JP
 この環境変数によって、追加するロードパスを指定できます。
 パスは '@code{:}' で区切ります。
 この変数によって指定されたパスはシステムのデフォルトのロードパスの前に
 連結されます。
+
+GaucheがロードするSchemeファイルを見つける方法について詳しくは
+@ref{Loading Scheme file}を参照してください。
 @c COMMON
 @end deftp
 
@@ -375,13 +462,78 @@ The paths are appended before the system default load paths.
 You can specify additional load paths for dynamically loaded
 objects by this environment variable, delimiting the paths by '@code{:}'.
 The paths are appended before the system default load paths.
+
+@xref{Loading dynamic library}, for the details of how Gauche
+finds dynamically loadable objects.
 @c JP
 この変数によって、動的にロードするオブジェクト用の追加ロードパスを
 指定できます。パスは '@code{:}' で区切ります。
 この変数によって指定されたパスはシステムのデフォルトのロードパスの前に
 連結されます。
+
+Gaucheが動的にロードするオブジェクトファイルを探す方法については
+@ref{Loading dynamic library}を参照してください。
 @c COMMON
 @end deftp
+
+@deftp {Environment variable} GAUCHE_AVAILABLE_PROCESSORS
+@c EN
+You can get the number of system's processors by
+@code{sys-available-processors} (@xref{Environment Inquiry});
+libraries/programs may use this info to optimize number of
+parallel threads.  But you might change that, for testing
+and benchmarking---e.g. a program automatically uses
+8 threads if there are 8 cores, but you might want to run it
+with 1, 2, 4 threads as well to see the effect of parallelization.
+This environment variable overrides
+the return value of @code{sys-available-processors}.
+@c JP
+@code{sys-available-processors} でシステムのプロセッサ数を
+取得できます(@ref{Environment Inquiry}参照)。
+ライブラリやプログラムの中には、その数に基づいて並行に走るスレッド数を
+調整するものがあります。けれども、テストやベンチマークでその数を
+変えたいと思うことがあるかもしれません。例えば、8コア上では自動的に
+8スレッド使うプログラムがあったとして、並列化の効果を見るためにその
+プログラムを1,2,4スレッドで走らせてベンチマークを取る、といった場合です。
+この環境変数は、@code{sys-available-processors}が返す値を上書きします。
+@c COMMON
+@end deftp
+
+@deftp {Environment variable} GAUCHE_KEYWORD_DISJOINT
+@deftpx {Environment variable} GAUCHE_KEYWORD_IS_SYMBOL
+@c EN
+These two environment variables affect whether keywords are treated
+as symbols or not.  @xref{Keywords}, for the details.
+@c JP
+この二つの環境変数は、キーワードがシンボルとして扱われるかどうかに影響します。
+詳しくは@ref{Keywords}を参照してください。
+@c COMMON
+@end deftp
+
+@deftp {Environment variable} TMP
+@deftpx {Environment variable} TMPDIR
+@deftpx {Environment variable} TEMP
+@deftpx {Environment variable} USERPROFILE
+@c EN
+These may affect the return value of @code{sys-tmpdir}.
+Different environment variables may be used on different platforms.
+@xref{Pathnames}, for the details.
+@c JP
+これらは@code{sys-tmpdir}の返り値に影響を与えます。プラットフォームによって
+参照される環境変数は異なります。@ref{Pathnames}を参照してください。
+@c COMMON
+@end deftp
+
+@deftp {Environment variable} GAUCHE_SUPPRESS_WARNING
+@c EN
+Suppress system warnings (@code{WARNING: ...}).  Not generally recommended;
+use only if you absolutely need to.
+@c JP
+システムの警告(@code{WARNING: ...})を抑止します。気軽に使うべきではありません。
+どうしても必要な場合のみ使ってください。
+@c COMMON
+@end deftp
+
 
 @c EN
 @subheading Windows-specific executable
@@ -417,13 +569,13 @@ Windowsネイティブ環境(mingw)では、インタプリタとしてふたつ
 
 @c EN
 The main purpose of @code{gosh-noconsole.exe} is for Windows
-scripting.   If a Scheme script is associated to @code{gosh.exe}
+scripting.   If a Scheme script were associated to @code{gosh.exe}
 and invoked from Explorer, it would always open a new
-console window.
-The console would be of little use, since
+console window.  However,
+this console would be of little use, since
 it would dissapear once the script exits, and the user wouldn't
 be likely to have enough time to look at it.
-If you associate Scheme scripts to @code{gosh-noconsole.exe},
+If you associate Scheme scripts to @code{gosh-noconsole.exe} instead,
 you can avoid this annoying console from popping up.
 @c JP
 @code{gosh-noconsole.exe}の目的は、Windows上でのスクリプティングです。
@@ -479,15 +631,25 @@ You may put settings there that would help interactive debugging.
 (As of Gauche release 0.7.3,
 @file{.gaucherc} is no longer loaded when @code{gosh} is run
 in script mode.)
+
+Note that @file{.gaucherc} is always loaded in the @code{user} module,
+even if @code{gosh} is invoked with @code{-r7} option.  The file
+itself is a Gauche-specific feature, so you don't need to consider
+portability in it.
 @c JP
 インタラクティブセッションでは、@code{gosh}は
 @code{gauche.interactive}モジュールをロードします
 (@ref{Interactive session}参照)。
 このモジュールはまた、ユーザーのホームディレクトリに@file{.gaucherc}という
-ファイルがあればをれをロードします。
+ファイルがあればそれをロードします。
 インタラクティブデバッグに便利な設定をそこに書いておくことができます。
 (Gauche release 0.7.3から、@file{.gaucherc}はgoshがスクリプトモードで
 起動された時は読まれなくなりました。)
+
+@code{.gaucherc}は常に@code{user}モジュールへとロードされます
+(@code{gosh}が@code{-r7}オプションつきで起動されていてもそうです)。
+@code{.gaucherc}を自動で読み込む、という機能自体がGauche特有の機能ですから、
+そこでポータビリティを考慮する必要はないわけです。
 @c COMMON
 
 @c EN
@@ -909,16 +1071,20 @@ Gaucheにはまだデバッグをサポートする機能があまり実装さ�
 
 @c EN
 For now, the author uses the classic 'debug print stub' technique
-when necessary.  A special reader syntax @code{#?=@var{expr}} is
-defined, which is read as @code{(debug-print @var{expr})}.
-The macro @code{debug-print} evaluates and returns the result(s),
-printing messages before and after evaluation of @var{expr}.
+when necessary.  Gauche's reader supports special syntaxes
+beginning with @code{#?}, to print the intermediate value.
 @c JP
 今のところ、作者は必要な時は古典的な「プリントスタブ」方式を使っています。
-そのためのリーダーマクロ @code{#?=@var{expr}} が定義されています。
-これは @code{(debug-print @var{expr})} のように読まれ、
-マクロ @code{debug-print} は@var{expr}を評価してその値を返しますが、
-評価前と評価後にメッセージを出力します。
+Gaucheのリーダには、中間の結果を出力するために、
+@code{#?}で始まるいくつかの構文が用意されています。
+@c COMMON
+
+@c EN
+The syntax @code{#?=@var{expr}} shows @var{expr} itself before
+evaluating it, and prints its result(s) after evaluation.  
+@c JP
+構文@code{#?=@var{expr}}は、@var{expr}を評価する前にまずその式自体を
+表示し、評価後にその結果(複数の場合もあります)を表示します。
 @c COMMON
 
 @example
@@ -935,17 +1101,34 @@ foo
 a
 b
 c
+@end example
+
+@c EN
+The syntax @code{#?,(@var{proc} @var{arg} @dots{})} is specifically
+for procedure call; it prints the value of arguments right before
+calling @var{proc}, and prints the result(s) of call afterwards.
+@c JP
+構文@code{#?,(@var{proc} @var{arg} @dots{})}は特に手続き呼び出しのための
+ものです。@var{proc}を呼ぶ直前に引数の値を表示し、@var{proc}から返ってきたら
+戻り値(複数の場合もあります)を表示します。
+@c COMMON
+
+@example
 gosh> (define (fact n)
         (if (zero? n)
             1
-            (* n #?=(fact (- n 1)))))
+            (* n #?,(fact (- n 1)))))
 fact
-gosh> (fact 5)
-#?="(stdin)":6:(fact (- n 1))
-#?="(stdin)":6:(fact (- n 1))
-#?="(stdin)":6:(fact (- n 1))
-#?="(stdin)":6:(fact (- n 1))
-#?="(stdin)":6:(fact (- n 1))
+#?,"(standard input)":4:calling `fact' with args:
+#?,> 4
+#?,"(standard input)":4:calling `fact' with args:
+#?,> 3
+#?,"(standard input)":4:calling `fact' with args:
+#?,> 2
+#?,"(standard input)":4:calling `fact' with args:
+#?,> 1
+#?,"(standard input)":4:calling `fact' with args:
+#?,> 0
 #?-    1
 #?-    1
 #?-    2
@@ -955,11 +1138,24 @@ gosh> (fact 5)
 @end example
 
 @c EN
-You can also use trace/untrace macros in Gauche, written by Shigenobu Kimura:
-@url{http://homepage.mac.com/skimu/ggc/}.
+Internally, the syntax @code{#?=@var{x}} and @code{#?,@var{x}} are read
+as @code{(debug-print @var{x})} and @code{(debuf-funcall @var{x})},
+respectively, and the macros @code{debug-print} and @code{debug-funcall}
+handles the actual printing.  @xref{Debugging aid}, for more details.
+
+The reasons of special syntax are: (1) It's easy to insert the
+debug stub, for you don't need to enclose the target expression by
+extra parenthesis, and
+(2) It's easy to find and remove those stabs within the editor.
 @c JP
-また、木村栄伸さんがGauche用のtrace/untraceマクロを書いてくれました：
-@url{http://homepage.mac.com/skimu/ggc/}.
+内部的には、構文@code{#?=@var{x}}と@code{#?,@var{x}}はそれぞれ単に
+@code{(debug-print @var{x})}および@code{(debuf-funcall @var{x})}と読まれ、
+実際の表示についてはマクロ@code{debug-print}と@code{debug-funcall}が
+処理します。詳しくは@ref{Debugging aid}を参照してください。
+
+特別な構文を用意した理由は、(1)目的の式にデバッグスタブを付加するのに、
+式全体を余分な括弧でくくらなくて良いのですぐできる
+(2)デバッグスタブをエディタで探したり取り除いたりするのが極めて簡単、というものです。
 @c COMMON
 
 @c ----------------------------------------------------------------------
@@ -1089,11 +1285,11 @@ GaucheがIPv6をサポートするようにコンパイルされている場合�
 @c EN
 Either one of these feature identifiers is defined, according to the
 compile-time option of Gauche's internal character encoding.
-@xref{Multibyte Strings}, for the details of the internal character encoding.
+@xref{Multibyte strings}, for the details of the internal character encoding.
 @c JP
 これらの機能識別子のうちのどれかひとつが、Gaucheの内部文字エンコーディングに応じて
 定義されます。内部エンコーディングについて詳しくは
-@ref{Multibyte Strings}を参照してください。
+@ref{Multibyte strings}を参照してください。
 @c COMMON
 @end table
 
@@ -1427,7 +1623,7 @@ and only do tricks on the innermost loop.
 every call to I/O primitives of Gauche locks the port.
 This overhead may be visible if the application does a lot of I/O
 with smaller units (e.g. every bytes).   The primitives that deals
-with larger unit, such as @code{read} and @code{read-block}, are less
+with larger unit, such as @code{read} and @code{read-uvector}, are less
 problematic, since usually they just lock the port once per call and do
 all the low-level I/O without the lock overhead.
 (Note: this doesn't mean those primitives @emph{guarantee}
@@ -1443,7 +1639,7 @@ Gauche のすべての入出力基本関数はポートをロックします。
 アプリケーションでは無視できないでしょう。
 入出力基本関数は通常呼びだし毎にポートをロックし、そこからの
 下位レベルの入出力はロックのオーバーヘッドの影響を受けずに
-行なわれます。ですから @code{read} や@code{raed-block}
+行なわれます。ですから @code{read} や@code{read-uvector}
 などのより大きな単位で入出力を行なう基本関数では問題と
 なることが少なくなります。
 (注意：これらの基本関数が常にポートをロックしつづけることを

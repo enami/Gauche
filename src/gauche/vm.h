@@ -1,7 +1,7 @@
 /*
  * vm.h - Virtual machine
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -109,6 +109,7 @@ typedef struct ScmEnvFrameRec {
  *   +--------+
  *   |  base  |
  *   |   pc   |
+ *   |  cpc   |
  *   | size=N |
  *   |  env   |
  *   |..prev..|<--- ScmContFrame* cont
@@ -127,6 +128,7 @@ typedef struct ScmContFrameRec {
     struct ScmContFrameRec *prev; /* previous frame */
     ScmEnvFrame *env;             /* saved environment */
     int size;                     /* size of argument frame */
+    SCM_PCTYPE cpc;               /* current PC (for debugging info) */
     SCM_PCTYPE pc;                /* next PC */
     ScmCompiledCode *base;        /* base register value */
 } ScmContFrame;
@@ -176,7 +178,7 @@ SCM_EXTERN ScmObj Scm_MakeSyntacticClosure(ScmObj env,
 
 typedef struct ScmIdentifierRec {
     SCM_HEADER;
-    ScmSymbol *name;
+    ScmObj name;                /* symbol or identifier */
     ScmModule *module;
     ScmObj env;
 } ScmIdentifier;
@@ -187,12 +189,16 @@ SCM_CLASS_DECL(Scm_IdentifierClass);
 #define SCM_IDENTIFIER(obj)     ((ScmIdentifier*)(obj))
 #define SCM_IDENTIFIERP(obj)    SCM_XTYPEP(obj, SCM_CLASS_IDENTIFIER)
 
-SCM_EXTERN ScmObj Scm_MakeIdentifier(ScmSymbol *name, ScmModule *mod,
+SCM_EXTERN ScmObj Scm_MakeIdentifier(ScmObj name, ScmModule *mod,
                                      ScmObj env);
 SCM_EXTERN ScmObj Scm_CopyIdentifier(ScmIdentifier *id);
 SCM_EXTERN int    Scm_IdentifierBindingEqv(ScmIdentifier *id, ScmSymbol *sym,
-					   ScmObj env);
+                                           ScmObj env);
 SCM_EXTERN int    Scm_FreeVariableEqv(ScmObj var, ScmObj sym, ScmObj env);
+
+SCM_EXTERN ScmIdentifier *Scm_OutermostIdentifier(ScmIdentifier *id);
+SCM_EXTERN ScmSymbol     *Scm_UnwrapIdentifier(ScmIdentifier *id);
+SCM_EXTERN ScmGloc       *Scm_IdentifierGlobalBinding(ScmIdentifier *id);
 
 /*
  * Escape handling
@@ -493,8 +499,14 @@ struct ScmVMRec {
                                    longjmp(). */
     void *escapeData[2];        /* ditto. */
 
-    /* Custom debugger */
-    ScmObj defaultEscapeHandler;
+    /* Custom debugger or error reporter */
+    ScmObj customErrorReporter; /* If set, Scm_ReportError (report-error) calls
+                                   this procedure with an exception object.
+                                   The default behavior is to show the error
+                                   type, message, and the stack trace.
+                                   Alter this only if you want to customize
+                                   it per thread.
+                                 */
 
     /* Program information */
     ScmObj dummy0;              /* for the ABI compatibility.  remove on 1.0. */
@@ -521,7 +533,15 @@ SCM_EXTERN int    Scm_AttachVM(ScmVM *vm);
 SCM_EXTERN void   Scm_DetachVM(ScmVM *vm);
 SCM_EXTERN void   Scm_VMDump(ScmVM *vm);
 SCM_EXTERN void   Scm_VMDefaultExceptionHandler(ScmObj exc);
+/* TRANSIENT: Scm_VMThrowException2 is to keep ABI compatibility.  Will be
+   gone in 1.0 */
+#if    GAUCHE_API_0_95
+SCM_EXTERN ScmObj Scm_VMThrowException(ScmVM *vm, ScmObj exc, u_long flags);
+#define Scm_VMThrowException2(v, e, f)  Scm_VMThrowException(v, e, f)
+#else  /*!GAUCHE_API_0_95*/
 SCM_EXTERN ScmObj Scm_VMThrowException(ScmVM *vm, ScmObj exc);
+SCM_EXTERN ScmObj Scm_VMThrowException2(ScmVM *vm, ScmObj exc, u_long flags);
+#endif /*!GAUCHE_API_0_95*/
 SCM_EXTERN ScmObj Scm_VMGetSourceInfo(ScmCompiledCode *code, SCM_PCTYPE pc);
 SCM_EXTERN ScmObj Scm_VMGetBindInfo(ScmCompiledCode *code, SCM_PCTYPE pc);
 SCM_EXTERN void   Scm_VMSetResult(ScmObj obj);
@@ -654,8 +674,8 @@ enum {
 typedef ScmObj ScmCContinuationProc(ScmObj result, void **data);
 
 SCM_EXTERN void Scm_VMPushCC(ScmCContinuationProc *func,
-			     void **data,
-			     int datasize);
+                             void **data,
+                             int datasize);
 
 #define SCM_CCONT_DATA_SIZE 6   /* Maximum datasize for VMPushCC */
 

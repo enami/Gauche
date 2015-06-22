@@ -1,7 +1,7 @@
 /*
  * weak.c - weak vectors and tables
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -49,24 +49,25 @@
 
 static void weakvector_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
 {
-    ScmSmallInt i;
     ScmWeakVector *v = SCM_WEAK_VECTOR(obj);
     ScmObj *ptrs = (ScmObj*)v->pointers;
     Scm_Printf(port, "#,(<weak-vector> %d", v->size);
-    for (i=0; i<v->size; i++) {
+    for (ScmSmallInt i=0; i<v->size; i++) {
         SCM_PUTC(' ', port);
-        if (ptrs[i]) Scm_Write(ptrs[i], SCM_OBJ(port), ctx->mode);
-        else         Scm_Write(SCM_FALSE, SCM_OBJ(port), ctx->mode);
+        if (ptrs[i]) {
+            Scm_Write(ptrs[i], SCM_OBJ(port), Scm_WriteContextMode(ctx));
+        } else {
+            Scm_Write(SCM_FALSE, SCM_OBJ(port), Scm_WriteContextMode(ctx));
+        }
     }
     SCM_PUTC(')', port);
 }
 
 static void weakvector_finalize(ScmObj obj, void *data)
 {
-    ScmSmallInt i;
     ScmWeakVector *v = SCM_WEAK_VECTOR(obj);
     ScmObj *p = (ScmObj*)v->pointers;
-    for (i=0; i<v->size; i++) {
+    for (ScmSmallInt i=0; i<v->size; i++) {
         if (p[i]==NULL || SCM_PTRP(p[i])) {
             GC_unregister_disappearing_link((void **)&p[i]);
         }
@@ -80,16 +81,14 @@ SCM_DEFINE_BUILTIN_CLASS(Scm_WeakVectorClass, weakvector_print,
 
 ScmObj Scm_MakeWeakVector(ScmSmallInt size)
 {
-    ScmSmallInt i;
-    ScmObj *p;
     ScmWeakVector *v = SCM_NEW(ScmWeakVector);
 
     SCM_SET_CLASS(v, SCM_CLASS_WEAK_VECTOR);
     v->size = size;
     /* Allocate pointer array by ATOMIC, so that GC won't trace the
        pointers in it.  */
-    p = SCM_NEW_ATOMIC2(ScmObj*, size * sizeof(ScmObj));
-    for (i=0; i<size; i++) p[i] = SCM_FALSE;
+    ScmObj *p = SCM_NEW_ATOMIC2(ScmObj*, size * sizeof(ScmObj));
+    for (ScmSmallInt i=0; i<size; i++) p[i] = SCM_FALSE;
     v->pointers = (void*)p;
     Scm_RegisterFinalizer(SCM_OBJ(v), weakvector_finalize, NULL);
     return SCM_OBJ(v);
@@ -97,7 +96,6 @@ ScmObj Scm_MakeWeakVector(ScmSmallInt size)
 
 ScmObj Scm_WeakVectorRef(ScmWeakVector *v, ScmSmallInt index, ScmObj fallback)
 {
-    ScmObj *p;
     if (index < 0 || index >= v->size) {
         if (SCM_UNBOUNDP(fallback)) {
             Scm_Error("argument out of range: %d", index);
@@ -105,7 +103,7 @@ ScmObj Scm_WeakVectorRef(ScmWeakVector *v, ScmSmallInt index, ScmObj fallback)
             return fallback;
         }
     }
-    p = (ScmObj*)v->pointers;
+    ScmObj *p = (ScmObj*)v->pointers;
     if (p[index] == NULL) {
         if (SCM_UNBOUNDP(fallback)) return SCM_FALSE;
         else return fallback;
@@ -116,11 +114,10 @@ ScmObj Scm_WeakVectorRef(ScmWeakVector *v, ScmSmallInt index, ScmObj fallback)
 
 ScmObj Scm_WeakVectorSet(ScmWeakVector *v, ScmSmallInt index, ScmObj value)
 {
-    ScmObj *p;
     if (index < 0 || index >= v->size) {
         Scm_Error("argument out of range: %d", index);
     }
-    p = (ScmObj*)v->pointers;
+    ScmObj *p = (ScmObj*)v->pointers;
 
     /* unregister the location if it was registered before */
     if (p[index] == NULL || SCM_PTRP(p[index])) {
@@ -155,7 +152,7 @@ struct ScmWeakBoxRec {
 
 static void wbox_setvalue(ScmWeakBox *wbox, void *value)
 {
-    void * base = GC_base((void *)value);
+    void *base = GC_base((void *)value);
     wbox->ptr = value;
     if (base != NULL) {
         GC_general_register_disappearing_link((void *)&wbox->ptr, base);
@@ -340,7 +337,6 @@ ScmObj Scm_WeakHashTableRef(ScmWeakHashTable *ht, ScmObj key, ScmObj fallback)
 ScmObj Scm_WeakHashTableSet(ScmWeakHashTable *ht, ScmObj key, ScmObj value,
                             int flags)
 {
-    ScmDictEntry *e;
     intptr_t proxy;
 
     if (ht->weakness&SCM_WEAK_KEY) {
@@ -349,8 +345,9 @@ ScmObj Scm_WeakHashTableSet(ScmWeakHashTable *ht, ScmObj key, ScmObj value,
         proxy = (intptr_t)key;
     }
 
-    e = Scm_HashCoreSearch(SCM_WEAK_HASH_TABLE_CORE(ht), proxy,
-                           (flags&SCM_DICT_NO_CREATE)?SCM_DICT_GET:SCM_DICT_CREATE);
+    ScmDictEntry *e = Scm_HashCoreSearch(
+        SCM_WEAK_HASH_TABLE_CORE(ht), proxy,
+        (flags&SCM_DICT_NO_CREATE)?SCM_DICT_GET:SCM_DICT_CREATE);
     if (!e) return SCM_UNBOUND;
     if (ht->weakness&SCM_WEAK_VALUE) {
         if (flags&SCM_DICT_NO_OVERWRITE) {
@@ -449,4 +446,3 @@ ScmObj Scm_WeakHashTableValues(ScmWeakHashTable *table)
     }
     return h;
 }
-

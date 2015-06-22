@@ -1,7 +1,7 @@
 ;;;
 ;;; common-macros.scm - common macros
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -180,6 +180,11 @@
     [(if-let1 var exp then . else)
      (let ((var exp)) (if var then . else))]))
 
+(define-syntax and-let1                 ;returns #f if test evaluates to #f
+  (syntax-rules ()
+    [(and-let1 var test exp exp2 ...)
+     (let ((var test)) (and var (begin exp exp2 ...)))]))
+
 (define-syntax let/cc                   ;as in PLT
   (syntax-rules ()
     [(let/cc var . body)
@@ -332,26 +337,40 @@
 (define-syntax dotimes
   (syntax-rules ()
     [(_ (var n res) . body)
-     (do ((limit n)
-          (var 0 (+ var 1)))
-         ((>= var limit) res)
+     (do ([limit n]
+          [var 0 (+ var 1)])
+         [(>= var limit) res]
        . body)]
     [(_ (var n) . body)
-     (do ((limit n)
-          (var 0 (+ var 1)))
-         ((>= var limit))
+     (do ([limit n]
+          [var 0 (+ var 1)])
+         [(>= var limit) (undefined)]
        . body)]
+    [(_ (n) . body)
+     (let1 i n
+       (cond [(<= i 0) (undefined)]
+             [(infinite? i)
+              (do () (#f) . body)] ;avoid unnecessary flonum calculation
+             [else
+              (do ([i i (- i 1)])
+                  [(<= i 0) (undefined)]
+                . body)]))]
     [(_ . other)
      (syntax-error "malformed dotimes" (dotimes . other))]))
 
 (define-syntax dolist
   (syntax-rules ()
     [(_ (var lis res) . body)
-     (begin (for-each (lambda (var) . body) lis)
-            (let ((var '())) res))      ;bound var for CL compatibility
-     ]
+     (do ([p lis (cdr p)])
+         [(null? p)
+          (let1 var '() res)]      ;bound var for CL compatibility
+       (let1 var (car p) . body))]
     [(_ (var lis) . body)
-     (begin (for-each (lambda (var) . body) lis) '())]
+     (do ([p lis (cdr p)])
+         [(null? p) '()]
+       (let1 var (car p) . body))]
+    [(_ (lis) . body)
+     (dolist (tmp lis) . body)]
     [(_ . other)
      (syntax-error "malformed dolist" (dolist . other))]))
 
@@ -446,14 +465,38 @@
 
 ;;;-------------------------------------------------------------
 ;;; unwind-protect
+;;;
 
+;; We set up exit-handler in the dynamic extent of BODY (but not in HANDLER),
+;; since if BODY calls exit, the error handlers won't be called---the dynamic
+;; environment is rewound upon exit, but that merely reset the error handlers.
+;;
+;; An alternative idea is to treat exit as if it's another kind of a condition,
+;; so that guard clauses are invoked.  We tried it, but the problem is how to
+;; deal with "ignore-errors" idiom, e.g. (guard (e [else #f]) body).  The exit
+;; condition shouldn't be stopped in such a way.
+;;
+;; TODO: Currently definition doesn't work when unwind-protect is used
+;; within a thread that is terminated; thread termination isn't a condition
+;; either.
 (define-syntax unwind-protect
   (syntax-rules ()
     [(unwind-protect body handler ...)
-     (let ((h (lambda () handler ...)))
-       (receive r (guard (e (else (h) (raise e))) body)
-         (h)
-         (apply values r)))]
+     (let ([x (exit-handler)]
+           [h (lambda () handler ...)])
+       (with-error-handler
+           (lambda (e) (exit-handler x) (h) (raise e))
+         (lambda ()
+           (receive r
+               (dynamic-wind
+                 (lambda ()
+                   (exit-handler (lambda (code fmt args) (h) (x code fmt args))))
+                 (lambda () body)
+                 (lambda ()
+                   (exit-handler x)))
+             (h)
+             (apply values r)))
+         :rewind-before #t))]
     [(unwind-protect . other)
      (syntax-error "malformed unwind-protect" (unwind-protect . other))]))
 
@@ -494,3 +537,14 @@
             [r (cond-list . rest)])
        (if tmp (cons (begin . expr) r) r))]
     ))
+
+;;; ------------------------------------------------------------
+;;; er-macro-transformer
+;;;
+
+;; This will become compiled into core after 0.9.5 release; for 0.9.4,
+;; we can't compile-in define-syntaxed macros, so we keep this autoload.
+(define-syntax er-macro-transformer
+  (primitive-macro-transformer
+   (^[form def-env use-env]
+     ((with-module gauche.internal %expand-er-transformer) form use-env))))

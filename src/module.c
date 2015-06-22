@@ -1,7 +1,7 @@
 /*
  * module.c - module implementation
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -33,8 +33,9 @@
 
 #define LIBGAUCHE_BODY
 #include "gauche.h"
-#include "gauche/builtin-syms.h"
 #include "gauche/class.h"
+#include "gauche/priv/builtin-syms.h"
+#include "gauche/priv/moduleP.h"
 
 /*
  * Modules
@@ -61,9 +62,9 @@
  *  it, recovering its resouces.
  */
 
-/* Mutex of module operation
+/* Note on mutex of module operation
  *
- * [SK] Each module used to have a mutex for accesses to it.  I changed it
+ * Each module used to have a mutex for accesses to it.  I changed it
  * to use a single global lock (modules.mutex), based on the following
  * observations:
  *
@@ -75,6 +76,34 @@
  *    affect normal runtime performance.
  *
  * Benchmark showed the change made program loading 30% faster.
+ */
+
+/* Special treatment of keyword modules.
+ * We need to achieve two goals:
+ *
+ * (1) For ordinary Gauche programs (modules that uses implicit inheritance
+ *   of #<module gauche>), we want to see all keywords being bound to
+ *   itself by default.  It can be achieved by inheriting a module that
+ *   has such keyword bindings.
+ * (2) For R7RS programs we want to see the default keyword bindings only
+ *   when the programmer explicitly asks so - notably, by importing some
+ *   special module.  It can be achieved by a module that has all keywords
+ *   each bound to itself, *and* exports all of such bindings.
+ *
+ * It turned out we can't use one 'keyword' module for both purpose; if
+ * we have a keyword module that exports all bindings, they are automatically   
+ * exported from modules that inherits them.  This means if a R7RS program
+ * imports any of Gauche modules, it carries all of keyword bindings.  It's
+ * not only nasty, but also dangerous for it can shadow bindings to the
+ * symbols starting with a colon inadvertently.
+ *
+ * So we have two modules, #<module gauche.keyword> and
+ * #<module keyword>.  The former have export-all flag, and to be imported
+ * from R7RS programs as needed.  The latter doesn't export anything, and
+ * to be inherited to Gauche modules by default.  Whenever a keyword
+ * is created, its default binding is inserted to both - actually,
+ * to prevent two modules from being out of sync, we specially wire them
+ * to share a single hashtable for their internal bindings.
  */
 
 static void module_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
@@ -110,6 +139,8 @@ DEFINE_STATIC_MODULE(gaucheModule);   /* #<module gauche> */
 DEFINE_STATIC_MODULE(internalModule); /* #<module gauche.internal> */
 DEFINE_STATIC_MODULE(gfModule);       /* #<module gauche.gf> */
 DEFINE_STATIC_MODULE(userModule);     /* #<module user> */
+DEFINE_STATIC_MODULE(keywordModule);  /* #<module keyword> */
+DEFINE_STATIC_MODULE(gkeywordModule); /* #<module gauche.keyword> */
 
 static ScmObj defaultParents = SCM_NIL; /* will be initialized */
 static ScmObj defaultMpl =     SCM_NIL; /* will be initialized */
@@ -118,34 +149,36 @@ static ScmObj defaultMpl =     SCM_NIL; /* will be initialized */
  * Constructor
  */
 
-static void init_module(ScmModule *m, ScmObj name)
+static void init_module(ScmModule *m, ScmObj name, ScmHashTable *internal)
 {
     m->name = name;
     m->imported = m->depended = SCM_NIL;
     m->exportAll = FALSE;
     m->parents = defaultParents;
     m->mpl = Scm_Cons(SCM_OBJ(m), defaultMpl);
-    m->internal = SCM_HASH_TABLE(Scm_MakeHashTableSimple(SCM_HASH_EQ, 0));
+    if (internal) {
+        m->internal = internal;
+    } else {
+        m->internal = SCM_HASH_TABLE(Scm_MakeHashTableSimple(SCM_HASH_EQ, 0));
+    }
     m->external = SCM_HASH_TABLE(Scm_MakeHashTableSimple(SCM_HASH_EQ, 0));
     m->origin = m->prefix = SCM_FALSE;
 }
 
 /* Internal */
-static ScmObj make_module(ScmObj name)
+static ScmObj make_module(ScmObj name, ScmHashTable *internal)
 {
-    ScmModule *m;
-    m = SCM_NEW(ScmModule);
+    ScmModule *m = SCM_NEW(ScmModule);
     SCM_SET_CLASS(m, SCM_CLASS_MODULE);
-    init_module(m, name);
+    init_module(m, name, internal);
     return SCM_OBJ(m);
 }
 
 /* Internal.  Lookup module with name N from the table. */
 static ScmModule *lookup_module(ScmSymbol *name)
 {
-    ScmObj v;
     (void)SCM_INTERNAL_MUTEX_LOCK(modules.mutex);
-    v = Scm_HashTableRef(modules.table, SCM_OBJ(name), SCM_UNBOUND);
+    ScmObj v = Scm_HashTableRef(modules.table, SCM_OBJ(name), SCM_UNBOUND);
     (void)SCM_INTERNAL_MUTEX_UNLOCK(modules.mutex);
     if (SCM_UNBOUNDP(v)) return NULL;
     else return SCM_MODULE(v);
@@ -154,13 +187,12 @@ static ScmModule *lookup_module(ScmSymbol *name)
 /* Internal.  Lookup module, and if there's none, create one. */
 static ScmModule *lookup_module_create(ScmSymbol *name, int *created)
 {
-    ScmDictEntry *e;
     (void)SCM_INTERNAL_MUTEX_LOCK(modules.mutex);
-    e = Scm_HashCoreSearch(SCM_HASH_TABLE_CORE(modules.table),
-                           (intptr_t)name,
-                           SCM_DICT_CREATE);
+    ScmDictEntry *e = Scm_HashCoreSearch(SCM_HASH_TABLE_CORE(modules.table),
+                                         (intptr_t)name,
+                                         SCM_DICT_CREATE);
     if (e->value == 0) {
-        (void)SCM_DICT_SET_VALUE(e, make_module(SCM_OBJ(name)));
+        (void)SCM_DICT_SET_VALUE(e, make_module(SCM_OBJ(name), NULL));
         *created = TRUE;
     } else {
         *created = FALSE;
@@ -171,20 +203,17 @@ static ScmModule *lookup_module_create(ScmSymbol *name, int *created)
 
 ScmObj Scm_MakeModule(ScmSymbol *name, int error_if_exists)
 {
-    ScmObj r;
     if (name == NULL) {
-        r = make_module(SCM_FALSE);
-    } else {
-        int created;
-        r = SCM_OBJ(lookup_module_create(name, &created));
-        if (!created) {
-            if (error_if_exists) {
-                Scm_Error("couldn't create module '%S': named module already exists",
-                          SCM_OBJ(name));
-            } else {
-                r = SCM_FALSE;
-            }
+        return make_module(SCM_FALSE, NULL);
+    }
+    int created;
+    ScmObj r = SCM_OBJ(lookup_module_create(name, &created));
+    if (!created) {
+        if (error_if_exists) {
+            Scm_Error("couldn't create module '%S': named module already exists",
+                      SCM_OBJ(name));
         }
+        return SCM_FALSE;
     }
     return r;
 }
@@ -192,7 +221,7 @@ ScmObj Scm_MakeModule(ScmSymbol *name, int error_if_exists)
 /* internal API to create an anonymous wrapper module */
 ScmObj Scm__MakeWrapperModule(ScmModule *origin, ScmObj prefix)
 {
-    ScmModule *m = SCM_MODULE(make_module(SCM_FALSE));
+    ScmModule *m = SCM_MODULE(make_module(SCM_FALSE, NULL));
     m->parents = SCM_LIST1(SCM_OBJ(origin));
     m->mpl = Scm_Cons(SCM_OBJ(m), origin->mpl);
     m->prefix = prefix;
@@ -217,6 +246,7 @@ typedef struct {
     ScmObj more_searched;
 } module_cache;
 
+
 static inline void init_module_cache(module_cache *c)
 {
     c->num_searched = 0;
@@ -225,8 +255,7 @@ static inline void init_module_cache(module_cache *c)
 
 static inline int module_visited_p(module_cache *c, ScmObj m)
 {
-    int i;
-    for (i=0; i<c->num_searched; i++) {
+    for (int i=0; i<c->num_searched; i++) {
         if (SCM_EQ(m, c->searched[i])) return TRUE;
     }
     if (!SCM_NULLP(c->more_searched)) {
@@ -244,88 +273,108 @@ static inline void module_add_visited(module_cache *c, ScmObj m)
     }
 }
 
-ScmGloc *Scm_FindBinding(ScmModule *module, ScmSymbol *symbol, int flags)
+/* The main logic of global binding search.  We factored this out since
+   we need recursive searching in case of phantom binding (see gloc.h
+   about phantom bindings).  The flags stay_in_module and external_only
+   corresponds to the flags passed to Scm_FindBinding.  The exclude_self
+   flag is only used in recursive search. */
+static ScmGloc *search_binding(ScmModule *module, ScmSymbol *symbol,
+                               int stay_in_module, int external_only,
+                               int exclude_self)
 {
-    ScmModule *m = module;
-    ScmObj v, p, mp;
-    ScmGloc *gloc = NULL;
-    int stay_in_module = flags&SCM_BINDING_STAY_IN_MODULE;
-    int external_only = flags&SCM_BINDING_EXTERNAL;
     module_cache searched;
-
     init_module_cache(&searched);
-    SCM_INTERNAL_MUTEX_SAFE_LOCK_BEGIN(modules.mutex);
 
-    /* first, search from the specified module.
-       NB: we directly check gloc->value instead of calling
-       SCM_GLOC_GET, since this check is merely to eliminate
-       the GLOC inserted by export. */
-    if (external_only) {
-        v = Scm_HashTableRef(m->external, SCM_OBJ(symbol), SCM_FALSE);
-    } else {
-        v = Scm_HashTableRef(m->internal, SCM_OBJ(symbol), SCM_FALSE);
+    /* First, search from the specified module.  In this phase, we just ignore
+       phantom bindings, for we'll search imported bindings later anyway. */
+    if (!exclude_self) {
+        ScmObj v = Scm_HashTableRef(
+            external_only? module->external : module->internal,
+            SCM_OBJ(symbol), SCM_FALSE);
+        if (SCM_GLOCP(v)) {
+            if (SCM_GLOC_PHANTOM_BINDING_P(SCM_GLOC(v))) {
+                /* If we're here, the symbol is external to MODULE but
+                   the real GLOC is somewhere in imported or inherited
+                   modules.  We turn off external_only switch so that
+                   when we search inherited modules we look into it's
+                   internal bindings. */
+                external_only = FALSE;
+                symbol = SCM_GLOC(v)->name; /* in case it is renamed on export */
+            } else {
+                return SCM_GLOC(v);
+            }
+        }
+        if (stay_in_module) return NULL;
+        module_add_visited(&searched, SCM_OBJ(module));
     }
-    if (SCM_GLOCP(v)) {
-        gloc = SCM_GLOC(v);
-        if (!SCM_GLOC_PHANTOM_BINDING_P(gloc)) goto out;
-    }
-    if (stay_in_module) goto out;
 
+    ScmObj p, mp;
     /* Next, search from imported modules */
     SCM_FOR_EACH(p, module->imported) {
         ScmObj elt = SCM_CAR(p);
-        ScmModule *mod = NULL;
         ScmObj sym = SCM_OBJ(symbol);
 
         SCM_ASSERT(SCM_MODULEP(elt));
-        mod = SCM_MODULE(elt);
-
-        SCM_FOR_EACH(mp, mod->mpl) {
+        SCM_FOR_EACH(mp, SCM_MODULE(elt)->mpl) {
             ScmGloc *g;
 
             SCM_ASSERT(SCM_MODULEP(SCM_CAR(mp)));
 
             if (module_visited_p(&searched, SCM_CAR(mp))) continue;
-            m = SCM_MODULE(SCM_CAR(mp));
+            ScmModule *m = SCM_MODULE(SCM_CAR(mp));
             if (SCM_SYMBOLP(m->prefix)) {
                 sym = Scm_SymbolSansPrefix(SCM_SYMBOL(sym),
                                            SCM_SYMBOL(m->prefix));
-                if (!SCM_SYMBOLP(sym)) goto skip;
+                if (!SCM_SYMBOLP(sym)) break;
             }
 
-            v = Scm_HashTableRef(m->external, SCM_OBJ(sym), SCM_FALSE);
-            /* see above comment about the check of gloc->value */
+            ScmObj v = Scm_HashTableRef(m->external, SCM_OBJ(sym), SCM_FALSE);
             if (SCM_GLOCP(v)) {
                 g = SCM_GLOC(v);
                 if (g->hidden) break;
-                if (!SCM_UNBOUNDP(g->value)) {
-                    gloc = g;
-                    goto out;
+                if (SCM_GLOC_PHANTOM_BINDING_P(g)) {
+                    g = search_binding(m, g->name, FALSE, FALSE, TRUE);
+                    if (g) return g;
+                } else {
+                    return g;
                 }
             }
             module_add_visited(&searched, SCM_OBJ(m));
         }
-    skip:;
     }
 
     /* Then, search from parent modules */
     SCM_ASSERT(SCM_PAIRP(module->mpl));
     SCM_FOR_EACH(mp, SCM_CDR(module->mpl)) {
         SCM_ASSERT(SCM_MODULEP(SCM_CAR(mp)));
-        m = SCM_MODULE(SCM_CAR(mp));
+        ScmModule *m = SCM_MODULE(SCM_CAR(mp));
+
         if (SCM_SYMBOLP(m->prefix)) {
             ScmObj sym = Scm_SymbolSansPrefix(symbol, SCM_SYMBOL(m->prefix));
-            if (!SCM_SYMBOLP(sym)) goto out;
+            if (!SCM_SYMBOLP(sym)) return NULL;
             symbol = SCM_SYMBOL(sym);
         }
-        if (external_only) {
-            v = Scm_HashTableRef(m->external, SCM_OBJ(symbol), SCM_FALSE);
-        } else {
-            v = Scm_HashTableRef(m->internal, SCM_OBJ(symbol), SCM_FALSE);
+        ScmObj v = Scm_HashTableRef(external_only?m->external:m->internal,
+                                    SCM_OBJ(symbol), SCM_FALSE);
+        if (SCM_GLOCP(v)) {
+            if (SCM_GLOC_PHANTOM_BINDING_P(SCM_GLOC(v))) {
+                external_only = FALSE; /* See above comment */
+            } else {
+                return SCM_GLOC(v);
+            }
         }
-        if (SCM_GLOCP(v)) { gloc = SCM_GLOC(v); goto out; }
     }
- out:
+    return NULL;
+}
+
+ScmGloc *Scm_FindBinding(ScmModule *module, ScmSymbol *symbol, int flags)
+{
+    int stay_in_module = flags&SCM_BINDING_STAY_IN_MODULE;
+    int external_only = flags&SCM_BINDING_EXTERNAL;
+    ScmGloc *gloc = NULL;
+
+    SCM_INTERNAL_MUTEX_SAFE_LOCK_BEGIN(modules.mutex);
+    gloc = search_binding(module, symbol, stay_in_module, external_only, FALSE);
     SCM_INTERNAL_MUTEX_SAFE_LOCK_END();
     return gloc;
 }
@@ -335,10 +384,9 @@ ScmObj Scm_GlobalVariableRef(ScmModule *module,
                              int flags)
 {
     ScmGloc *g = Scm_FindBinding(module, symbol, flags);
-    ScmObj val;
 
     if (g == NULL) return SCM_UNBOUND;
-    val = SCM_GLOC_GET(g);
+    ScmObj val = SCM_GLOC_GET(g);
     if (SCM_AUTOLOADP(val)) {
         /* NB: Scm_ResolveAutoload may return SCM_UNBOUND */
         val = Scm_ResolveAutoload(SCM_AUTOLOAD(val), 0);
@@ -353,7 +401,6 @@ ScmGloc *Scm_MakeBinding(ScmModule *module, ScmSymbol *symbol,
                          ScmObj value, int flags)
 {
     ScmGloc *g;
-    ScmObj v;
     ScmObj oldval = SCM_UNDEFINED;
     int prev_kind = 0;
     int kind = ((flags&SCM_BINDING_CONST)
@@ -363,7 +410,7 @@ ScmGloc *Scm_MakeBinding(ScmModule *module, ScmSymbol *symbol,
                    : 0));
 
     SCM_INTERNAL_MUTEX_SAFE_LOCK_BEGIN(modules.mutex);
-    v = Scm_HashTableRef(module->internal, SCM_OBJ(symbol), SCM_FALSE);
+    ScmObj v = Scm_HashTableRef(module->internal, SCM_OBJ(symbol), SCM_FALSE);
     /* NB: this function bypasses check of gloc setter */
     if (SCM_GLOCP(v)) {
         g = SCM_GLOC(v);
@@ -384,8 +431,8 @@ ScmGloc *Scm_MakeBinding(ScmModule *module, ScmSymbol *symbol,
     Scm_GlocMark(g, kind);
 
     if (prev_kind != 0) {
-        /* TODO: value and oldval may have circular structure, and we should
-           avoid diverging. */
+        /* NB: Scm_EqualP may throw an error.  It won't leave the state
+           inconsistent, but be aware. */
         if (prev_kind != kind || !Scm_EqualP(value, oldval)) {
             Scm_Warn("redefining %s %S::%S",
                      (prev_kind == SCM_BINDING_CONST)? "constant" : "inlinable",
@@ -420,16 +467,14 @@ ScmObj Scm_DefineConst(ScmModule *module, ScmSymbol *symbol, ScmObj value)
  */
 void Scm_HideBinding(ScmModule *module, ScmSymbol *symbol)
 {
-    ScmGloc *g;
-    ScmObj v;
     int err_exists = FALSE;
 
     (void)SCM_INTERNAL_MUTEX_LOCK(modules.mutex);
-    v = Scm_HashTableRef(module->external, SCM_OBJ(symbol), SCM_FALSE);
+    ScmObj v = Scm_HashTableRef(module->external, SCM_OBJ(symbol), SCM_FALSE);
     if (!SCM_FALSEP(v)) {
         err_exists = TRUE;
     } else {
-        g = SCM_GLOC(Scm_MakeGloc(symbol, module));
+        ScmGloc *g = SCM_GLOC(Scm_MakeGloc(symbol, module));
         g->hidden = TRUE;
         Scm_HashTableSet(module->external, SCM_OBJ(symbol), SCM_OBJ(g), 0);
     }
@@ -454,7 +499,7 @@ void Scm_HideBinding(ScmModule *module, ScmSymbol *symbol)
  *   CAVEATS:
  *
  *   - gloc's module remains the same.
- *   - autoload won't resolved.
+ *   - autoload won't be resolved.
  *   - TARGETNAME shouldn't be bound in TARGET beforehand.  We don't check
  *     it and just insert the gloc.  If there is an existing binding,
  *     it would become orphaned, possibly causing problems.
@@ -486,13 +531,12 @@ ScmObj Scm_ImportModule(ScmModule *module,
                         u_long flags) /* reserved for future use */
 {
     ScmModule *imp = NULL;
-    ScmObj p;
     if (SCM_MODULEP(imported)) {
         imp = SCM_MODULE(imported);
     } else if (SCM_SYMBOLP(imported)) {
         imp = Scm_FindModule(SCM_SYMBOL(imported), 0);
     } else if (SCM_IDENTIFIERP(imported)) {
-        imp = Scm_FindModule(SCM_IDENTIFIER(imported)->name, 0);
+        imp = Scm_FindModule(Scm_UnwrapIdentifier(SCM_IDENTIFIER(imported)), 0);
     } else {
         Scm_Error("module name or module required, but got %S", imported);
     }
@@ -502,19 +546,22 @@ ScmObj Scm_ImportModule(ScmModule *module,
     }
 
     /* Preallocate a pair, so that we won't call malloc during locking */
-    p = Scm_Cons(SCM_OBJ(imp), SCM_NIL);
+    ScmObj p = Scm_Cons(SCM_OBJ(imp), SCM_NIL);
 
     /* Prepend imported module to module->imported list. */
     (void)SCM_INTERNAL_MUTEX_LOCK(modules.mutex);
     {
         ScmObj ms, prev = p;
         SCM_SET_CDR(p, module->imported);
-        /* Remove duplicate module, if any. */
+        /* Remove duplicate module, if any.
+           NB: We allow to import the same module multiple times if they are
+           qualified by :only, :prefix, etc.  Theoretically we should check
+           exactly same qualifications, but we hope that kind of duplication
+           is rare.
+        */
         SCM_FOR_EACH(ms, SCM_CDR(p)) {
             ScmModule *m = SCM_MODULE(SCM_CAR(ms));
-            ScmObj b0 = SCM_MODULEP(m->origin)? m->origin : SCM_OBJ(m);
-            ScmObj b1 = SCM_MODULEP(imp->origin)? imp->origin : SCM_OBJ(imp);
-            if (!SCM_EQ(b0, b1)) {
+            if (!SCM_EQ(SCM_OBJ(m), SCM_OBJ(imp))) {
                 prev = ms;
                 continue;
             }
@@ -544,14 +591,9 @@ ScmObj Scm_ImportModules(ScmModule *module, ScmObj list)
 /* <spec>  :: <name> | (rename <name> <exported-name>) */
 ScmObj Scm_ExportSymbols(ScmModule *module, ScmObj specs)
 {
-    ScmObj lp, badsym = SCM_FALSE;
+    ScmObj lp;
     ScmObj overwritten = SCM_NIL; /* list of (exported-name orig-internal-name
                                      new-internal-name). */
-    int error = FALSE;
-    ScmSymbol *name, *exported_name;
-    ScmDictEntry *e;
-    ScmGloc *g;
-
     /* Check input first */
     SCM_FOR_EACH(lp, specs) {
         ScmObj spec = SCM_CAR(lp);
@@ -569,6 +611,7 @@ ScmObj Scm_ExportSymbols(ScmModule *module, ScmObj specs)
     (void)SCM_INTERNAL_MUTEX_LOCK(modules.mutex);
     SCM_FOR_EACH(lp, specs) {
         ScmObj spec = SCM_CAR(lp);
+        ScmSymbol *name, *exported_name;
         if (SCM_SYMBOLP(spec)) {
             name = exported_name = SCM_SYMBOL(spec);
         } else {
@@ -576,13 +619,13 @@ ScmObj Scm_ExportSymbols(ScmModule *module, ScmObj specs)
             name = SCM_SYMBOL(SCM_CADR(spec));
             exported_name = SCM_SYMBOL(SCM_CAR(SCM_CDDR(spec)));
         }
-        e = Scm_HashCoreSearch(SCM_HASH_TABLE_CORE(module->external),
-                               (intptr_t)exported_name, SCM_DICT_GET);
+        ScmDictEntry *e = Scm_HashCoreSearch(SCM_HASH_TABLE_CORE(module->external),
+                                             (intptr_t)exported_name, SCM_DICT_GET);
         if (e) {
             /* If we have e, it's already exported.  Check if
                the previous export is for the same binding. */
             SCM_ASSERT(SCM_DICT_VALUE(e) && SCM_GLOCP(SCM_DICT_VALUE(e)));
-            g = SCM_GLOC(SCM_DICT_VALUE(e));
+            ScmGloc *g = SCM_GLOC(SCM_DICT_VALUE(e));
             if (!SCM_EQ(name, g->name)) {
                 /* exported_name got a different meaning. we record it to warn
                    later, then 'unexport' the old one. */
@@ -603,7 +646,7 @@ ScmObj Scm_ExportSymbols(ScmModule *module, ScmObj specs)
             e = Scm_HashCoreSearch(SCM_HASH_TABLE_CORE(module->internal),
                                    (intptr_t)name, SCM_DICT_CREATE);
             if (!e->value) {
-                g = SCM_GLOC(Scm_MakeGloc(name, module));
+                ScmGloc *g = SCM_GLOC(Scm_MakeGloc(name, module));
                 (void)SCM_DICT_SET_VALUE(e, SCM_OBJ(g));
             }
             Scm_HashTableSet(module->external, SCM_OBJ(exported_name),
@@ -631,9 +674,6 @@ ScmObj Scm_ExportSymbols(ScmModule *module, ScmObj specs)
 
 ScmObj Scm_ExportAll(ScmModule *module)
 {
-    ScmHashIter iter;
-    ScmDictEntry *e;
-
     (void)SCM_INTERNAL_MUTEX_LOCK(modules.mutex);
     if (!module->exportAll) {
         /* Mark the module 'export-all' so that the new bindings would get
@@ -641,13 +681,15 @@ ScmObj Scm_ExportAll(ScmModule *module)
         module->exportAll = TRUE;
 
         /* Scan the module and mark all existing bindings as exported. */
+        ScmHashIter iter;
         Scm_HashIterInit(&iter, SCM_HASH_TABLE_CORE(module->internal));
+        ScmDictEntry *e;
         while ((e = Scm_HashIterNext(&iter)) != NULL) {
             ScmDictEntry *ee;
             ee = Scm_HashCoreSearch(SCM_HASH_TABLE_CORE(module->external),
                                     e->key, SCM_DICT_CREATE);
             if (!ee->value) {
-                SCM_DICT_SET_VALUE(ee, SCM_DICT_VALUE(e));
+                (void)SCM_DICT_SET_VALUE(ee, SCM_DICT_VALUE(e));
             }
         }
     }
@@ -660,12 +702,12 @@ ScmObj Scm_ExportAll(ScmModule *module)
    we can cache the result. */
 ScmObj Scm_ModuleExports(ScmModule *module)
 {
-    ScmHashIter iter;
-    ScmDictEntry *e;
     ScmObj h = SCM_NIL, t = SCM_NIL;
-    
+
     (void)SCM_INTERNAL_MUTEX_LOCK(modules.mutex);
+    ScmHashIter iter;
     Scm_HashIterInit(&iter, SCM_HASH_TABLE_CORE(module->external));
+    ScmDictEntry *e;
     while ((e = Scm_HashIterNext(&iter)) != NULL) {
         SCM_APPEND1(h, t, SCM_DICT_KEY(e));
     }
@@ -684,8 +726,9 @@ ScmObj Scm_ModuleExports(ScmModule *module)
 
 ScmObj Scm_ExtendModule(ScmModule *module, ScmObj supers)
 {
-    ScmObj mpl, seqh = SCM_NIL, seqt = SCM_NIL, sp;
+    ScmObj seqh = SCM_NIL, seqt = SCM_NIL;
 
+    ScmObj sp;
     SCM_FOR_EACH(sp, supers) {
         if (!SCM_MODULEP(SCM_CAR(sp))) {
             Scm_Error("non-module object found in the extend syntax: %S",
@@ -695,7 +738,7 @@ ScmObj Scm_ExtendModule(ScmModule *module, ScmObj supers)
     }
     SCM_APPEND1(seqh, seqt, supers);
     module->parents = supers;
-    mpl = Scm_MonotonicMerge1(seqh);
+    ScmObj mpl = Scm_MonotonicMerge1(seqh);
     if (SCM_FALSEP(mpl)) {
         Scm_Error("can't extend those modules simultaneously because of inconsistent precedence lists: %S", supers);
     }
@@ -709,15 +752,13 @@ ScmObj Scm_ExtendModule(ScmModule *module, ScmObj supers)
 
 ScmModule *Scm_FindModule(ScmSymbol *name, int flags)
 {
-    ScmModule *m;
-    int created;
-
     if (flags & SCM_FIND_MODULE_CREATE) {
-        m = lookup_module_create(name, &created);
+        int created;
+        ScmModule *m = lookup_module_create(name, &created);
         SCM_ASSERT(m != NULL);
         return m;
     } else {
-        m = lookup_module(name);
+        ScmModule *m = lookup_module(name);
         if (m == NULL) {
             if (!(flags & SCM_FIND_MODULE_QUIET)) {
                 Scm_Error("no such module: %S", name);
@@ -867,16 +908,26 @@ ScmModule *Scm_UserModule(void)
     return &userModule;
 }
 
+ScmModule *Scm__KeywordModule(void) /* internal */
+{
+    return &keywordModule;
+}
+
+ScmModule *Scm__GaucheKeywordModule(void) /* internal */
+{
+    return &gkeywordModule;
+}
+
 ScmModule *Scm_CurrentModule(void)
 {
     return Scm_VM()->module;
 }
 
 /* NB: we don't need to lock the global module table in initialization */
-#define INIT_MOD(mod, mname, mpl)                                           \
+#define INIT_MOD(mod, mname, mpl, inttab)                                   \
     do {                                                                    \
       SCM_SET_CLASS(&mod, SCM_CLASS_MODULE);                                \
-      init_module(&mod, mname);                                             \
+      init_module(&mod, mname,  inttab);                                    \
       Scm_HashTableSet(modules.table, (mod).name, SCM_OBJ(&mod), 0);        \
       mod.parents = (SCM_NULLP(mpl)? SCM_NIL : SCM_LIST1(SCM_CAR(mpl)));    \
       mpl = mod.mpl = Scm_Cons(SCM_OBJ(&mod), mpl);                         \
@@ -884,17 +935,31 @@ ScmModule *Scm_CurrentModule(void)
 
 void Scm__InitModule(void)
 {
-    ScmObj mpl = SCM_NIL;
+    /* List of builtin modules.  We create these so that 'use' or r7rs 'import'
+       won't try to search the file.
+       The modules listed here are marked "provided" at the startup, so it can
+       no longer be loaded by 'use' or 'require'.  Don't list modules that
+       needs to be loaded.
+    */
+    static const char *builtin_modules[] = {
+        "srfi-2", "srfi-6", "srfi-8", "srfi-10", "srfi-16", "srfi-17",
+        "srfi-22", "srfi-23", "srfi-28", "srfi-34",
+        "srfi-35", "srfi-36", "srfi-38", "srfi-45", "srfi-61",
+        "srfi-62", "srfi-87", "srfi-95", "srfi-111",
+        NULL };
+    const char **modname;
 
     (void)SCM_INTERNAL_MUTEX_INIT(modules.mutex);
     modules.table = SCM_HASH_TABLE(Scm_MakeHashTableSimple(SCM_HASH_EQ, 64));
 
     /* standard module chain */
-    INIT_MOD(nullModule, SCM_SYM_NULL, mpl);
-    INIT_MOD(schemeModule, SCM_SYM_SCHEME, mpl);
-    INIT_MOD(gaucheModule, SCM_SYM_GAUCHE, mpl);
-    INIT_MOD(gfModule, SCM_SYM_GAUCHE_GF, mpl);
-    INIT_MOD(userModule, SCM_SYM_USER, mpl);
+    ScmObj mpl = SCM_NIL;
+    INIT_MOD(nullModule, SCM_SYM_NULL, mpl, NULL);
+    INIT_MOD(schemeModule, SCM_SYM_SCHEME, mpl, NULL);
+    INIT_MOD(keywordModule, SCM_SYM_KEYWORD, mpl, NULL);
+    INIT_MOD(gaucheModule, SCM_SYM_GAUCHE, mpl, NULL);
+    INIT_MOD(gfModule, SCM_SYM_GAUCHE_GF, mpl, NULL);
+    INIT_MOD(userModule, SCM_SYM_USER, mpl, NULL);
 
     mpl = SCM_CDR(mpl);  /* default mpl doesn't include user module */
     defaultParents = SCM_LIST1(SCM_CAR(mpl));
@@ -902,7 +967,17 @@ void Scm__InitModule(void)
 
     /* other modules */
     mpl = defaultMpl;
-    INIT_MOD(internalModule, SCM_SYM_GAUCHE_INTERNAL, mpl);
+    INIT_MOD(internalModule, SCM_SYM_GAUCHE_INTERNAL, mpl, NULL);
+
+    mpl = keywordModule.mpl;
+    INIT_MOD(gkeywordModule, SCM_INTERN("gauche.keyword"), mpl,
+             keywordModule.internal);
+    gkeywordModule.exportAll = TRUE;
+
+    /* create predefined moudles */
+    for (modname = builtin_modules; *modname; modname++) {
+        (void)SCM_FIND_MODULE(*modname, SCM_FIND_MODULE_CREATE);
+    }
 }
 
 void Scm__InitModulePost(void)

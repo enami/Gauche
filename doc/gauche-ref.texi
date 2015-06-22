@@ -6,7 +6,7 @@
 @afourpaper
 @dircategory The Algorithmic Language Scheme
 @direntry
-* Gauche: (gauche-refe.info).	        An R5RS Scheme implementation.
+* Gauche: (gauche-refe.info).	        An R7RS Scheme implementation.
 @end direntry
 @c JP
 @setfilename gauche-refj.info
@@ -14,15 +14,16 @@
 @afourpaper
 @dircategory The Algorithmic Language Scheme
 @direntry
-* Gauche (ja): (gauche-refj.info).	An R5RS Scheme implementation.
+* Gauche (ja): (gauche-refj.info).	An R7RS Scheme implementation.
 @end direntry
 @documentencoding utf-8
 @c COMMON
 @comment %**end of header
 
-@c module and class index
+@c module, class and lexical-syntax index
 @defcodeindex md
 @defcodeindex cl
+@defcodeindex lx
 
 @iftex
 @finalout
@@ -50,10 +51,10 @@ Copyright @copyright{} 2001-2010 Shiro Kawai (shiro@@acm.org)
 
 @ifnottex
 @c EN
-This is a reference manual of Gauche, an R5RS Scheme implementation.
+This is a reference manual of Gauche, an R7RS Scheme implementation.
 This manual is for version @VERSION@.
 @c JP
-本書は、R5RS準拠のScheme処理系、Gaucheのリファレンスマニュアルです。
+本書は、R7RS準拠のScheme処理系、Gaucheのリファレンスマニュアルです。
 Gaucheのバージョン@VERSION@に対応します。
 @c COMMON
 @end ifnottex
@@ -68,12 +69,14 @@ Gaucheのバージョン@VERSION@に対応します。
 * Object system::               
 * Library modules - Overview::  
 * Library modules - Gauche extensions::  
+* Library modules - R7RS integration::  
 * Library modules - SRFIs::     
 * Library modules - Utilities::  
 * References::                  
 * C to Scheme mapping::         
 * Function and Syntax Index::   
 * Module Index::                
+* Lexical syntax index::        
 * Class Index::                 
 * Variable Index::              
 @end menu
@@ -87,12 +90,14 @@ Gaucheのバージョン@VERSION@に対応します。
 @include object.texi
 @include modintro.texi
 @include modgauche.texi
+@include modr7rs.texi
 @include modsrfi.texi
 @include modutil.texi
 @include references.texi
 @include mapping.texi
 @include indexfn.texi
 @include indexmd.texi
+@include indexlx.texi
 @include indexcl.texi
 @include indexvr.texi
 

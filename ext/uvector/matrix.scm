@@ -281,10 +281,14 @@
             (array-set! res (- i a-start-row) (- k b-start-col) tmp)))))))
 
 (define (array-div-left a b)
-  (array-mul (array-inverse b) a))
+  (if-let1 b-1 (array-inverse b)
+    (array-mul b-1 a)
+    (error "Matrix is not regular:" b)))
 
 (define (array-div-right a b)
-  (array-mul a (array-inverse b)))
+  (if-let1 b-1 (array-inverse b)
+    (array-mul a b-1)
+    (error "Matrix is not regular:" b)))
 
 (define (array-expt ar pow)
   (let loop ([a ar] [n pow])
@@ -438,7 +442,7 @@
             (make-string width (string-ref x 0))
             (receive (quot rem) (quotient&remainder width len)
               (string-append
-               (apply string-append (map (lambda (n) x) (iota quot)))
+               (apply string-append (map (^n x) (iota quot)))
                (substring x 0 rem)))))))
     (define (pad x width)
       (let* ([res (x->string x)]

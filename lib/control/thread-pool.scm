@@ -2,7 +2,7 @@
 ;;; control.thread-pool - thread pool
 ;;;
 ;;;  Copyright (c) 2003-2007 Time Intermedia Corporation, All rights reserved.
-;;;  Copyright (c) 2010-2013  Shiro Kawai  <shiro@acm.org>
+;;;  Copyright (c) 2010-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;  Redistribution and use in source and binary forms, with or without
 ;;;  modification, are permitted provided that the following conditions
@@ -38,7 +38,7 @@
 (define-module control.thread-pool
   (use srfi-1)
   (use srfi-19)
-  (use util.queue)
+  (use data.queue)
   (use util.match)
   (use gauche.threads)
   (use gauche.record)
@@ -46,7 +46,7 @@
   (use control.job)
   (export <thread-pool>
           <thread-pool-shut-down>
-	  make-thread-pool thread-pool-results thread-pool-shut-down?
+          make-thread-pool thread-pool-results thread-pool-shut-down?
           add-job! wait-all terminate-all!))
 (select-module control.thread-pool)
 

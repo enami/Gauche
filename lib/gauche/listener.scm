@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche/listener - listerner utility
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -61,7 +61,7 @@
    (evaluator   :init-keyword :evaluator :init-form eval)
    (printer     :init-keyword :printer
                 :init-form (lambda args
-                             (for-each (lambda (r) (write r) (newline)) args)))
+                             (for-each (^r (write r) (newline)) args)))
    (prompter    :init-keyword :prompter
                 :init-form (cut display "listener> "))
    (environment :init-keyword :environment
@@ -181,7 +181,7 @@
   (with-input-from-string str
     (^[]
       ;; charset that delimits token
-      (define special-chars #[\x00-\x20\"\'()\,\;\[\\\]\`{|}\x7f])
+      (define special-chars #[\u0000-\u0020\"\'()\,\;\[\\\]\`{|}\u007f])
 
       ;; main loop
       (define (rec closer)

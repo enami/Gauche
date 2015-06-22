@@ -1,7 +1,7 @@
 ;;;
 ;;; hook.scm - hook procedures
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -58,20 +58,20 @@
    ))
 
 ;; make-hook [arity]
-(define (make-hook . maybe-arity)
-  (make <hook> :arity (get-optional maybe-arity 0)))
+(define (make-hook :optional (arity 0))
+  (make <hook> :arity arity))
 
 (define (hook? obj) (is-a? obj <hook>))
 
 (define-method hook-empty? ((hook <hook>))
   (null? (ref hook 'procedures)))
 
-(define-method add-hook! ((hook <hook>) proc . maybe-append?)
+(define-method add-hook! ((hook <hook>) proc :optional (append? #f))
   (unless (procedure-arity-includes? proc (ref hook 'arity))
     (errorf "can't add hook ~s: arity is incompatible with expected ~a"
             proc (ref hook 'arity)))
   (unless (memq proc (ref hook 'procedures))
-    (if (get-optional maybe-append? #f)
+    (if append?
         (update! (ref hook 'procedures) (cut append <> (list proc)))
         (slot-push! hook 'procedures proc)))
   (values))

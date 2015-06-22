@@ -1,7 +1,7 @@
 ;;;
 ;;; text.sql - SQL parsing
 ;;;
-;;;   Copyright (c) 2005-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2005-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -123,7 +123,7 @@
   ;;
   (define (skip-ws s)
     (cond ((#/^\s+(--)?/ s)
-           => (lambda (m) (if (m 1) (skip-comment s) (m 'after))))
+           => (^m (if (m 1) (skip-comment s) (m 'after))))
           (else s)))
   (define (skip-comment s)
     (cond ((string-scan s "\n" 'after))

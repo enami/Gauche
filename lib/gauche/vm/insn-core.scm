@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.vm.insn-core - <vm-insn-info> definition
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -41,19 +41,24 @@
 
 (define-module gauche.vm.insn-core
   (use util.match)
-  (export <vm-insn-info>
-          vm-find-insn-info
-          vm-build-insn))
+  (export <vm-insn-info> vm-find-insn-info vm-build-insn
+          ;; utilities
+          vm-insn-size))
 (select-module gauche.vm.insn-core)
 
 (define-class <vm-insn-info> ()
   ((name   :init-keyword :name)           ; name of insn (symbol)
    (code   :init-keyword :code)           ; code of insn (integer)
    (num-params :init-keyword :num-params) ; # of parameters
+   (alt-num-params :init-keyword :alt-num-params) ; Alternative # of params
+                                          ; see vminsn.scm comment
    (operand-type :init-keyword :operand-type) ; operand type
    (combined :init-keyword :combined)     ; combined insns
    (body   :init-keyword :body)           ; body of the insn
    (obsoleted :init-keyword :obsoleted)   ; is this insn fading out?
+   (fold-lref :init-keyword :fold-lref)   ; if #t, allow LREFnm + INSN
+                                          ; sequence to be combined into
+                                          ; LREF-INSN(n,m).  This 
 
    (base-variant :init-form #f)           ; 'base' variant of this insn
    (push-variant :init-form #f)           ; 'push' variant of this insn
@@ -71,40 +76,47 @@
 (define-method write-object ((s <vm-insn-info>) out)
   (format out "#<insn ~a>" (ref s 'name)))
 
-;; opcode mnemonic -> <vm-insn-info>
+;; API. opcode mnemonic -> <vm-insn-info>
 (define (vm-find-insn-info mnemonic)
   (cond ((assq mnemonic (class-slot-ref <vm-insn-info> 'all-insns)) => cdr)
         (else (error "No such VM instruction:" mnemonic))))
 
+;; API.  Arg can be <vm-insn-info> or opcode symbol
+(define-method vm-insn-size ((info <vm-insn-info>))
+  (ecase (~ info'operand-type)
+    [(none) 1]
+    [(obj addr code codes) 2]
+    [(obj+addr) 3]))
+
+(define-method vm-insn-size ((mnemonic <symbol>))
+  (vm-insn-size (vm-find-insn-info mnemonic)))
+
+;; API
 ;; INSN is a list of opcode and parameters, e.g. (PUSH) or (LREF 3 2)
 ;; Returns an exact integer of encoded VM instruction code.
 ;; NB: This must match the macro definitions in src/gauche/code.h !!!
 (define (vm-build-insn insn)
+  (define (check insn info n)
+    (unless (or (= n (~ info'num-params))
+                (memv n (~ info'alt-num-params)))
+      (errorf "VM instruction ~a expects ~a parameters, but got ~s"
+              (car insn) (~ info'num-params) insn)))
   (match insn
-    (((? symbol? opcode) . params)
+    [((? symbol? opcode) . params)
      (let1 info (vm-find-insn-info opcode)
        (match params
-         (()
-          (unless (= (ref info 'num-params) 0)
-            (errorf "VM instruction ~a takes no parameters, but got ~s"
-                    opcode insn))
-          (ref info 'code))
-         ((arg0)
-          (unless (= (ref info 'num-params) 1)
-            (errorf "VM instruction ~a takes one parameter, but got ~s"
-                    opcode insn))
+         [() (check insn info 0) (ref info 'code)]
+         [(arg0)
+          (check insn info 1)
           (logior (ash (logand arg0 #xfffff) 12)
-                  (ref info 'code)))
-         ((arg0 arg1)
-          (unless (= (ref info 'num-params) 2)
-            (errorf "VM instruction ~a takes two parameters, but got ~s"
-                    opcode insn))
+                  (~ info 'code))]
+         [(arg0 arg1)
+          (check insn info 2)
           (logior (ash (logand arg1 #x3ff) 22)
                   (ash (logand arg0 #x3ff) 12)
-                  (ref info 'code)))
-         (else (error "vm-build-insn: bad insn:" insn)))))
-    (else
-     (error "vm-build-insn: bad insn:" insn))))
+                  (~ info 'code))]
+         [else (error "vm-build-insn: bad insn:" insn)]))]
+    [else (error "vm-build-insn: bad insn:" insn)]))
 
 
 

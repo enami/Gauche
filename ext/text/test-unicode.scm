@@ -4,7 +4,6 @@
 
 (use gauche.test)
 (use util.match)
-(use util.list)
 (use gauche.sequence)
 (test-start "text.unicode")
 
@@ -148,6 +147,20 @@
 
 (for-each test-utf-conv *te-samples*)
 
+;; utf8->string and string->utf8
+(when (memq (gauche-character-encoding) '(utf-8 sjis euc-jp))
+  (let1 data '(("abc" #u8(97 98 99))
+               ("λΛ"  #u8(206 187 206 155))
+               (#f    #u8(97 128 128)))
+    (define (conversion-tester str bvec)
+      (test* "utf8->string" (or str (test-error))
+             (utf8->string bvec))
+      (when str
+        (test* "string->utf8" bvec
+               (string->utf8 str))))
+
+    (for-each (^d (apply conversion-tester d)) data)))
+
 (test-section "word boundary")
 
 (define (test-word-breaker sentence expected)
@@ -177,15 +190,15 @@
   (let-syntax ([do-tests
                 (syntax-rules ()
                   [(_ upper downer titler folder u d t f)
-                   (let ([u u] [d d] [t t] [f f])
-                     (test* (format "~a (from down)" 'upper) u (upper d))
-                     (test* (format "~a (from up)" 'upper) u (upper u))
-                     (test* (format "~a (from down)" 'downer) d (downer d))
-                     (test* (format "~a (from up)" 'downer) d (downer u))
-                     (test* (format "~a (from down)" 'titler) t (titler d))
-                     (test* (format "~a (from up)" 'titler) t (titler u))
-                     (test* (format "~a (from down)" 'folder) f (folder d))
-                     (test* (format "~a (from up)" 'folder) f (folder u)))])])
+                   (let ([u. u] [d. d] [t. t] [f. f])
+                     (test* (format "~a (from down)" 'upper) u. (upper d.))
+                     (test* (format "~a (from up)" 'upper) u. (upper u.))
+                     (test* (format "~a (from down)" 'downer) d. (downer d.))
+                     (test* (format "~a (from up)" 'downer) d. (downer u.))
+                     (test* (format "~a (from down)" 'titler) t. (titler d.))
+                     (test* (format "~a (from up)" 'titler) t. (titler u.))
+                     (test* (format "~a (from down)" 'folder) f. (folder d.))
+                     (test* (format "~a (from up)" 'folder) f. (folder u.)))])])
 
     (do-tests string-upcase string-downcase string-titlecase string-foldcase
               up down title fold)

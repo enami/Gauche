@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.cgen.precomp - Precompile Scheme into C data
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -44,14 +44,14 @@
   (use gauche.parameter)
   (use gauche.sequence)
   (use gauche.experimental.lamb)
-  (use gauche.experimental.app)
   (use file.util)
   (use util.match)
-  (use util.list)
   (use util.toposort)
   (use text.tr)
   (export cgen-precompile cgen-precompile-multi))
 (select-module gauche.cgen.precomp)
+
+(autoload gauche.cgen.optimizer optimize-compiled-code)
 
 ;;================================================================
 ;; Main Entry point
@@ -157,12 +157,13 @@
    (apply %cgen-precompile src keys)))
 
 (define (do-it src ext-initializer sub-initializers)
-  (setup ext-initializer sub-initializers)
-  (with-input-from-file src
-    (cut emit-toplevel-executor
-         (reverse (port-fold compile-toplevel-form '() read))))
-  (finalize sub-initializers)
-  (cgen-emit-c (cgen-current-unit)))
+  (parameterize ([omitted-code '()])
+    (setup ext-initializer sub-initializers)
+    (with-input-from-file src
+      (cut emit-toplevel-executor
+           (reverse (generator-fold compile-toplevel-form '() read))))
+    (finalize sub-initializers)
+    (cgen-emit-c (cgen-current-unit))))
 
 ;; Precompile multiple Scheme sources that are to be linked into
 ;; single DSO.  Need to check dependency.  The name of the first
@@ -172,7 +173,8 @@
                                     ((:strip-prefix prefix) #f)
                                     ((:dso-name dso) #f)
                                     (predef-syms '())
-                                    (macros-to-keep '()))
+                                    (macros-to-keep '())
+                                    (extra-optimization #f))
   (match srcs
     [() #f]
     [(main . subs)
@@ -189,6 +191,7 @@
                             :predef-syms predef-syms
                             :strip-prefix prefix
                             :macros-to-keep macros-to-keep
+                            :extra-optimization extra-optimization
                             :ext-initializer (and (equal? src main)
                                                   ext-initializer)
                             :initializer-name #`"Scm_Init_,initname"))))]
@@ -204,7 +207,8 @@
                                (initializer-name #f)
                                (sub-initializers '())
                                (predef-syms '())
-                               (macros-to-keep '()))
+                               (macros-to-keep '())
+                               (extra-optimization #f))
   (let ([out.c   (or out.c (path-swap-extension (sys-basename src) "c"))]
         [out.sci (or out.sci
                      (and (check-first-form-is-define-module src)
@@ -219,7 +223,8 @@
                                        (basename-sans-extension out.c)))
                               initializer-name)]
                    [vm-eval-situation SCM_VM_COMPILING]
-                   [private-macros-to-keep macros-to-keep])
+                   [private-macros-to-keep macros-to-keep]
+                   [run-extra-optimization-passes extra-optimization])
       (select-tmodule 'gauche)
       (cond [out.sci
              (make-directory* (sys-dirname out.sci))
@@ -251,6 +256,7 @@
 (define (eval-in-current-tmodule expr)
   (eval expr (~ (current-tmodule)'module)))
 
+;; Expr -> CompiledCode
 (define (compile-in-current-tmodule expr)
   (compile expr (~ (current-tmodule)'module)))
 
@@ -277,9 +283,12 @@
 ;; (--keep-private-macro=name,name,...)
 ;; usually private macros (macros bound to a variable which isn't exported)
 ;; are discarded, but sometimes hygienic public macros expands to a call
-;; of private macros.  gencomp cannot detect such dependency yet, and
+;; of private macros.  precomp cannot detect such dependency yet, and
 ;; so they need to be explicitly listed for the time being.
 (define private-macros-to-keep (make-parameter '()))
+
+;; Experimental: Run extra optimization during AOT compilation.
+(define run-extra-optimization-passes (make-parameter #f))
 
 ;;================================================================
 ;; Bridge to the internal stuff
@@ -375,7 +384,6 @@
 
 (define (setup ext-init? subinits)
   (cgen-decl "#include <gauche/code.h>")
-  (cgen-decl "#include <gauche/macro.h>") ; for MakeMacroTransformerOld. temporary.
   (cond [(and ext-init? (ext-module-file))
          => (^[extm]
               (cgen-decl "#include <gauche/extend.h>")
@@ -397,12 +405,12 @@
 
 ;; NOTE:
 ;;   The code is compiled in the version of the compiler currently
-;;   running gencomp (host compiler).  It may differ from the version
+;;   running precomp (host compiler).  It may differ from the version
 ;;   of the compiler we're compiling (target compiler), and it becomes
 ;;   a problem if the two versions of compilers are using different
 ;;   mappings between mnemonics and codes.
 ;;
-;;   When gencomp generates the C literals for the compiled code, it
+;;   When precomp generates the C literals for the compiled code, it
 ;;   uses the following mapping scheme.
 ;;
 ;;    1. use vm-code->list to extract mnemonics from the code
@@ -444,15 +452,12 @@
 (define-global-pred =lambda?          lambda)
 (define-global-pred =declare?         declare)
 
-;; KLUDGE: Include needs to refer to the path of including source file, which
-;; is taken from current-load-path in 0.9.2 and before.  If we were able to
-;; override that, we wouldn't need to intercept 'include'.  That should be the
-;; right thing, since 'include' doesn't need to appear in toplevel.
-;; For 0.9.3, however, we need to keep things compilable by 0.9.2 compiler
-;; whose behavior we can't change.  Hence this hack allows us to make 'include'
-;; work for the time being.
-(define-global-pred =include?         include)
-
+;; A parameter that holds the list of 'omitted' #<compiled-code> - for
+;; example, the cliche of (CLOSURE #<compiled-code> DEFINE #<identifier> RET)
+;; will be generated as Scm_Define() in the initialization, not as a code
+;; vector.  We need to suppress emitting code vector for those, since they
+;; can be reachable via parent link in the inner closure.
+(define omitted-code (make-parameter '()))
 
 ;; compile FORM, and conses the toplevel code (something to be
 ;; executed at toplevel).
@@ -483,7 +488,16 @@
        (when (list? (compile-module-exports))
          (compile-module-exports
           (lset-union eq? syms (compile-module-exports))))
-       (eval-in-current-tmodule `(export ,@syms)) seed]
+       (eval-in-current-tmodule `(export ,@syms))
+       (unless (ext-module-file)
+         ;; If generate .sci file, 'export' form will be in it (as a part of
+         ;; define-module form).  Otherwise we need to do export during
+         ;; initialization.
+         (let1 exp-specs (cgen-literal syms)
+           (cgen-init
+            (format "  (void)Scm_ExportSymbols(Scm_CurrentModule(), ~a);"
+                    (cgen-cexpr exp-specs)))))
+       seed]
       [((? =export-all?)) (compile-module-exports #t)]
       [((? =export-if-defined?) . _) (write-ext-module form) seed]
       [((? =provide?) arg) (write-ext-module form) seed]
@@ -496,44 +510,67 @@
             (private-macros-to-keep (append (private-macros-to-keep) macros))]
            [other (error "Unknown declaration:" other)]))
        seed]
-      ;; TODO: Temporary kludge---remove in the future release.  See the
-      ;; above comment about 'include' kludge.
-      [((? =include?) path)
-       (let* ([spath (if (absolute-path? path)
-                       path
-                       (build-path ($ sys-dirname $ port-name
-                                      $ current-input-port)
-                                   path))]
-              [source (any (^[ext] (let1 p #`",|spath|,|ext|"
-                                     (and (file-is-readable? p) p)))
-                           (cons "" *load-suffixes*))])
-         (unless source
-           (errorf "Couldn't read included file ~s" path))
-         (compile-toplevel-form `(begin ,@(file->sexp-list source)) seed))]
       ;; Finally, ordinary expressions.
       [else
-       (let1 compiled-code (compile-in-current-tmodule form)
+       (let* ([compiled-code (compile-in-current-tmodule form)]
+              [toplevel-code (and (eq? (~ compiled-code 'name) '%toplevel)
+                                  (vm-code->list compiled-code))])
          ;; We exclude a compiled code with only CONSTU-RET, which appears
          ;; as the result of macro expansion sometimes.
-         (if (toplevel-constu-ret-code? compiled-code)
-           seed
-           (cons (cgen-literal compiled-code) seed)))]
+         (cond [(toplevel-constu-ret-code? toplevel-code) seed]
+               [(toplevel-definition-code? toplevel-code)
+                => (match-lambda
+                     ([inner-code id flags]
+                      (push! (omitted-code) compiled-code)
+                      (emit-toplevel-definition inner-code id flags)
+                      seed))]
+               [else (cons (cgen-literal compiled-code) seed)]))]
       )))
 
 ;; check to see the compiled code only contains CONSTU-RET insn.
-(define (toplevel-constu-ret-code? compiled-code)
-  (and (eq? (~ compiled-code'name) '%toplevel)
-       (= (~ compiled-code'size) 1)
-       (let1 code (vm-code->list compiled-code)
-         (null? (cdr code))
-         (eq? (caar code) 'CONSTU-RET))))
+(define (toplevel-constu-ret-code? toplevel-code)
+  (and (null? (cdr toplevel-code))
+       (eq? (caar toplevel-code) 'CONSTU-RET)))
+
+;; check to see if the compiled code has the cliche of toplevel
+;; definition (CLOSURE #<code> DEFINE #<id> RET).  If we find it, returns
+;; the internal closure code, identifier, and define flags.
+(define (toplevel-definition-code? toplevel-code)
+  (and (eq? (car (~ toplevel-code 0)) 'CLOSURE)
+       (eq? (car (~ toplevel-code 2)) 'DEFINE)
+       (eq? (car (~ toplevel-code 4)) 'RET)
+       (list (~ toplevel-code 1)           ; #<compiled-code> of CLOSURE
+             (~ toplevel-code 3)           ; identifier
+             (cadr (~ toplevel-code 2))))) ; define flags
+
+(define (emit-toplevel-definition inner-code id flags)
+  (let ([sym  (cgen-literal (~ id'name))]
+        ;; NB: Currently, the main tmodule has no name.  It's better to give
+        ;; it a proper name.  Then the following Scm_CurrentModule hack
+        ;; will be unnecessary.
+        [mod  (and-let* ([n (module-name (~ id'module))])
+                (find-tmodule n))]
+        [code (cgen-literal inner-code)])
+    (cgen-init (format "  Scm_MakeBinding(SCM_MODULE(~a) /* ~a */, \
+                                          SCM_SYMBOL(~a) /* ~a */, \
+                                          Scm_MakeClosure(~a, NULL),\
+                                          ~a);\n"
+                       (if mod (tmodule-cname mod) "Scm_CurrentModule()")
+                       (if mod (cgen-safe-comment (~ mod'name)) "")
+                       (cgen-cexpr sym)
+                       (cgen-safe-comment (~ id'name))
+                       (cgen-cexpr code)
+                       (case flags
+                         [(2) 'SCM_BINDING_CONST]
+                         [(4) 'SCM_BINDING_INLINABLE]
+                         [else 0])))))
 
 ;; given list of toplevel compiled codes, generate code in init
 ;; that calls them.  This is assumed to be the last procedure before
 ;; calling cgen-emit.
 (define (emit-toplevel-executor topcodes)
   (cgen-body "static ScmCompiledCode *toplevels[] = {")
-  (dolist (t topcodes)
+  (dolist [t topcodes]
     (cgen-body (format "  SCM_COMPILED_CODE(~a)," (cgen-cexpr t))))
   (cgen-body " NULL /*termination*/" "};")
 
@@ -568,14 +605,31 @@
       ((with-module gauche.cgen.stub cgen-stub-parse-form)
        (unwrap-syntax (cons 'define-cproc args)))
       (undefined))
-    ;; (define-macro (define . f)
-    ;;   ((with-module gauche.cgen.precomp handle-define) f))
+    (define-macro (define-enum . args)
+      ((with-module gauche.cgen.stub cgen-stub-parse-form)
+       (unwrap-syntax (cons 'define-enum args)))
+      (undefined))
+    (define-macro (define-enum-conditionally . args)
+      ((with-module gauche.cgen.stub cgen-stub-parse-form)
+       (unwrap-syntax (cons 'define-enum-conditionally args)))
+      (undefined))
     (define-macro (define-constant . f)
       ((with-module gauche.cgen.precomp handle-define-constant) f))
     (define-macro (define-syntax . f)
       ((with-module gauche.cgen.precomp handle-define-syntax) f))
     (define-macro (define-macro . f)
       ((with-module gauche.cgen.precomp handle-define-macro) f))
+    ;; A special directive not to precompile; the given forms are
+    ;; emitted to *.sci file as they are.  It is useful if you delay
+    ;; macro-expansion until the load time (e.g. cond-expand).  The
+    ;; forms are not evaluated at all in the compiling environment,
+    ;; so they are not avaialble for macro expansion of the forms
+    ;; to be precompiled.  (The case can be handled more generally by
+    ;; 'eval-when' mechanism, but properly support eval-when needs more
+    ;; work.)
+    (define-macro (without-precompiling . forms)
+      ((with-module gauche.cgen.precomp handle-without-compiling) forms)
+      (undefined))
     ))
 
 ;; Macros are "consumed" by the Gauche's compiler---that is, it is
@@ -583,8 +637,6 @@
 ;; For exported macros, we should include the macro itself in the compiled
 ;; file, so we intercept define-macro and define-syntax.
 
-;; For the time being, we only compile the legacy macros into C file.
-;; R5RS macros are put in ext-module file as is.
 (define (handle-define-macro form)
   (define %define (make-identifier 'define (find-module 'gauche) '()))
   (define %define-syntax (make-identifier 'define-syntax (find-module 'gauche) '()))
@@ -607,14 +659,28 @@
     [(name expr) (do-handle name expr)]
     [_ (error "Malformed define-macro" form)]))
 
+;; At this moment, we can only precompile macros that have closure
+;; in its transformer.
 (define (handle-define-syntax form)
   (match form
-    [(name . _)
+    [(name xformer-spec)
+     ;; This inserts sets-up compile-time environment.
+     (eval-in-current-tmodule
+      `((with-module gauche define-syntax) ,@form))
+     ;; If the macro needs to exported, check if we can put it in
+     ;; precompiled file (it is, if the transformer is a closure).
+     ;; Othewise, we emit the form to *.sci file.
      (when (or (symbol-exported? name)
                (memq name (private-macros-to-keep)))
-       (write-ext-module `(define-syntax . ,form)))]
-    [_ #f])
-  (cons '(with-module gauche define-syntax) form))
+       (let1 val (global-variable-ref (~ (current-tmodule)'module) name #f)
+         (or (and-let* ([ ((with-module gauche.internal macro?) val) ]
+                        [tx ((with-module gauche.internal macro-transformer) val)]
+                        [ (closure? tx) ])
+               `((with-module gauche.internal %insert-syntax-binding)
+                 (current-module) ',name ,xformer-spec))
+             (write-ext-module `(define-syntax . ,form))
+             #f)))]
+    [_ (error "Malformed define-syntax" form)]))
 
 (define (handle-define-constant form)
   (match form
@@ -623,6 +689,9 @@
       `((with-module gauche define-constant) ,@form))]
     [_ #f])
   (cons '(with-module gauche define-constant) form))
+
+(define (handle-without-compiling forms)
+  (for-each write-ext-module forms))
 
 ;; check to see if the symbol is exported
 (define (symbol-exported? sym)
@@ -636,37 +705,47 @@
   ((code-name   :init-keyword :code-name)
    (code-vector-c-name :init-keyword :code-vector-c-name)
    (literals    :init-keyword :literals)
+   (arg-info    :init-keyword :arg-info)
    )
   (make (value)
-    (let* ([cv  (vm-code->list value)]
+    (let* ([code (if (run-extra-optimization-passes)
+                   (optimize-compiled-code value)
+                   value)]
+           [cv  (vm-code->list code)]
            [lv  (extract-literals cv)]
-           [cvn (allocate-code-vector cv lv (~ value'full-name))]
-           [code-name (cgen-literal (~ value'name))]
-           [arg-info (cgen-literal (~ value'arg-info))]
-           [inliner (check-packed-inliner value)])
+           [cvn (allocate-code-vector cv lv (~ code'full-name))]
+           [code-name (cgen-literal (~ code'name))]
+           [arg-info (cgen-literal (unwrap-syntax (~ code'arg-info)))]
+           [inliner (check-packed-inliner code)])
       (define (init-thunk)
         (format #t "    SCM_COMPILED_CODE_CONST_INITIALIZER(  /* ~a */\n"
-                (cgen-safe-comment (~ value'name)))
+                (cgen-safe-comment (~ code'name)))
         (format #t "            (ScmWord*)(~a), ~a,\n"
                 cvn (length cv))
         (format #t "            ~a, ~a, ~a, ~a, SCM_NIL, ~a,\n"
-                (~ value'max-stack)
-                (~ value'required-args)
-                (~ value'optional-args)
+                (~ code'max-stack)
+                (~ code'required-args)
+                (~ code'optional-args)
                 (if (cgen-literal-static? code-name)
                   (cgen-cexpr code-name)
                   "SCM_FALSE")
-                (cgen-cexpr arg-info))
+                (if (cgen-literal-static? arg-info)
+                  (cgen-cexpr arg-info)
+                  "SCM_FALSE"))
         (format #t "            ~a, ~a)"
-                (cgen-cexpr (cgen-literal (~ value'parent)))
+                (let1 parent-code (~ code'parent)
+                  (if (memq parent-code (omitted-code))
+                    "SCM_FALSE"
+                    (cgen-cexpr (cgen-literal (~ code'parent)))))
                 (if inliner
                   (cgen-cexpr inliner)
                   "SCM_FALSE")))
-      (make <cgen-scheme-code> :value value
+      (make <cgen-scheme-code> :value code
             :c-name (cgen-allocate-static-datum 'runtime 'ScmCompiledCode
                                                 init-thunk)
             :code-vector-c-name cvn
             :code-name code-name
+            :arg-info arg-info
             :literals lv)))
   (init (self)
     (unless (cgen-literal-static? (~ self'code-name))
@@ -760,12 +839,16 @@
 
 (define (fill-code code)
   (let ([cvn  (~ code'code-vector-c-name)]
-        [lv   (~ code'literals)])
+        [lv   (~ code'literals)]
+        [ai   (~ code'arg-info)])
     (for-each-with-index
      (^[index lit] (when (and lit (not (cgen-literal-static? lit)))
                      (format #t "  ((ScmWord*)~a)[~a] = SCM_WORD(~a);\n"
                              cvn index (cgen-cexpr lit))))
-     lv)))
+     lv)
+    (unless (cgen-literal-static? ai)
+      (format #t "  SCM_COMPILED_CODE(~a)->argInfo = SCM_OBJ(~a);\n"
+              (cgen-cexpr code) (cgen-cexpr ai)))))
 
 ;; If the compiled-code has packed IForm for inliner, translate it for
 ;; the target VM insns and returns the packed IForm.
@@ -796,7 +879,7 @@
     (let ([name (cgen-cexpr (~ self'id-name))]
           [cname (~ self'c-name)])
       (or (and-let* ([modnam (~ self'mod-name)])
-            (format #t "  ~a = Scm_MakeIdentifier(SCM_SYMBOL(~a), \
+            (format #t "  ~a = Scm_MakeIdentifier(~a, \
                                   Scm_FindModule(SCM_SYMBOL(~a), \
                                                  SCM_FIND_MODULE_CREATE),
                                   SCM_NIL); /* ~a#~a */\n"
@@ -805,7 +888,7 @@
                     (cgen-safe-comment (~ self'id-name'value)))
             #t)
           (let1 mod-cname (current-tmodule-cname)
-            (format #t "  ~a = Scm_MakeIdentifier(SCM_SYMBOL(~a), \
+            (format #t "  ~a = Scm_MakeIdentifier(~a, \
                                                   SCM_MODULE(~a), \
                                                   SCM_NIL); /* ~a#~a */\n"
                     cname name mod-cname

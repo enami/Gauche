@@ -16,10 +16,10 @@
   (dolist [f files]
     (cond-expand
      [gauche.os.windows
-      (sys-system #`"rmdir /q /s ,(P f) > NUL 2>&1")
-      (sys-system #`"del /q ,(P f) > NUL 2>&1")]
+      (sys-system #"rmdir /q /s ~(P f) > NUL 2>&1")
+      (sys-system #"del /q ~(P f) > NUL 2>&1")]
      [else
-      (sys-system #`"rm -rf ,f > /dev/null")])))
+      (sys-system #"rm -rf ~f > /dev/null")])))
 
 ;;----------------------------------------------------------------
 (test-section "require and provide")
@@ -222,8 +222,8 @@
 (test-section "libutil")
 
 (sys-system "mkdir test.o")
-(sys-system #`"mkdir ,(P \"test.o/_test\")")
-(sys-system #`"mkdir ,(P \"test.o/_tset\")")
+(sys-system #"mkdir ~(P \"test.o/_test\")")
+(sys-system #"mkdir ~(P \"test.o/_tset\")")
 
 (with-output-to-file "test.o/_test.scm"
   (^[]
@@ -271,14 +271,14 @@
        (library-fold "_test" acons '() :paths paths-b))
 (test* "library-fold _test (multi)"
        `(("_test" . ,(P "test.o/_tset/_test.scm"))
-	 ("_test" . ,(P "test.o/_test.scm"))
-	 ("_test" . ,(P "test.o/_test/_test.scm")))
+         ("_test" . ,(P "test.o/_test.scm"))
+         ("_test" . ,(P "test.o/_test/_test.scm")))
        (library-fold "_test" acons '() :paths paths-b
                      :allow-duplicates? #t))
 (test* "library-fold _test (non-strict)"
        `((_test . ,(P "test.o/_tset/_test.scm"))
-	 (_test . ,(P "test.o/_test.scm"))
-	 (_test . ,(P "test.o/_test/_test.scm")))
+         (_test . ,(P "test.o/_test.scm"))
+         (_test . ,(P "test.o/_test/_test.scm")))
        (library-fold '_test acons '() :paths paths-b
                      :strict? #f :allow-duplicates? #t))
 
@@ -293,7 +293,7 @@
 ;; readdir(), which may be system dependent.
 (test* "library-fold _test.*"
        `((_test._test . ,(P "test.o/_test/_test.scm"))
-	 (_test._test1 . ,(P "test.o/_test/_test1.scm")))
+         (_test._test1 . ,(P "test.o/_test/_test1.scm")))
        (sort (library-fold '_test.* acons '() :paths paths-b)
              (lambda (a b) (string<? (cdr a) (cdr b)))))
 (test* "library-fold _tset.*"
@@ -302,7 +302,7 @@
              (lambda (a b) (string<? (cdr a) (cdr b)))))
 (test* "library-fold _tset/*"
        `(("_tset/_test" . ,(P "test.o/_tset/_test.scm"))
-	 ("_tset/_test2" . ,(P "test.o/_tset/_test2.scm")))
+         ("_tset/_test2" . ,(P "test.o/_tset/_test2.scm")))
        (sort (library-fold "_tset/*" acons '() :paths paths-b)
              (lambda (a b) (string<? (cdr a) (cdr b)))))
 
@@ -312,15 +312,15 @@
              (lambda (a b) (string<? (cdr a) (cdr b)))))
 (test* "library-fold _*t._te*"
        `((_test._test .  ,(P "test.o/_test/_test.scm"))
-	 (_test._test1 . ,(P "test.o/_test/_test1.scm"))
-	 (_tset._test .  ,(P "test.o/_tset/_test.scm")))
+         (_test._test1 . ,(P "test.o/_test/_test1.scm"))
+         (_tset._test .  ,(P "test.o/_tset/_test.scm")))
        (sort (library-fold '_*t._te* acons '() :paths paths-b)
              (lambda (a b) (string<? (cdr a) (cdr b)))))
 (test* "library-fold */*"
        `(("_test/_test" .  ,(P "test.o/_test/_test.scm"))
-	 ("_test/_test1" . ,(P "test.o/_test/_test1.scm"))
-	 ("_tset/_test" .  ,(P "test.o/_tset/_test.scm"))
-	 ("_tset/_test2" . ,(P "test.o/_tset/_test2.scm")))
+         ("_test/_test1" . ,(P "test.o/_test/_test1.scm"))
+         ("_tset/_test" .  ,(P "test.o/_tset/_test.scm"))
+         ("_tset/_test2" . ,(P "test.o/_tset/_test2.scm")))
        (sort (library-fold "*/*" acons '() :paths paths-b)
              (lambda (a b) (string<? (cdr a) (cdr b)))))
 
@@ -378,7 +378,7 @@
        (not (not (library-exists? 'gauche :paths paths-b))))
 (test* "library-exists? gauche, force-search" #f
        (not (not (library-exists? 'gauche :paths paths-b :force-search? #t))))
-(test* "library-exists? gauche" #f
+(test* "library-exists? gauche" #t
        (not (not (library-exists? "gauche" :paths paths-b))))
 ;;NB: this no longer work since gauche.object is compiled in.
 ;(test* "library-exists? gauche/object" #t
@@ -396,12 +396,12 @@
 (define (dummy-load-path-hook archive relpath suffixes)
   (and (equal? (sys-basename archive) "test.o")
        (member ".scm" suffixes)
-       (cons #`",|archive|/,|relpath|.scm"
+       (cons #"~|archive|/~|relpath|.scm"
              (^[path]
                (open-input-string
                 (format "(define *path* ~s)" path))))))
 
-(test* "dummy-load-path-hook" #`",(sys-getcwd)/test.o/non/existent/file.scm"
+(test* "dummy-load-path-hook" #"~(sys-getcwd)/test.o/non/existent/file.scm"
        (unwind-protect
            (begin
              ((with-module gauche.internal %add-load-path-hook!)
@@ -409,7 +409,7 @@
              ;; just create a dummy file - content doesn't matter.
              (with-output-to-file "test.o"
                (^[] (print)))
-             (load "non/existent/file" :paths `(,#`",(sys-getcwd)/test.o"))
+             (load "non/existent/file" :paths `(,#"~(sys-getcwd)/test.o"))
              (global-variable-ref (current-module) '*path*))
          ((with-module gauche.internal %delete-load-path-hook!)
           dummy-load-path-hook)))

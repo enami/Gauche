@@ -30,6 +30,13 @@
        (call-with-input-string "   \"ab\nc\" ,  \"de \n\n \nf \"  ,  , \"\" , \"gh\"\"\n\"\"i\""
          (make-csv-reader #\,)))
 
+(test* "csv-reader" '(("" "") ("a" "") ("" "b"))
+       (let1 r (make-csv-reader #\,)
+         (call-with-input-string ",\na,  \n  ,b"
+           (^p (let* ([a (r p)] [b (r p)] [c (r p)] [d (r p)])
+                 (and (eof-object? d)
+                      (list a b c)))))))
+
 (test* "csv-reader" (test-error)
        (call-with-input-string " abc,  def , \"ghi\"\"\n\n"
          (make-csv-reader #\,)))
@@ -64,6 +71,7 @@
 ;;-------------------------------------------------------------------
 (test-section "diff")
 (use text.diff)
+(use srfi-13)
 (test-module 'text.diff)
 
 (define diff-a "foo
@@ -81,10 +89,86 @@ hoge
 fuga
 ")
 
+(test* "diff"
+       '(((- 2 "bar")) ((- 4 "baz") (+ 3 "fuga")) ((+ 5 "fuga")))
+       (diff diff-a diff-b))
+
+(test* "diff"
+       '(((- 2 "bar")) ((- 4 "baz") (+ 3 "FUGA")) ((+ 5 "FUGA")))
+       (diff diff-a (string-upcase diff-b) :equal string-ci=?))
+
 (test* "diff-report"
        "  foo\n  bar\n- bar\n  baz\n- baz\n+ fuga\n  hoge\n+ fuga\n"
        (with-output-to-string
          (lambda () (diff-report diff-a diff-b))))
+
+;;-------------------------------------------------------------------
+(test-section "gap-buffer")
+(use text.gap-buffer)
+(use gauche.uvector)
+
+(test-module 'text.gap-buffer)
+
+;; stringify gap-buffer for test purpose
+(define (gap-buffer-visualize gbuf)
+  (with-output-to-string
+    (^[]
+      (let1 buf (~ gbuf'buffer) ;accessing internal
+        (dotimes [i (gap-buffer-gap-start gbuf)]
+          (display (integer->char (~ buf i))))
+        (dotimes [i (- (gap-buffer-gap-end gbuf) (gap-buffer-gap-start gbuf))]
+          (display #\_))
+        (dotimes [i (- (gap-buffer-capacity gbuf) (gap-buffer-gap-end gbuf))]
+          (display (integer->char (~ buf (+ i (gap-buffer-gap-end gbuf))))))))))
+
+(test* "constuct" "abcde___"
+       (gap-buffer-visualize (string->gap-buffer "abcde")))
+(test* "constuct" "___abcde"
+       (gap-buffer-visualize (string->gap-buffer "abcde" 0 'begin)))
+(test* "constuct" "bcd_"
+       (gap-buffer-visualize (string->gap-buffer "abcde" 0 'end 1 4)))
+  
+(let1 gbuf (string->gap-buffer "abcde")
+  (test* "move" "abcd___e"
+         (gap-buffer-visualize (gap-buffer-move! gbuf -1 'current)))
+  (test* "move" "a___bcde"
+         (gap-buffer-visualize (gap-buffer-move! gbuf 1)))
+  (test* "move" "abc___de"
+         (gap-buffer-visualize (gap-buffer-move! gbuf -2 'end)))
+  (test* "insert" "abcZ__de"
+         (gap-buffer-visualize (gap-buffer-insert! gbuf #\Z)))
+  (test* "insert" "abcZxyde"
+         (gap-buffer-visualize (gap-buffer-insert! gbuf "xy")))
+  (test* "insert" "abcZxyw_______de"
+         (gap-buffer-visualize (gap-buffer-insert! gbuf #\w)))
+  (test* "insert"
+         "abcZxyw012345678901234567890123456789_________________________de"
+         (gap-buffer-visualize
+          (gap-buffer-insert! gbuf "012345678901234567890123456789")))
+  (test* "delete"
+         "abcZxyw012345678901234567890123456789__________________________e"
+         (gap-buffer-visualize
+          (gap-buffer-delete! gbuf 1)))
+  (test* "delete"
+         "abc____________________________________678901234567890123456789e"
+         (begin (gap-buffer-move! gbuf 3)
+                (gap-buffer-visualize
+                 (gap-buffer-delete! gbuf 10))))
+  (test* "delete"
+         (test-error)
+         (gap-buffer-visualize (gap-buffer-delete! gbuf 100)))
+  )
+
+(let1 gbuf (string->gap-buffer "abcde")
+  (test* "->string (gap at end)" "abcde"
+         (gap-buffer->string gbuf))
+  (test* "->string (gap at beginning)" "abcde"
+         (begin (gap-buffer-move! gbuf 0)
+                (gap-buffer->string gbuf)))
+  (test* "->string (gap at middle)" "abcde"
+         (begin (gap-buffer-move! gbuf 3 'current)
+                (gap-buffer->string gbuf)))
+  )
 
 ;;-------------------------------------------------------------------
 (test-section "html-lite")
@@ -237,13 +321,13 @@ fuga
        (test-parseutil skip-until "xxxc" '(#[c-f] *eof*)))
 (test* "skip-until proc" '(#\c #\space)
        (test-parseutil skip-until "xxxc bcd"
-                       (lambda (x) (not (eqv? x #\x)))))
+                       (^x (not (eqv? x #\x)))))
 (test* "skip-until proc" '(eof eof)
        (test-parseutil skip-until "xxx"
-                       (lambda (x) (not (eqv? x #\x)))))
+                       (^x (not (eqv? x #\x)))))
 (test* "skip-until proc" (test-error)
        (test-parseutil skip-until "yyyy"
-                       (lambda (x) (eqv? x #\x))))
+                       (^x (eqv? x #\x))))
 (test* "skip-while" '(#\d #\d)
        (test-parseutil skip-while "xxxd" '(#\a #\space #\x)))
 (test* "skip-while" '(#\d #\d)
@@ -254,14 +338,14 @@ fuga
        (test-parseutil skip-while "xxxa" #[ax ]))
 (test* "skip-while" '(#\d #\d)
        (test-parseutil skip-while "xxxd"
-                       (lambda (x) (eqv? x #\x))))
+                       (^x (eqv? x #\x))))
 (test* "skip-while" '(#\y #\y)
        (test-parseutil skip-while "yxxxd"
-                       (lambda (x) (eqv? x #\x))))
+                       (^x (eqv? x #\x))))
 (test* "skip-while" '(eof eof)
        (test-parseutil skip-while "yxxxd"
-                       (lambda (x) (and (char? x)
-                                        (char-alphabetic? x)))))
+                       (^x (and (char? x)
+				(char-alphabetic? x)))))
 
 (test* "next-token" '("" #\d)
        (test-parseutil next-token "xxxd" #[ax ] #[d] "next token"))
@@ -275,10 +359,10 @@ fuga
        (test-parseutil next-token "   aeio" #[\s] '(#[\s] *eof*) "next token"))
 (test* "next-token" '("aeio" #\tab)
        (test-parseutil next-token "   aeio\tnjj"
-                       (lambda (x) (and (char? x)
-                                        (char-whitespace? x)))
-                       (lambda (x) (or (eof-object? x)
-                                       (char-whitespace? x)))
+                       (^x (and (char? x)
+				(char-whitespace? x)))
+                       (^x (or (eof-object? x)
+			       (char-whitespace? x)))
                        "next token"
                        ))
 
@@ -294,10 +378,10 @@ fuga
        (test-parseutil next-token-of "rnge!rg0#$@ bag" #[\S]))
 (test* "next-token-of" '("xxx" #\d)
        (test-parseutil next-token-of "xxxd"
-                       (lambda (x) (eqv? x #\x))))
+                       (^x (eqv? x #\x))))
 (test* "next-token-of" '("xxxx" eof)
        (test-parseutil next-token-of "xxxx"
-                       (lambda (x) (eqv? x #\x))))
+                       (^x (eqv? x #\x))))
 
 (test* "read-string" '("aaaa" #\a)
        (test-parseutil read-string "aaaaa" 4))
@@ -396,7 +480,9 @@ fuga
 (test* "tree->string" "ab" (tree->string 'ab))
 (test* "tree->string" "ab" (tree->string '(a . b)))
 (test* "tree->string" "ab" (tree->string '(a b)))
-(test* "tree->string" "Ab" (tree->string '(|A| . :b)))
 (test* "tree->string" "ab" (tree->string '((((() ())) . a) ((((b)))))))
+(test* "tree->string"
+       (if (symbol? :b) "A:b" "Ab") ; transient during symbol-keyword integration
+       (tree->string '(|A| . :b)))
 
 (test-end)

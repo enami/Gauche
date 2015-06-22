@@ -1,7 +1,7 @@
 ;;;
 ;;; gauche.package.fetch - fetch a package
 ;;;
-;;;   Copyright (c) 2004-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2004-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -43,7 +43,6 @@
 (define-module gauche.package.fetch
   (use rfc.uri)
   (use file.util)
-  (use util.list)
   (use gauche.package.util)
   (use gauche.parameter)
   (export gauche-package-ensure))
@@ -54,21 +53,20 @@
 (define *ncftpget-program* (find-file-in-paths "ncftpget"))
 
 (define (gauche-package-ensure uri :key (config '()))
-  (let* ((build-dir (assq-ref config 'build-dir "."))
-         (wget      (assq-ref config 'wget *wget-program*))
-         (ncftpget  (assq-ref config 'ncftpget *ncftpget-program*))
-         (dest      (build-path build-dir (sys-basename uri))))
+  (let* ([build-dir (assq-ref config 'build-dir ".")]
+         [wget      (assq-ref config 'wget *wget-program*)]
+         [ncftpget  (assq-ref config 'ncftpget *ncftpget-program*)]
+         [dest      (build-path build-dir (sys-basename uri))])
     (rxmatch-case uri
       (#/^https?:/ (#f)
                    (sys-unlink dest)
-                   (run #`",wget -P \",build-dir\" \",uri\"")
+                   (run #"~wget -P \"~build-dir\" \"~uri\"")
                    dest)
       (#/^ftp:/ (#f)
                 (guard (e (else (sys-unlink dest) (raise e)))
-                  (run #`",ncftpget -c \",uri\" > \",dest\""))
+                  (run #"~ncftpget -c \"~uri\" > \"~dest\""))
                 dest)
       (else
        (unless (file-is-readable? uri)
          (error "can't read the package: " uri))
        uri))))
-

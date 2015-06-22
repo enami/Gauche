@@ -1,7 +1,7 @@
 /*
  * gloc.h - Public API for Scheme glocs
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -67,8 +67,20 @@ struct ScmGlocRec {
  *   'export' form but not an actual definition, the GLOC of the binding
  *   has value SCM_UNBOUND, and indicates it is a phantom binding.
  *
- *   A phantom binding is ignored when we search imported modules and
- *   their MPLs.
+ *   When we meet a phantom binding during searching a binding of a symbol,
+ *   we recursively search the symbol from the module where the phantom
+ *   bindings are in, and returns bound GLOC if found.
+ *
+ *   Example:
+ *     (define-module a (export foo) (define foo 1))
+ *     (define-module b (import a) (export foo))
+ *     Suppose we (import b) and then access 'foo'.  We search the import
+ *     chain and find a phantom binding of 'foo' in #<module b>.
+ *     In this case, we search 'foo' from #<module b>, and find a gloc
+ *     from #<module a>, which is returned as the result of the search.
+ *
+ *   This makes it easy to create a transitive module, that doesn't
+ *   define bindings by itself, but exports subset of imported bindings.
  *
  * Hooks (getter and setter)
  *   All reference and modification of toplevel binding go through

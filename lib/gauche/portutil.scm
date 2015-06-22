@@ -1,7 +1,7 @@
 ;;;
 ;;; port related utility functions.  to be autoloaded.
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -33,10 +33,7 @@
 
 (define-module gauche.portutil
   (export port->string port->list port->string-list port->sexp-list
-          copy-port port-position-prefix port-tell
-          ;; transient until 0.9.4 release:
-          port-fold port-fold-right port-for-each port-map)
-  )
+          copy-port))
 (select-module gauche.portutil)
 
 ;;-----------------------------------------------------
@@ -128,23 +125,3 @@
                        (+ count data))))]
         [else (error "unit must be 'char, 'byte, or non-negative integer" unit)]
         ))
-
-;; useful for error messages
-(define (port-position-prefix port)
-  (let ([n (port-name port)]
-        [l (port-current-line port)])
-    (if n
-      (if (positive? l)
-        (format #f "~s:line ~a: " n l)
-        (format #f "~s: " n))
-      "")))
-
-;; useful alias
-(define (port-tell p) (port-seek p 0 SEEK_CUR))
-
-;; in order to compile post-0.9.3 source with 0.9.3, we need these
-;; to be in this module.  Remove them after 0.9.4 release.
-(define port-fold generator-fold)
-(define port-fold-right generator-fold-right)
-(define port-for-each generator-for-each)
-(define port-map generator-map)

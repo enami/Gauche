@@ -1,7 +1,7 @@
 ;;;
 ;;; telnet.scm - telnet protocol implementation
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -151,7 +151,7 @@
 (define (%telnet-send-command self args)
   (let ((out (output-of self)))
     (write-byte *telnet-iac* out)
-    (for-each (lambda (b) (write-byte b out)) args)))
+    (for-each (^b (write-byte b out)) args)))
 
 (define-method telnet-recv ((self <telnet>))
   (let* ((inb (read-block 4000 (input-of self))))

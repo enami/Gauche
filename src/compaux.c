@@ -1,7 +1,7 @@
 /*
  * compaux.c - C API bridge for the compiler
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -41,7 +41,7 @@
 #include "gauche/vminsn.h"
 #include "gauche/class.h"
 #include "gauche/code.h"
-#include "gauche/builtin-syms.h"
+#include "gauche/priv/builtin-syms.h"
 
 /*
  * Syntax
@@ -145,7 +145,8 @@ static void identifier_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
        module-based sandbox implementation, so further consideration is
        required.
     */
-    Scm_Printf(port, "#<identifier %S#%S>", id->module->name, id->name);
+    Scm_Printf(port, "#<identifier %S#%S.%x>",
+               id->module->name, id->name, SCM_WORD(id));
 }
 
 SCM_DEFINE_BUILTIN_CLASS_SIMPLE(Scm_IdentifierClass, identifier_print);
@@ -162,7 +163,7 @@ static ScmObj get_binding_frame(ScmObj var, ScmObj env)
     return SCM_NIL;
 }
 
-ScmObj Scm_MakeIdentifier(ScmSymbol *name, ScmModule *mod, ScmObj env)
+ScmObj Scm_MakeIdentifier(ScmObj name, ScmModule *mod, ScmObj env)
 {
     ScmIdentifier *id = SCM_NEW(ScmIdentifier);
     SCM_SET_CLASS(id, SCM_CLASS_IDENTIFIER);
@@ -170,6 +171,28 @@ ScmObj Scm_MakeIdentifier(ScmSymbol *name, ScmModule *mod, ScmObj env)
     id->module = mod? mod : SCM_CURRENT_MODULE();
     id->env = (env == SCM_NIL)? SCM_NIL : get_binding_frame(SCM_OBJ(name), env);
     return SCM_OBJ(id);
+}
+
+ScmIdentifier *Scm_OutermostIdentifier(ScmIdentifier *id)
+{
+    while (SCM_IDENTIFIERP(id->name)) {
+        id = SCM_IDENTIFIER(SCM_IDENTIFIER(id)->name);
+    }
+    return id;
+}
+
+ScmSymbol *Scm_UnwrapIdentifier(ScmIdentifier *id)
+{
+    ScmObj z = Scm_OutermostIdentifier(id)->name;
+    SCM_ASSERT(SCM_SYMBOLP(z));
+    return SCM_SYMBOL(z);
+}
+
+/* returns global binding of the identifier */
+ScmGloc *Scm_IdentifierGlobalBinding(ScmIdentifier *id)
+{
+    ScmIdentifier *z = Scm_OutermostIdentifier(id);
+    return Scm_FindBinding(z->module, SCM_SYMBOL(z->name), 0);
 }
 
 /* returns true if SYM has the same binding with ID in ENV. */
@@ -196,10 +219,10 @@ static ScmObj identifier_name_get(ScmObj obj)
 
 static void   identifier_name_set(ScmObj obj, ScmObj val)
 {
-    if (!SCM_SYMBOLP(val)) {
-        Scm_Error("symbol required, but got %S", val);
+    if (!SCM_SYMBOLP(val) && !SCM_IDENTIFIERP(val)) {
+        Scm_Error("symbol or identifier required, but got %S", val);
     }
-    SCM_IDENTIFIER(obj)->name = SCM_SYMBOL(val);
+    SCM_IDENTIFIER(obj)->name = val;
 }
 
 static ScmObj identifier_module_get(ScmObj obj)
@@ -245,10 +268,10 @@ static ScmClassStaticSlotSpec identifier_slots[] = {
    substricture. */
 static ScmObj unwrap_rec(ScmObj form, ScmObj history)
 {
-    ScmObj newh;
-
     if (!SCM_PTRP(form)) return form;
     if (!SCM_FALSEP(Scm_Memq(form, history))) return form;
+
+    ScmObj newh;
 
     if (SCM_PAIRP(form)) {
         ScmObj ca, cd;
@@ -262,17 +285,18 @@ static ScmObj unwrap_rec(ScmObj form, ScmObj history)
         }
     }
     if (SCM_IDENTIFIERP(form)) {
-        return SCM_OBJ(SCM_IDENTIFIER(form)->name);
+        return SCM_OBJ(Scm_UnwrapIdentifier(SCM_IDENTIFIER(form)));
     }
     if (SCM_VECTORP(form)) {
-        int i, j, len = SCM_VECTOR_SIZE(form);
-        ScmObj elt, *pelt = SCM_VECTOR_ELEMENTS(form);
+        int len = SCM_VECTOR_SIZE(form);
+        ScmObj *pelt = SCM_VECTOR_ELEMENTS(form);
         newh = Scm_Cons(form, history);
-        for (i=0; i<len; i++, pelt++) {
-            elt = unwrap_rec(*pelt, newh);
+        for (int i=0; i<len; i++, pelt++) {
+            ScmObj elt = unwrap_rec(*pelt, newh);
             if (elt != *pelt) {
                 ScmObj newvec = Scm_MakeVector(len, SCM_FALSE);
                 pelt = SCM_VECTOR_ELEMENTS(form);
+                int j;
                 for (j=0; j<i; j++, pelt++) {
                     SCM_VECTOR_ELEMENT(newvec, j) = *pelt;
                 }
@@ -326,4 +350,3 @@ void Scm__InitCompaux(void)
 
     Scm_ApplyRec0(SCM_GLOC_GET(init_compiler_gloc));
 }
-

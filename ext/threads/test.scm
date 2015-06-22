@@ -558,7 +558,7 @@
 ;; These are actually for testing mtqueue, but put here since they
 ;; require threads to work.
 
-(use util.queue)
+(use data.queue)
 
 (define (test-producer-consumer name qs ndata nthreads)
   (define qr (make-mtqueue))
@@ -573,7 +573,7 @@
         (sys-nanosleep #e1e7)
         (loop (dequeue/wait! qs)))))
 
-  (test* #`"synchronized queue ,name" data
+  (test* #"synchronized queue ~name" data
          (let* ([cs (map (^_ (thread-start! (make-thread consumer)))
                          (iota nthreads))]
                 [p1 (make-thread producer)])

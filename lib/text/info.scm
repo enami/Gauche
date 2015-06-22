@@ -1,7 +1,7 @@
 ;;;
 ;;; info.scm - parse info file
 ;;;
-;;;   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+;;;   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
 ;;;
 ;;;   Redistribution and use in source and binary forms, with or without
 ;;;   modification, are permitted provided that the following conditions
@@ -64,7 +64,7 @@
 ;; Find bzip2 location
 (define bzip2  (find-file-in-paths "bzip2"))
 
-;; Read an info file FILE, and returns a list of strings splitted by ^_ (#\x1f)
+;; Read an info file FILE, and returns a list of strings splitted by ^_ (#\u001f)
 ;; If FILE is not found, look for compressed one.
 (define (read-info-file-split file opts)
   (define (with-input-from-info thunk)
@@ -80,12 +80,12 @@
           [else (error "can't find info file" file)]))
   (with-input-from-info
    (lambda ()
-     (let loop ([c (skip-while (char-set-complement #[\x1f]))]
+     (let loop ([c (skip-while (char-set-complement #[\u001f]))]
                 [r '()])
        (if (eof-object? c)
          (reverse! r)
-         (let* ([head (next-token #[\x1f\n] '(#[\x1f\n] *eof*))]
-                [body (next-token #[\n] '(#[\x1f] *eof*))])
+         (let* ([head (next-token #[\u001f\n] '(#[\u001f\n] *eof*))]
+                [body (next-token #[\n] '(#[\u001f] *eof*))])
            (loop (read-char) (acons head body r)))))))
   )
 
@@ -101,32 +101,30 @@
 
 (define (parse-indirect-table indirects)
   (with-input-from-string indirects
-    (lambda ()
-      (port-map (lambda (line)
-                  (rxmatch-case line
-                    (#/^([^:]+):\s+(\d+)/ (#f file count)
-                        (cons (x->integer count) file))
-                    (else '())))
-                read-line))))
+    (cut generator-map
+         (^[line] (rxmatch-case line
+                    [#/^([^:]+):\s+(\d+)/ (#f file count)
+                     (cons (x->integer count) file)]
+                    [else '()]))
+                     read-line)))
 
 (define (parse-tag-table info indirect tags)
   (define (find-file count)
-    (let loop ((indirect indirect)
-               (prev #f))
-      (cond ((null? indirect) prev)
-            ((< count (caar indirect)) prev)
-            (else (loop (cdr indirect) (cdar indirect))))))
+    (let loop ([indirect indirect]
+               [prev #f])
+      (cond [(null? indirect) prev]
+            [(< count (caar indirect)) prev]
+            [else (loop (cdr indirect) (cdar indirect))])))
   (with-input-from-string tags
-    (lambda ()
-      (generator-for-each (^[line]
-                            (rxmatch-case line
-                              (#/^Node: ([^\x7f]+)\x7f(\d+)/ (#f node count)
-                               (hash-table-put! (ref info 'node-table)
-                                                node
-                                                (find-file (x->integer count))))
-                              (else line #f)))
-                          read-line)))
-  )
+    (cut generator-for-each
+         (^[line]
+           (rxmatch-case line
+             [#/^Node: ([^\u007f]+)\u007f(\d+)/ (#f node count)
+              (hash-table-put! (ref info 'node-table)
+                               node
+                               (find-file (x->integer count)))]
+             [else line #f]))
+         read-line)))
 
 (define (read-sub-info-file info file opts)
   (let1 parts (read-info-file-split file opts)
@@ -135,10 +133,9 @@
     (parse-nodes info parts)))
 
 (define (parse-nodes info parts)
-  (for-each (lambda (p)
-              (unless (string=? (car p) "Tag Table:")
-                (parse-node info p)))
-            parts))
+  (dolist [p parts]
+    (unless (string=? (car p) "Tag Table:")
+      (parse-node info p))))
 
 (define (parse-node info part)
   (rxmatch-case (car part)
@@ -167,7 +164,7 @@
 
 (define-method info-parse-menu ((info <info-node>))
   (with-input-from-string (ref info 'content)
-    (lambda ()
+    (^[]
       (define (skip line)
         (cond [(eof-object? line) '()]
               [(string=? line "* Menu:") (menu (read-line) '())]

@@ -72,7 +72,7 @@ void Scm_MTInitByUI(ScmMersenneTwister *mt, unsigned long s)
     mt->mt[0]= s & 0xffffffffUL;
     for (mti=1; mti<N; mti++) {
         mt->mt[mti] =
-	    (1812433253UL * (mt->mt[mti-1] ^ (mt->mt[mti-1] >> 30)) + mti);
+            (1812433253UL * (mt->mt[mti-1] ^ (mt->mt[mti-1] >> 30)) + mti);
         /* See Knuth TAOCP Vol2. 3rd Ed. P.106 for multiplier. */
         /* In the previous versions, MSBs of the seed affect   */
         /* only MSBs of the array mt[].                        */
@@ -302,15 +302,11 @@ static ScmObj mt_allocate(ScmClass *klass, ScmObj initargs)
     return SCM_OBJ(mt);
 }
 
-extern void Scm_Init_mt_lib(ScmModule*);
-
-SCM_EXTENSION_ENTRY void Scm_Init_math__mt_random(void)
+void Scm_Init_mt_random(void)
 {
     ScmModule *mod = SCM_FIND_MODULE("math.mt-random", SCM_FIND_MODULE_CREATE);
-    SCM_INIT_EXTENSION(math__mtrandom);
     Scm_InitStaticClass(&Scm_MersenneTwisterClass, "<mersenne-twister>",
                         mod, NULL, 0);
     key_seed = SCM_MAKE_KEYWORD("seed");
-    Scm_Init_mt_lib(mod);
 }
 

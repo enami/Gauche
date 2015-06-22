@@ -1,7 +1,7 @@
 /*
  * error.c - error handling
  *
- *   Copyright (c) 2000-2013  Shiro Kawai  <shiro@acm.org>
+ *   Copyright (c) 2000-2015  Shiro Kawai  <shiro@acm.org>
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -36,7 +36,7 @@
 #include "gauche/class.h"
 #include "gauche/exception.h"
 #include "gauche/vm.h"
-#include "gauche/builtin-syms.h"
+#include "gauche/priv/builtin-syms.h"
 
 #include <errno.h>
 #include <string.h>
@@ -100,18 +100,66 @@ static ScmObj message_allocate(ScmClass *klass, ScmObj initargs)
     return SCM_OBJ(e);
 }
 
+/* See comment on gauche/exception.h about hack in 'message' slot.
+   TODO: Remove this hack on 1.0 release. */
 static ScmObj message_get(ScmMessageCondition *obj)
 {
-    return SCM_MESSAGE_CONDITION(obj)->message;
+    ScmObj msglist = obj->message;
+    if (SCM_PAIRP(msglist)) return SCM_CAR(msglist);
+    else return msglist;
 }
 
 static void message_set(ScmMessageCondition *obj, ScmObj val)
 {
-    obj->message = val;
+    ScmObj msglist = obj->message;
+    if (SCM_PAIRP(msglist)) SCM_SET_CAR(msglist, val);
+    else SCM_MESSAGE_CONDITION(obj)->message = SCM_LIST2(val, val);
+}
+
+static ScmObj message_prefix_get(ScmMessageCondition *obj)
+{
+    ScmObj msglist = obj->message;
+    if (SCM_PAIRP(msglist) && SCM_PAIRP(SCM_CDR(msglist))) {
+        return SCM_CADR(msglist);
+    } else {
+        return msglist;
+    }
+}
+
+static void message_prefix_set(ScmMessageCondition *obj, ScmObj val)
+{
+    ScmObj msglist = obj->message;
+    if (SCM_PAIRP(msglist) && SCM_PAIRP(SCM_CDR(msglist))) {
+        SCM_SET_CAR(SCM_CDR(msglist), val);
+    } else {
+        obj->message = SCM_LIST2(msglist, val);
+    }
+}
+
+static ScmObj message_args_get(ScmMessageCondition *obj)
+{
+    ScmObj msglist = obj->message;
+    if (SCM_PAIRP(msglist) && SCM_PAIRP(SCM_CDR(msglist))) {
+        return SCM_CDDR(msglist);
+    } else {
+        return SCM_NIL;
+    }
+}
+
+static void message_args_set(ScmMessageCondition *obj, ScmObj val)
+{
+    ScmObj msglist = obj->message;
+    if (SCM_PAIRP(msglist) && SCM_PAIRP(SCM_CDR(msglist))) {
+        SCM_SET_CDR(SCM_CDR(msglist), val);
+    } else {
+        obj->message = Scm_Cons(msglist, Scm_Cons(msglist, val));
+    }
 }
 
 static ScmClassStaticSlotSpec message_slots[] = {
     SCM_CLASS_SLOT_SPEC("message", message_get, message_set),
+    SCM_CLASS_SLOT_SPEC("message-prefix",   message_prefix_get, message_prefix_set),
+    SCM_CLASS_SLOT_SPEC("message-args", message_args_get, message_args_set),
     SCM_CLASS_SLOT_SPEC_END()
 };
 
@@ -316,11 +364,23 @@ static ScmClass *compound_cpl[] = {
     NULL
 };
 
+static void compound_print(ScmObj obj, ScmPort *port, ScmWriteContext *ctx)
+{
+    ScmClass *k = Scm_ClassOf(obj);
+    Scm_Printf(port, "#<%A", Scm__InternalClassName(k));
+    ScmCompoundCondition *c = SCM_COMPOUND_CONDITION(obj);
+    ScmObj cp;
+    SCM_FOR_EACH(cp, c->conditions) {
+        Scm_Printf(port, " %A", SCM_CAR(cp));
+    }
+    Scm_Printf(port, ">");
+}
+
 SCM_DEFINE_BASE_CLASS(Scm_CompoundConditionClass, ScmCompoundCondition,
-                      NULL, NULL, NULL,
+                      compound_print, NULL, NULL,
                       compound_allocate, compound_cpl+2);
 SCM_DEFINE_BASE_CLASS(Scm_SeriousCompoundConditionClass, ScmCompoundCondition,
-                      NULL, NULL, NULL,
+                      compound_print, NULL, NULL,
                       compound_allocate, compound_cpl);
 
 static ScmObj compound_allocate(ScmClass *klass, ScmObj initargs)
@@ -333,7 +393,7 @@ static ScmObj compound_allocate(ScmClass *klass, ScmObj initargs)
 
 ScmObj Scm_MakeCompoundCondition(ScmObj conditions)
 {
-    ScmObj h = SCM_NIL, t = SCM_NIL, cp, cond;
+    ScmObj h = SCM_NIL, t = SCM_NIL;
     int serious = FALSE;
     int nconds = Scm_Length(conditions);
 
@@ -353,6 +413,7 @@ ScmObj Scm_MakeCompoundCondition(ScmObj conditions)
     }
 
     /* collect conditions and creates compound one */
+    ScmObj cp;
     SCM_FOR_EACH(cp, conditions) {
         ScmObj c = SCM_CAR(cp);
         if (!SCM_CONDITIONP(c)) {
@@ -369,12 +430,32 @@ ScmObj Scm_MakeCompoundCondition(ScmObj conditions)
             SCM_APPEND1(h, t, c);
         }
     }
-    cond = compound_allocate((serious?
-                              SCM_CLASS_COMPOUND_CONDITION :
-                              SCM_CLASS_SERIOUS_COMPOUND_CONDITION),
-                             SCM_NIL);
+    ScmObj cond = compound_allocate((serious?
+                                     SCM_CLASS_COMPOUND_CONDITION :
+                                     SCM_CLASS_SERIOUS_COMPOUND_CONDITION),
+                                    SCM_NIL);
     SCM_COMPOUND_CONDITION(cond)->conditions = h;
     return cond;
+}
+
+/* Extract condition of type TYPE from a compound condition CONDITION.
+   The returned condition may be of subtype of TYPE.
+   CONDITION may be simple condition; in that case, CONDITION itself
+   is returned iff condition is of a subtype of TYPE.
+   This isn't the same as `extract-condition' of SRFI-35, which always
+   returns a condition of the specified type; it also has different
+   rule to refer to the slots.
+ */
+ScmObj Scm_ExtractSimpleCondition(ScmObj condition, ScmClass *type)
+{
+    ScmObj cs = (SCM_COMPOUND_CONDITION_P(condition)
+                 ? SCM_COMPOUND_CONDITION(condition)->conditions
+                 : SCM_LIST1(condition));
+    ScmObj cp;
+    SCM_FOR_EACH(cp, cs) {
+        if (SCM_ISA(SCM_CAR(cp), type)) return SCM_CAR(cp);
+    }
+    return SCM_FALSE;
 }
 
 static ScmObj conditions_get(ScmCompoundCondition *obj)
@@ -418,7 +499,7 @@ ScmObj Scm_MakeThreadException(ScmClass *klass, ScmVM *thread)
 ScmObj Scm_MakeError(ScmObj message)
 {
     ScmError *e = SCM_ERROR(message_allocate(SCM_CLASS_ERROR, SCM_NIL));
-    e->message = message;
+    e->message = SCM_LIST2(message, message);
     return SCM_OBJ(e);
 }
 
@@ -426,7 +507,7 @@ ScmObj Scm_MakeSystemError(ScmObj message, int en)
 {
     ScmSystemError *e =
         SCM_SYSTEM_ERROR(syserror_allocate(SCM_CLASS_SYSTEM_ERROR, SCM_NIL));
-    e->common.message = message;
+    e->common.message = SCM_LIST2(message, message);
     e->error_number = en;
     return SCM_OBJ(e);
 }
@@ -435,7 +516,7 @@ ScmObj Scm_MakeReadError(ScmObj message, ScmPort *port, int line)
 {
     ScmReadError *e =
         SCM_READ_ERROR(readerror_allocate(SCM_CLASS_READ_ERROR, SCM_NIL));
-    e->common.message = message;
+    e->common.message = SCM_LIST2(message, message);
     e->port = port;
     e->line = line;
     return SCM_OBJ(e);
@@ -443,11 +524,11 @@ ScmObj Scm_MakeReadError(ScmObj message, ScmPort *port, int line)
 
 int Scm_ConditionHasType(ScmObj c, ScmObj k)
 {
-    ScmObj cp;
-
     if (!SCM_CONDITIONP(c)) return FALSE;
     if (!SCM_CLASSP(k)) return FALSE;
     if (!SCM_COMPOUND_CONDITION_P(c)) return SCM_ISA(c, SCM_CLASS(k));
+
+    ScmObj cp;
     SCM_FOR_EACH(cp, SCM_COMPOUND_CONDITION(c)->conditions) {
         if (SCM_ISA(SCM_CAR(cp), SCM_CLASS(k))) return TRUE;
     }
@@ -457,12 +538,12 @@ int Scm_ConditionHasType(ScmObj c, ScmObj k)
 ScmObj Scm_ConditionMessage(ScmObj c)
 {
     if (SCM_MESSAGE_CONDITION_P(c)) {
-        return SCM_MESSAGE_CONDITION(c)->message;
+        return message_get(SCM_MESSAGE_CONDITION(c));
     } else if (SCM_COMPOUND_CONDITION_P(c)) {
         ScmObj cp;
         SCM_FOR_EACH(cp, SCM_COMPOUND_CONDITION(c)->conditions) {
             if (SCM_MESSAGE_CONDITION_P(SCM_CAR(cp))) {
-                return SCM_MESSAGE_CONDITION(SCM_CAR(cp))->message;
+                return message_get(SCM_MESSAGE_CONDITION(SCM_CAR(cp)));
             }
         }
     }
@@ -473,7 +554,7 @@ ScmObj Scm_ConditionMessage(ScmObj c)
    suitable for the error message.  Because of personal preference
    and backward compatibility, I upcase the class name of the condition
    sans brackets.  If it is a composite condition, the component's typenames
-   are joind with commas.
+   are joind with commas, excluding mixin conditions.
 */
 ScmObj Scm_ConditionTypeName(ScmObj c)
 {
@@ -489,6 +570,7 @@ ScmObj Scm_ConditionTypeName(ScmObj c)
         ScmObj h = SCM_NIL, t = SCM_NIL, cp;
         SCM_FOR_EACH(cp, SCM_COMPOUND_CONDITION(c)->conditions) {
             ScmObj cc = SCM_CAR(cp);
+            if (SCM_MIXIN_CONDITION_P(cc)) continue;
             SCM_APPEND1(h, t, Scm__InternalClassName(Scm_ClassOf(cc)));
         }
         if (SCM_NULLP(h)) {
@@ -498,7 +580,15 @@ ScmObj Scm_ConditionTypeName(ScmObj c)
             sname = Scm_StringJoin(h, &cond_name_delim, SCM_STRING_JOIN_INFIX);
         }
     }
-    return sname;
+
+    ScmDString ds;
+    Scm_DStringInit(&ds);
+    ScmObj p = Scm_MakeInputStringPort(SCM_STRING(sname), TRUE);
+    int ch;
+    while ((ch = Scm_Getc(SCM_PORT(p))) != EOF) {
+        Scm_DStringPutc(&ds, Scm_CharUpcase(ch));
+    }
+    return Scm_DStringGet(&ds, 0);
 }
 
 /*================================================================
@@ -531,7 +621,7 @@ void Scm_Error(const char *msg, ...)
 
     if (SCM_VM_RUNTIME_FLAG_IS_SET(vm, SCM_ERROR_BEING_HANDLED)) {
         e = Scm_MakeError(SCM_MAKE_STR("Error occurred in error handler"));
-        Scm_VMThrowException(vm, e);
+        Scm_VMThrowException2(vm, e, SCM_RAISE_NON_CONTINUABLE);
     }
     SCM_VM_RUNTIME_FLAG_SET(vm, SCM_ERROR_BEING_HANDLED);
 
@@ -545,7 +635,7 @@ void Scm_Error(const char *msg, ...)
         e = Scm_MakeError(SCM_MAKE_STR("Error occurred in error handler"));
     }
     SCM_END_PROTECT;
-    Scm_VMThrowException(vm, e);
+    Scm_VMThrowException2(vm, e, SCM_RAISE_NON_CONTINUABLE);
     Scm_Panic("Scm_Error: Scm_VMThrowException returned.  something wrong.");
 }
 
@@ -622,7 +712,7 @@ void Scm_SysError(const char *msg, ...)
         e = Scm_MakeError(SCM_MAKE_STR("Error occurred in error handler"));
     }
     SCM_END_PROTECT;
-    Scm_VMThrowException(vm, e);
+    Scm_VMThrowException2(vm, e, SCM_RAISE_NON_CONTINUABLE);
     Scm_Panic("Scm_Error: Scm_VMThrowException returned.  something wrong.");
 }
 
@@ -638,7 +728,7 @@ void Scm_TypeError(const char *what, const char *expected, ScmObj got)
 
 
 /*
- * A convenience function to raise port-relates errors.
+ * A convenience function to raise port-related errors.
  * It creates either one of <port-error>, <io-read-error>,
  * <io-write-error>, <io-closed-error>, or <io-unit-error>,
  * depending on the 'reason' argument being
@@ -648,8 +738,7 @@ void Scm_TypeError(const char *what, const char *expected, ScmObj got)
  */
 void Scm_PortError(ScmPort *port, int reason, const char *msg, ...)
 {
-    ScmObj e, smsg, pe;
-    ScmClass *peclass;
+    ScmObj e;
     ScmVM *vm = Scm_VM();
     va_list args;
     int en = get_errno();
@@ -664,7 +753,8 @@ void Scm_PortError(ScmPort *port, int reason, const char *msg, ...)
             SCM_PUTZ(": ", -1, ostr);
             SCM_PUTS(syserr, ostr);
         }
-        smsg = Scm_GetOutputString(SCM_PORT(ostr), 0);
+        ScmObj smsg = Scm_GetOutputString(SCM_PORT(ostr), 0);
+        ScmClass *peclass;
 
         switch (reason) {
         case SCM_PORT_ERROR_INPUT:
@@ -678,8 +768,8 @@ void Scm_PortError(ScmPort *port, int reason, const char *msg, ...)
         default:
             peclass = SCM_CLASS_PORT_ERROR; break;
         }
-        pe = porterror_allocate(peclass, SCM_NIL);
-        SCM_ERROR(pe)->message = smsg;
+        ScmObj pe = porterror_allocate(peclass, SCM_NIL);
+        SCM_ERROR(pe)->message = SCM_LIST2(smsg, smsg);
         SCM_PORT_ERROR(pe)->port = port;
 
         if (en != 0) {
@@ -694,7 +784,7 @@ void Scm_PortError(ScmPort *port, int reason, const char *msg, ...)
         e = Scm_MakeError(SCM_MAKE_STR("Error occurred in error handler"));
     }
     SCM_END_PROTECT;
-    Scm_VMThrowException(vm, e);
+    Scm_VMThrowException2(vm, e, SCM_RAISE_NON_CONTINUABLE);
     Scm_Panic("Scm_Error: Scm_VMThrowException returned.  something wrong.");
 }
 
@@ -705,6 +795,7 @@ void Scm_PortError(ScmPort *port, int reason, const char *msg, ...)
 
 void Scm_Warn(const char *msg, ...)
 {
+    if (Scm_GetEnv("GAUCHE_SUPPRESS_WARNING") != NULL) return;
     va_list args;
     va_start(args, msg);
     Scm_Printf(SCM_CURERR, "WARNING: %A\n", Scm_Vsprintf(msg, args, TRUE));
@@ -712,14 +803,10 @@ void Scm_Warn(const char *msg, ...)
     va_end(args);
 }
 
-/* format & warn */
+/* OBSOLETED: 'warn' is now in Scheme. */
 void Scm_FWarn(ScmString *fmt, ScmObj args)
 {
-    ScmObj ostr = Scm_MakeOutputStringPort(TRUE);
-    Scm_Format(SCM_PORT(ostr), fmt, args, TRUE);
-    Scm_Printf(SCM_CURERR, "WARNING: %A\n",
-               Scm_GetOutputString(SCM_PORT(ostr), 0));
-    Scm_Flush(SCM_CURERR);
+    Scm_Error("Scm_FWarn is obsoleted");
 }
 
 /*
@@ -727,10 +814,23 @@ void Scm_FWarn(ScmString *fmt, ScmObj args)
  */
 
 /* An external API to hide Scm_VMThrowException. */
+#if  GAUCHE_API_0_95
+ScmObj Scm_Raise(ScmObj condition, u_long flags)
+{
+    return Scm_VMThrowException(Scm_VM(), condition, flags);
+}
+#else  /*!GAUCHE_API_0_95*/
 ScmObj Scm_Raise(ScmObj condition)
 {
-    return Scm_VMThrowException(Scm_VM(), condition);
+    return Scm_Raise2(condition, 0);
 }
+
+ScmObj Scm_Raise2(ScmObj condition, u_long flags)
+{
+    return Scm_VMThrowException2(Scm_VM(), condition, flags);
+}
+#endif /*!GAUCHE_API_0_95*/
+
 
 /* A convenient API---allows to call user-defined condition easily,
    even the condition type is defined in Scheme.  For example:
@@ -751,6 +851,13 @@ ScmObj Scm_Raise(ScmObj condition)
 
    This function isn't very efficient; but sometimes you want the convenience
    more, right?
+
+   The argument list format:
+
+     <condition-type> {<string-slot-name> <value>}* <terminator>
+
+     <terminator> : SCM_RAISE_CONDITION_MESSAGE <fmtstr> <fmtarg> ...
+                  | NULL
 */
 
 ScmObj Scm_RaiseCondition(ScmObj condition_type, ...)
@@ -860,85 +967,84 @@ void Scm_ShowStackTrace(ScmPort *out, ScmObj stacklite,
 
 #undef SHOW_EXPR
 
+/* Dump stack trace.  Called from the default error reporter.
+   Also intended to be called from the debugger, so we allow vm to be NULL
+   to mean the current VM, and port to be NULL for the current error port. */
+void Scm_DumpStackTrace(ScmVM *vm, ScmPort *port)
+{
+    if (vm == NULL) vm = Scm_VM();
+    if (port == NULL) port = SCM_VM_CURRENT_ERROR_PORT(vm);
+    ScmObj stack = Scm_VMGetStackLite(vm);
+    SCM_PUTZ("Stack Trace:\n", -1, port);
+    SCM_PUTZ("_______________________________________\n", -1, port);
+    Scm_ShowStackTrace(port, stack, 0, 0, 0, FMT_ORIG);
+    SCM_FLUSH(port);
+}
 
 /*
  * Default error reporter
  */
 
 /* The default procedure to display the header of error message.
-   E is a thrown condition, not necessarily an error object. */
+   E is a thrown condition, not necessarily an error object.
+
+   The actual operation is written in Scheme (libexc.scm).  However,
+   we can't use that before the infrastructure is fully booted; so
+   this routine has a fallback which will be used only during initialization.
+*/
 static void Scm_PrintDefaultErrorHeading(ScmObj e, ScmPort *out)
 {
-    ScmObj msg;
-    char *heading, *p;
-
-    if (SCM_CONDITIONP(e)) {
-        heading = Scm_GetString(SCM_STRING(Scm_ConditionTypeName(e)));
-        /* TODO: considring that the class name may contain multibyte
-           characters, we should use string-upcase here. */
-        for (p=heading; *p; p++) {
-            *p = toupper(*p);
-        }
-        msg = Scm_ConditionMessage(e);
-        if (!SCM_FALSEP(msg)) {
-            Scm_Printf(out, "*** %s: %A\n", heading, msg);
-        } else {
-            Scm_Printf(out, "*** %s\n", heading);
-        }
+    if (Scm_InitializedP()) {
+        static ScmObj print_default_error_heading = SCM_UNDEFINED;
+        SCM_BIND_PROC(print_default_error_heading,
+                      "print-default-error-heading",
+                      Scm_GaucheModule());
+        Scm_ApplyRec2(print_default_error_heading, e, SCM_OBJ(out));
     } else {
-        Scm_Printf(out, "*** ERROR: unhandled exception: %S\n", e);
+        /* Error during initialization. */
+        if (SCM_CONDITIONP(e)) {
+            Scm_Printf(out, "*** %A: %A\n",
+                       Scm_ConditionTypeName(e),
+                       Scm_ConditionMessage(e));
+        } else {
+            Scm_Printf(out, "*** ERROR: Unhandled condition: %S\n", e);
+        }
     }
 }
 
-static void report_error_inner(ScmVM *vm, ScmObj e)
-{
-    ScmObj stack = Scm_VMGetStackLite(vm);
-    ScmPort *err = SCM_VM_CURRENT_ERROR_PORT(vm);
-
-    Scm_PrintDefaultErrorHeading(e, err);
-    SCM_PUTZ("Stack Trace:\n", -1, err);
-    SCM_PUTZ("_______________________________________\n", -1, err);
-    Scm_ShowStackTrace(err, stack, 0, 0, 0, FMT_ORIG);
-    /* NB: stderr is autoflushed by default, but in case err is replaced
-       by some other port, we explicitly flush it. */
-    SCM_FLUSH(err);
-}
-
-void Scm_ReportError(ScmObj e)
+/* We treat out == #f or #t just like 'format' - #t for the current output
+   port, and #f for string port.  If it's output port, use it.  For any
+   other objects, we use current error port.  This permissive behavior is
+   intentional - report-error is usually called during error handling,
+   and raising an error there masks the original error.
+*/
+#if GAUCHE_API_0_95
+ScmObj Scm_ReportError(ScmObj e, ScmObj out)
+#else  /*!GAUCHE_API_0_95*/
+ScmObj Scm_ReportError2(ScmObj e, ScmObj out)
+#endif /*!GAUCHE_API_0_95*/
 {
     ScmVM *vm = Scm_VM();
-
-    if (SCM_VM_RUNTIME_FLAG_IS_SET(vm, SCM_ERROR_BEING_REPORTED)) {
-        /* An _uncaptured_ error occurred during reporting an error.
-           We can't proceed, for it will cause infinite loop.
-           Note that it is OK for an error to occur inside the error
-           reporter, as far as the error is handled by user-installed
-           handler.   The user-installed handler can even invoke a
-           continuation that is captured outside; the flag is reset
-           in such case.
-           Be careful that it is possible that stderr is no longer
-           available here (since it may be the very cause of the
-           recursive error).  All we can do is to abort. */
-        Scm_Abort("Unhandled error occurred during reporting an error.  Process aborted.\n");
+    ScmPort *port = SCM_VM_CURRENT_ERROR_PORT(vm);
+    if (SCM_FALSEP(out)) {
+        port = SCM_PORT(Scm_MakeOutputStringPort(TRUE));
+    } else if (SCM_TRUEP(out)) {
+        port = SCM_VM_CURRENT_OUTPUT_PORT(vm);
+    } else if (SCM_OPORTP(out)) {
+        port = SCM_PORT(out);
     }
-
-    SCM_VM_RUNTIME_FLAG_SET(vm, SCM_ERROR_BEING_REPORTED);
-    SCM_UNWIND_PROTECT {
-        if (SCM_PROCEDUREP(vm->defaultEscapeHandler)) {
-            Scm_ApplyRec(vm->defaultEscapeHandler, SCM_LIST1(e));
-        } else {
-            report_error_inner(vm, e);
-        }
-    }
-    SCM_WHEN_ERROR {
-        /* NB: this is called when a continuation captured outside is
-           invoked inside the error reporter.   It may be invoked by
-           the user's error handler.  */
-        SCM_VM_RUNTIME_FLAG_CLEAR(vm, SCM_ERROR_BEING_REPORTED);
-    }
-    SCM_END_PROTECT;
-    SCM_VM_RUNTIME_FLAG_CLEAR(vm, SCM_ERROR_BEING_REPORTED);
+    Scm_PrintDefaultErrorHeading(e, port);
+    Scm_DumpStackTrace(vm, port);
+    if (SCM_FALSEP(out)) return Scm_GetOutputString(SCM_PORT(port), 0);
+    else return SCM_UNDEFINED;
 }
+
+#if !GAUCHE_API_0_95
+ScmObj Scm_ReportError(ScmObj e)
+{
+    return Scm_ReportError2(e, SCM_UNBOUND);
+}
+#endif /*!GAUCHE_API_0_95*/
 
 /*
  * Initialization
@@ -946,7 +1052,6 @@ void Scm_ReportError(ScmObj e)
 void Scm__InitExceptions(void)
 {
     ScmModule *mod = Scm_GaucheModule();
-    ScmClass *cond_meta;
 
     ScmObj mes_ser_supers
         = SCM_LIST2(SCM_OBJ(SCM_CLASS_MESSAGE_CONDITION),
@@ -958,7 +1063,7 @@ void Scm__InitExceptions(void)
     Scm_InitStaticClassWithMeta(SCM_CLASS_CONDITION,
                                 "<condition>",
                                 mod, NULL, SCM_FALSE, NULL, 0);
-    cond_meta = Scm_ClassOf(SCM_OBJ(SCM_CLASS_CONDITION));
+    ScmClass *cond_meta = Scm_ClassOf(SCM_OBJ(SCM_CLASS_CONDITION));
     Scm_InitStaticClassWithMeta(SCM_CLASS_SERIOUS_CONDITION,
                                 "<serious-condition>",
                                 mod, cond_meta, SCM_FALSE, NULL, 0);
@@ -1007,6 +1112,7 @@ void Scm__InitExceptions(void)
                                 mod, cond_meta, SCM_FALSE,
                                 porterror_slots, 0);
 
+
     Scm_InitStaticClassWithMeta(SCM_CLASS_COMPOUND_CONDITION,
                                 "<compound-condition>",
                                 mod, cond_meta, SCM_FALSE,
@@ -1016,4 +1122,3 @@ void Scm__InitExceptions(void)
                                 mod, cond_meta, com_ser_supers,
                                 compound_slots, 0);
 }
-
